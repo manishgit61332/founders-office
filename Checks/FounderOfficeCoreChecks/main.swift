@@ -109,6 +109,45 @@ func runChecks() async throws {
     try expect(decoded.resolvedPreferredName == nil, "Legacy workspace name was guessed to be a person")
     try expect(decoded.resolvedWorkspaceName == "Founder's Office", "Legacy workspace name was lost")
     try expect(decoded.updatedAt == nil, "Legacy personalization gained false cloud metadata")
+    try expect(decoded.appearance == nil, "Legacy personalization gained a fabricated appearance payload")
+    try expect(decoded.resolvedAppearance.presetID == .manish, "Legacy personalization did not resolve to the Manish default")
+
+    try expect(RGB24Color(hex: "#000000")?.hex == "#000000", "Black RGB24 colour did not round-trip")
+    try expect(RGB24Color(hex: "FFFFFF")?.hex == "#FFFFFF", "White RGB24 colour did not round-trip")
+    try expect(RGB24Color(hex: "#0a84ff")?.hex == "#0A84FF", "Mixed-case RGB24 colour did not normalize")
+    try expect(RGB24Color(hex: "#12345") == nil, "Invalid short RGB24 colour was accepted")
+
+    let normalizedAccent = AccentStyle(
+        mode: .gradient,
+        stops: [
+            AccentStop(color: RGB24Color(red: 255, green: 0, blue: 0), location: 1.4),
+            AccentStop(color: RGB24Color(red: 0, green: 0, blue: 255), location: -0.2)
+        ],
+        angleDegrees: 450
+    )
+    try expect(normalizedAccent.normalizedStops.map(\.location) == [0, 1], "Gradient stops were not clamped and ordered")
+    try expect(normalizedAccent.angleDegrees == 90, "Gradient angle was not normalized")
+    let negativeAngle = AccentStyle(mode: .solid, stops: [], angleDegrees: -45)
+    try expect(negativeAngle.angleDegrees == 315, "Negative gradient angle was not normalized")
+    let reversibleSolid = AccentStyle(
+        mode: .solid,
+        stops: [
+            AccentStop(color: RGB24Color(red: 10, green: 20, blue: 30), location: 0),
+            AccentStop(color: RGB24Color(red: 40, green: 50, blue: 60), location: 1)
+        ]
+    )
+    try expect(reversibleSolid.normalizedStops.count == 2, "Solid mode discarded the saved gradient stop")
+
+    var interactionLeases = InteractionLeaseRegistry()
+    let dateLease = interactionLeases.begin("date")
+    let menuLease = interactionLeases.begin("menu")
+    try expect(interactionLeases.isActive && interactionLeases.count == 2, "Overlapping interactions were not retained")
+    interactionLeases.end(dateLease)
+    try expect(interactionLeases.isActive && interactionLeases.count == 1, "Ending one interaction released another")
+    interactionLeases.end(dateLease)
+    try expect(interactionLeases.count == 1, "Ending the same interaction twice corrupted the registry")
+    interactionLeases.end(menuLease)
+    try expect(!interactionLeases.isActive, "Interaction registry stayed active after every lease ended")
 
     let namedProfile = PersonalizationDocument(
         schemaVersion: 5,
@@ -124,19 +163,43 @@ func runChecks() async throws {
     try expect(namedProfile.resolvedPreferredName == "Aarav Sharma", "Preferred name was not preserved exactly")
     try expect(namedProfile.resolvedWorkspaceName == "North Star Studio", "Workspace name was not preserved")
 
-    let temporaryRoot = FileManager.default.temporaryDirectory
-        .appendingPathComponent("founder-office-check-\(UUID().uuidString)", isDirectory: true)
-    defer { try? FileManager.default.removeItem(at: temporaryRoot) }
-    let fileStore = JSONSnapshotStore(rootURL: temporaryRoot)
-    let personalization = PersonalizationDocument(
-        schemaVersion: 5,
+    var customAppearance = AppearancePreferences.preset(.minimal)
+    customAppearance.presetID = AppearancePresetID(rawValue: "future-theme")
+    customAppearance.displayFontID = FontChoiceID(rawValue: "future-font")
+    let themedProfile = PersonalizationDocument(
+        schemaVersion: 6,
         displayName: "Founder's Office",
         accent: .blue,
         iconStyle: .system,
         photoFileName: nil,
         primaryGoal: nil,
         milestones: [],
-        updatedAt: date(10)
+        appearance: customAppearance
+    )
+    let themedData = try encoder.encode(themedProfile)
+    let themedRoundTrip = try decoder.decode(PersonalizationDocument.self, from: themedData)
+    try expect(themedRoundTrip.appearance?.presetID.rawValue == "future-theme", "Unknown theme identifier was not preserved")
+    try expect(themedRoundTrip.appearance?.displayFontID.rawValue == "future-font", "Unknown font identifier was not preserved")
+    try expect(themedRoundTrip.resolvedAppearance.accent.mode == .gradient, "Gradient appearance did not round-trip")
+    try expect(themedRoundTrip.resolvedAppearance.accent.primaryColor.hex == "#74AA9C", "Exact 24-bit accent colour was not preserved")
+
+    let temporaryRoot = FileManager.default.temporaryDirectory
+        .appendingPathComponent("founder-office-check-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: temporaryRoot) }
+    let fileStore = JSONSnapshotStore(rootURL: temporaryRoot)
+    let freshSnapshot = try await fileStore.readSnapshot()
+    try expect(freshSnapshot.personalization.schemaVersion == 6, "Fresh cloud snapshot did not use the appearance schema")
+    try expect(freshSnapshot.personalization.appearance?.presetID == .manish, "Fresh cloud snapshot did not seed the Manish style")
+    let personalization = PersonalizationDocument(
+        schemaVersion: 6,
+        displayName: "Founder's Office",
+        accent: .blue,
+        iconStyle: .system,
+        photoFileName: nil,
+        primaryGoal: nil,
+        milestones: [],
+        updatedAt: date(10),
+        appearance: AppearancePreferences.preset(.native)
     )
     let localSnapshot = FounderOfficeSnapshot(
         openLoops: document(items: [older], updatedAt: date(10)),
@@ -145,6 +208,7 @@ func runChecks() async throws {
     try await fileStore.persist(localSnapshot)
     let storedSnapshot = try await fileStore.readSnapshot()
     try expect(storedSnapshot.openLoops.items == [older], "Atomic JSON snapshot did not round-trip")
+    try expect(storedSnapshot.personalization.appearance?.presetID == .native, "Appearance payload was lost from the atomic snapshot")
     try expect(
         FileManager.default.fileExists(atPath: temporaryRoot.appendingPathComponent("OPEN_LOOPS_CONTEXT.md").path),
         "Codex context mirror was not written"

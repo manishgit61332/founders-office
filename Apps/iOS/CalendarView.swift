@@ -1,8 +1,12 @@
 import EventKit
+import FounderOfficeCore
 import SwiftUI
 
 struct CalendarView: View {
     @EnvironmentObject private var calendar: CalendarProvider
+    @EnvironmentObject private var model: AppModel
+
+    private var appearance: AppearancePreferences { model.personalization.resolvedAppearance }
 
     var body: some View {
         Group {
@@ -42,6 +46,7 @@ struct CalendarView: View {
                 }
             }
         }
+        .founderSurface(appearance)
         .navigationTitle("Calendar")
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
@@ -66,31 +71,46 @@ struct CalendarView: View {
 }
 
 private struct CalendarEventRow: View {
+    @EnvironmentObject private var model: AppModel
+
     let event: DeviceCalendarEvent
+
+    private var appearance: AppearancePreferences { model.personalization.resolvedAppearance }
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             VStack(spacing: 0) {
                 Text(event.startDate, format: .dateTime.month(.abbreviated))
-                    .font(.caption.weight(.bold))
+                    .font(appearance.interfaceFont(size: 12, weight: .bold))
                     .textCase(.uppercase)
                 Text(event.startDate, format: .dateTime.day())
-                    .font(.title3.weight(.semibold))
+                    .font(appearance.displayFont(size: 20, weight: .semibold))
             }
             .frame(minWidth: 42)
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(event.title)
-                    .font(.headline)
+                    .font(appearance.interfaceFont(size: 17, weight: .semibold))
 
                 Text(event.isAllDay ? "All day" : event.startDate.formatted(date: .omitted, time: .shortened))
-                    .font(.body)
+                    .font(appearance.interfaceFont(size: 15))
 
                 Label("\(event.accountName) · \(event.calendarName)", systemImage: "calendar")
-                    .font(.subheadline)
+                    .font(appearance.interfaceFont(size: 14))
                     .foregroundStyle(.secondary)
             }
         }
-        .padding(.vertical, 4)
+        .padding(12)
+        .background(
+            appearance.nodeBackgroundColor,
+            in: RoundedRectangle(cornerRadius: appearance.nodeCornerRadius, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: appearance.nodeCornerRadius, style: .continuous)
+                .stroke(appearance.nodeBorderColor, lineWidth: 1)
+        )
+        .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
     }
 }

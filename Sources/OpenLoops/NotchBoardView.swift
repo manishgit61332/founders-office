@@ -26,6 +26,33 @@ private enum BoardSection: String, CaseIterable, Identifiable {
     }
 }
 
+private enum PersonalizePage: String, CaseIterable, Identifiable {
+    case profile
+    case appearance
+    case finishLine
+    case calendar
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .profile: return "Profile"
+        case .appearance: return "Appearance"
+        case .finishLine: return "Finish line"
+        case .calendar: return "Calendar"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .profile: return "person.crop.circle"
+        case .appearance: return "paintpalette"
+        case .finishLine: return "scope"
+        case .calendar: return "calendar"
+        }
+    }
+}
+
 private struct DeadlineSignal: Identifiable {
     var id: String
     var title: String
@@ -114,6 +141,8 @@ struct NotchBoardView: View {
     @ObservedObject var presentation: NotchPresentationModel
     let onClose: () -> Void
 
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
     @State private var selectedSection: BoardSection = ProcessInfo.processInfo.environment["OPENLOOPS_PREVIEW_SECTION"]
         .flatMap(BoardSection.init(rawValue:)) ?? .home
     @State private var selectedStatus: LoopStatus = ProcessInfo.processInfo.environment["OPENLOOPS_PREVIEW_SELECTED_STATUS"]
@@ -121,6 +150,11 @@ struct NotchBoardView: View {
     @State private var selectedCalendarDay = Calendar.current.startOfDay(for: Date())
     @State private var isAdding = false
     @State private var isSettingsPresented = ProcessInfo.processInfo.environment["OPENLOOPS_PREVIEW_SETTINGS"] == "1"
+    @State private var personalizePage: PersonalizePage = ProcessInfo.processInfo.environment["OPENLOOPS_PREVIEW_PERSONALIZE_PAGE"]
+        .flatMap(PersonalizePage.init(rawValue:)) ?? .profile
+    @State private var isFinishDatePickerPresented = false
+    @State private var finishDateInteractionLease: UUID?
+    @State private var photoInteractionLease: UUID?
     @State private var newTitle = ""
     @State private var newPriority: LoopPriority = .p1
     @State private var newStatus: LoopStatus = .doing
@@ -134,17 +168,30 @@ struct NotchBoardView: View {
     @State private var primaryGoalTarget = ""
     @State private var primaryGoalUnit: GoalValueUnit = .usd
     @State private var primaryGoalDate = Calendar.current.date(byAdding: .day, value: 60, to: Date()) ?? Date()
+    @State private var finishDateDraft = Calendar.current.date(byAdding: .day, value: 60, to: Date()) ?? Date()
     @Namespace private var statusSelection
     @FocusState private var addFieldFocused: Bool
 
-    private let groupedBackground = Color.white.opacity(0.042)
+    private var theme: FounderTheme {
+        FounderTheme(appearance: personalization.appearance, reduceTransparency: reduceTransparency)
+    }
+    private var groupedBackground: Color { theme.groupedBackground }
     private let border = Color.white.opacity(0.085)
     private let primaryText = Color.white.opacity(0.96)
     private let secondaryText = Color.white.opacity(0.74)
-    private let contentSurface = Color.white.opacity(0.06)
-    private let contentBorder = Color.white.opacity(0.10)
-    private let contentRadius: CGFloat = 14
+    private var contentSurface: Color { theme.contentSurface }
+    private var contentBorder: Color { theme.contentBorder }
+    private var contentRadius: CGFloat { theme.nodeRadius }
     private var accent: Color { personalization.accentColor }
+    private var secondaryAccent: Color { personalization.secondaryAccentColor }
+
+    private func displayFont(size: CGFloat, weight: Font.Weight = .regular) -> Font {
+        theme.displayFont(size: size, weight: weight)
+    }
+
+    private func interfaceFont(size: CGFloat, weight: Font.Weight = .regular) -> Font {
+        theme.interfaceFont(size: size, weight: weight)
+    }
 
     var body: some View {
         let metrics = NotchMorphMetrics(
@@ -196,17 +243,21 @@ struct NotchBoardView: View {
         .allowsHitTesting(metrics.isInteractive)
         .accessibilityHidden(!metrics.isInteractive)
         .preferredColorScheme(.dark)
+        .environment(\.founderTheme, theme)
         .onAppear {
             loadIdentityEditor()
             loadPrimaryGoalEditor()
         }
         .onExitCommand {
-            if isSettingsPresented {
+            if isFinishDatePickerPresented {
+                closeFinishDatePicker()
+            } else if isSettingsPresented {
                 dismissSettings()
             } else {
                 onClose()
             }
         }
+        .onDisappear(perform: releaseTransientInteractions)
     }
 
     private var boardContent: some View {
@@ -233,12 +284,32 @@ struct NotchBoardView: View {
     }
 
     private var panelSurface: some View {
-        return ZStack {
-            Rectangle()
-                .fill(.ultraThinMaterial)
-
-            Rectangle()
-                .fill(Color(red: 0.012, green: 0.014, blue: 0.018).opacity(0.48))
+        ZStack {
+            switch theme.effectiveSurfaceID {
+            case .glass:
+                Rectangle()
+                    .fill(.ultraThinMaterial)
+                Rectangle()
+                    .fill(Color(red: 0.008, green: 0.010, blue: 0.014).opacity(0.30))
+                Rectangle()
+                    .fill(theme.accentGradient)
+                    .opacity(0.10)
+                    .mask(
+                        LinearGradient(
+                            colors: [.white, .clear],
+                            startPoint: .top,
+                            endPoint: UnitPoint(x: 0.5, y: 0.58)
+                        )
+                    )
+            case .solidBlack:
+                Rectangle()
+                    .fill(Color(red: 0.008, green: 0.009, blue: 0.011))
+            default:
+                Rectangle()
+                    .fill(.thinMaterial)
+                Rectangle()
+                    .fill(Color(red: 0.012, green: 0.014, blue: 0.018).opacity(0.54))
+            }
         }
         .frame(width: 720, height: 350)
     }
@@ -247,12 +318,12 @@ struct NotchBoardView: View {
         HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 3) {
                 Text(headerTitle)
-                    .font(.custom("Instrument Serif", size: 25))
+                    .font(displayFont(size: 25))
                     .foregroundStyle(primaryText)
 
                 if !isEditorialHome {
                     Text(headerSubtitle)
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(interfaceFont(size: 12, weight: .semibold))
                         .foregroundStyle(secondaryText)
                         .lineLimit(1)
                 }
@@ -267,6 +338,7 @@ struct NotchBoardView: View {
                 icon: .settings,
                 isSelected: isSettingsPresented,
                 accent: accent,
+                secondaryAccent: secondaryAccent,
                 label: "Personalize",
                 action: presentSettings
             )
@@ -313,6 +385,7 @@ struct NotchBoardView: View {
                     icon: section.icon,
                     isSelected: !isSettingsPresented && selectedSection == section,
                     accent: accent,
+                    secondaryAccent: secondaryAccent,
                     label: section.title,
                     action: { select(section) }
                 )
@@ -335,12 +408,12 @@ struct NotchBoardView: View {
     private var homeContent: some View {
         ZStack(alignment: .topLeading) {
             Text(headerTitle)
-                .font(.custom("Instrument Serif", size: 34))
+                .font(displayFont(size: 34))
                 .foregroundStyle(primaryText)
                 .offset(x: 32, y: 44)
 
             Text("Next move")
-                .font(.system(size: 22, weight: .bold))
+                .font(interfaceFont(size: 22, weight: .bold))
                 .foregroundStyle(primaryText)
                 .offset(x: 32, y: 106)
 
@@ -350,10 +423,10 @@ struct NotchBoardView: View {
                 } else {
                     VStack(alignment: .leading, spacing: 5) {
                         Text("Nothing is pulling at you")
-                            .font(.system(size: 15, weight: .bold))
+                            .font(interfaceFont(size: 15, weight: .bold))
                             .foregroundStyle(primaryText)
                         Text("The board is clear.")
-                            .font(.system(size: 12, weight: .semibold))
+                            .font(interfaceFont(size: 12, weight: .semibold))
                             .foregroundStyle(Color.white.opacity(0.84))
                     }
                     .padding(12)
@@ -367,7 +440,7 @@ struct NotchBoardView: View {
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 5) {
                     Text("Up next")
-                        .font(.system(size: 18, weight: .bold))
+                        .font(interfaceFont(size: 18, weight: .bold))
                         .foregroundStyle(primaryText)
                     homeCalendarSignal
                 }
@@ -380,7 +453,7 @@ struct NotchBoardView: View {
 
                 VStack(alignment: .leading, spacing: 5) {
                     Text("Primary goal")
-                        .font(.system(size: 18, weight: .bold))
+                        .font(interfaceFont(size: 18, weight: .bold))
                         .foregroundStyle(primaryText)
                     homePrimaryGoal
                 }
@@ -400,6 +473,7 @@ struct NotchBoardView: View {
                     icon: .settings,
                     isSelected: false,
                     accent: accent,
+                    secondaryAccent: secondaryAccent,
                     label: "Personalize",
                     action: presentSettings
                 )
@@ -425,7 +499,7 @@ struct NotchBoardView: View {
                 store.toggleCompletion(item)
             } label: {
                 Image(systemName: "circle")
-                    .font(.system(size: 19, weight: .medium))
+                    .font(interfaceFont(size: 19, weight: .medium))
                     .foregroundStyle(priorityColor(for: item.priority))
                     .frame(width: 34, height: 34)
             }
@@ -434,13 +508,13 @@ struct NotchBoardView: View {
 
             VStack(alignment: .leading, spacing: 5) {
                 Text(item.title)
-                    .font(.system(size: 15, weight: .bold))
+                    .font(interfaceFont(size: 15, weight: .bold))
                     .foregroundStyle(primaryText)
                     .lineLimit(1)
 
                 if let dueAt = item.dueAt {
                     Text(homeDueLabel(dueAt))
-                        .font(.system(size: 11.5, weight: .bold))
+                        .font(interfaceFont(size: 11.5, weight: .bold))
                         .foregroundStyle(dueAt < Calendar.current.startOfDay(for: Date()) ? Color.red.opacity(0.94) : Color.white.opacity(0.92))
                 }
             }
@@ -461,18 +535,18 @@ struct NotchBoardView: View {
             VStack(alignment: .leading, spacing: 5) {
                 if let event = calendarProvider.events.first {
                     Text(event.title)
-                        .font(.system(size: 13, weight: .bold))
+                        .font(interfaceFont(size: 13, weight: .bold))
                         .foregroundStyle(primaryText)
                         .lineLimit(2)
                     Text(eventDateLabel(event))
-                        .font(.system(size: 11.5, weight: .semibold))
+                        .font(interfaceFont(size: 11.5, weight: .semibold))
                         .foregroundStyle(Color.white.opacity(0.82))
                 } else {
                     Text(calendarProvider.isAuthorized ? "No meetings soon" : "Connect Calendar")
-                        .font(.system(size: 13, weight: .bold))
+                        .font(interfaceFont(size: 13, weight: .bold))
                         .foregroundStyle(primaryText)
                     Text(calendarProvider.isAuthorized ? "Your time is clear" : "Only important dates")
-                        .font(.system(size: 11.5, weight: .semibold))
+                        .font(interfaceFont(size: 11.5, weight: .semibold))
                         .foregroundStyle(Color.white.opacity(0.82))
                 }
             }
@@ -495,16 +569,18 @@ struct NotchBoardView: View {
                 if let goal = personalization.primaryGoal {
                     if let target = goal.targetValue, target > 0 {
                         Text(primaryGoalTargetLabel(goal, target: target))
-                            .font(.custom("Instrument Serif", size: 21))
+                            .font(displayFont(size: 21))
                             .foregroundStyle(primaryText)
                             .lineLimit(1)
+                            .minimumScaleFactor(0.74)
+                            .allowsTightening(true)
 
                         HStack(spacing: 4) {
                             Text("\(goal.unit.format(goal.currentValue ?? 0)) now")
                             Spacer(minLength: 3)
                             Text(daysLeftLabel(goal.dueAt))
                         }
-                        .font(.system(size: 10, weight: .semibold))
+                        .font(interfaceFont(size: 10, weight: .semibold))
                         .foregroundStyle(Color.white.opacity(0.84))
 
                         ProgressView(value: primaryGoalProgress(goal))
@@ -513,19 +589,22 @@ struct NotchBoardView: View {
                             .controlSize(.mini)
                     } else {
                         Text(daysLeftLabel(goal.dueAt))
-                            .font(.custom("Instrument Serif", size: 21))
+                            .font(displayFont(size: 21))
                             .foregroundStyle(primaryText)
                         Text(goal.title)
-                            .font(.system(size: 11.5, weight: .bold))
+                            .font(interfaceFont(size: 11.5, weight: .bold))
                             .foregroundStyle(primaryText)
                             .lineLimit(1)
                     }
                 } else {
                     Text("Set the finish line")
-                        .font(.custom("Instrument Serif", size: 21))
+                        .font(displayFont(size: 21))
                         .foregroundStyle(primaryText)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.74)
+                        .allowsTightening(true)
                     Text("Metric + deadline")
-                        .font(.system(size: 11.5, weight: .semibold))
+                        .font(interfaceFont(size: 11.5, weight: .semibold))
                         .foregroundStyle(Color.white.opacity(0.82))
                 }
             }
@@ -546,7 +625,7 @@ struct NotchBoardView: View {
         Group {
             if let url = personalization.photoURL,
                let image = NSImage(contentsOf: url) {
-                Button(action: personalization.choosePhoto) {
+                Button(action: choosePhotoWithLease) {
                     Image(nsImage: image)
                         .resizable()
                         .scaledToFill()
@@ -554,29 +633,29 @@ struct NotchBoardView: View {
                         .clipped()
                 }
                 .buttonStyle(StatusTabButtonStyle())
-                .clipShape(RoundedRectangle(cornerRadius: 25, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: theme.visionRadius, style: .continuous))
                 .overlay(
-                    RoundedRectangle(cornerRadius: 25, style: .continuous)
+                    RoundedRectangle(cornerRadius: theme.visionRadius, style: .continuous)
                         .stroke(Color.white.opacity(0.14), lineWidth: 1)
                 )
                 .help("Choose a different image")
             } else {
                 Button {
-                    personalization.choosePhoto()
+                    choosePhotoWithLease()
                 } label: {
                     VStack(spacing: 8) {
                         ClayIconView(name: .photo, style: personalization.iconStyle, size: 34)
                         Text("Add a personal photo")
-                            .font(.system(size: 14, weight: .bold))
+                            .font(interfaceFont(size: 14, weight: .bold))
                         Text("A dream, a person, a logo")
-                            .font(.system(size: 12, weight: .medium))
+                            .font(interfaceFont(size: 12, weight: .medium))
                             .foregroundStyle(Color.white.opacity(0.82))
                     }
                     .foregroundStyle(primaryText)
                     .frame(width: 294, height: 283)
-                    .background(contentSurface, in: RoundedRectangle(cornerRadius: 25, style: .continuous))
+                    .background(contentSurface, in: RoundedRectangle(cornerRadius: theme.visionRadius, style: .continuous))
                     .overlay(
-                        RoundedRectangle(cornerRadius: 25, style: .continuous)
+                        RoundedRectangle(cornerRadius: theme.visionRadius, style: .continuous)
                             .stroke(Color.white.opacity(0.12), lineWidth: 1)
                     )
                     .contentShape(Rectangle())
@@ -594,7 +673,7 @@ struct NotchBoardView: View {
                 Button(action: toggleAddComposer) {
                     HStack(spacing: 5) {
                         Image(systemName: isAdding ? "xmark" : "plus")
-                            .font(.system(size: 10.5, weight: .bold))
+                            .font(interfaceFont(size: 10.5, weight: .bold))
                         Text(isAdding ? "Cancel" : "New")
                     }
                 }
@@ -624,10 +703,10 @@ struct NotchBoardView: View {
                 } label: {
                     HStack(spacing: 6) {
                         Text(status.title)
-                            .font(.system(size: 11.5, weight: isSelected ? .semibold : .medium))
+                            .font(interfaceFont(size: 11.5, weight: isSelected ? .semibold : .medium))
 
                         Text("\(store.count(in: status))")
-                            .font(.system(size: 10.5, weight: .semibold))
+                            .font(interfaceFont(size: 10.5, weight: .semibold))
                             .foregroundStyle(isSelected ? Color.white.opacity(0.70) : secondaryText.opacity(isHovered ? 1 : 0.76))
                             .contentTransition(.numericText())
                     }
@@ -742,7 +821,7 @@ struct NotchBoardView: View {
         HStack(spacing: 10) {
             TextField("Capture a move…", text: $newTitle)
                 .textFieldStyle(.plain)
-                .font(.system(size: 13, weight: .regular))
+                .font(interfaceFont(size: 13, weight: .regular))
                 .foregroundStyle(primaryText)
                 .focused($addFieldFocused)
                 .onSubmit(addItem)
@@ -779,10 +858,10 @@ struct NotchBoardView: View {
     private var emptyState: some View {
         VStack(spacing: 6) {
             Text(emptyStateTitle)
-                .font(.system(size: 13, weight: .semibold))
+                .font(interfaceFont(size: 13, weight: .semibold))
                 .foregroundStyle(primaryText)
             Text(emptyStateMessage)
-                .font(.system(size: 11, weight: .regular))
+                .font(interfaceFont(size: 11, weight: .regular))
                 .foregroundStyle(secondaryText)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -858,9 +937,9 @@ struct NotchBoardView: View {
                 } label: {
                     VStack(spacing: 3) {
                         Text(shortWeekday(day))
-                            .font(.system(size: 8.5, weight: .semibold))
+                            .font(interfaceFont(size: 8.5, weight: .semibold))
                         Text(dayNumber(day))
-                            .font(.system(size: 11.5, weight: isSelected ? .semibold : .medium))
+                            .font(interfaceFont(size: 11.5, weight: isSelected ? .semibold : .medium))
                     }
                     .foregroundStyle(isSelected ? primaryText : secondaryText)
                     .frame(maxWidth: .infinity, minHeight: 43)
@@ -901,7 +980,7 @@ struct NotchBoardView: View {
                         Text("Connect")
                     }
                 }
-                .font(.system(size: 9.5, weight: .semibold))
+                .font(interfaceFont(size: 9.5, weight: .semibold))
                 .foregroundStyle(calendarProvider.isAuthorized ? primaryText : accent)
                 .frame(width: 58, height: 43)
                 .background(Color.white.opacity(calendarProvider.isAuthorized ? 0.045 : 0), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
@@ -922,17 +1001,17 @@ struct NotchBoardView: View {
     private var calendarEvents: some View {
         VStack(alignment: .leading, spacing: 7) {
             Text(Calendar.current.isDateInToday(selectedCalendarDay) ? "TODAY" : selectedDayTitle)
-                .font(.system(size: 10, weight: .bold))
+                .font(interfaceFont(size: 10, weight: .bold))
                 .tracking(0.35)
                 .foregroundStyle(accent)
 
             let events = selectedDayEvents
             if events.isEmpty {
                 Text("Nothing scheduled")
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(interfaceFont(size: 13, weight: .semibold))
                     .foregroundStyle(primaryText)
                 Text("This day has room to breathe.")
-                    .font(.system(size: 10.5))
+                    .font(interfaceFont(size: 10.5))
                     .foregroundStyle(secondaryText)
             } else {
                 ForEach(events.prefix(3)) { event in
@@ -942,11 +1021,11 @@ struct NotchBoardView: View {
                             .frame(width: 3, height: 28)
                         VStack(alignment: .leading, spacing: 3) {
                             Text(event.title)
-                                .font(.system(size: 11.5, weight: .semibold))
+                                .font(interfaceFont(size: 11.5, weight: .semibold))
                                 .foregroundStyle(primaryText)
                                 .lineLimit(1)
                             Text("\(eventTimeLabel(event))  ·  \(event.sourceLabel)")
-                                .font(.system(size: 10, weight: .medium))
+                                .font(interfaceFont(size: 10, weight: .medium))
                                 .foregroundStyle(secondaryText)
                                 .lineLimit(1)
                         }
@@ -960,32 +1039,32 @@ struct NotchBoardView: View {
     private var calendarDeadlines: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("IMPORTANT DATES")
-                .font(.system(size: 10, weight: .bold))
+                .font(interfaceFont(size: 10, weight: .bold))
                 .tracking(0.35)
                 .foregroundStyle(secondaryText)
 
             if deadlineSignals.isEmpty {
                 Text("No countdowns yet")
-                    .font(.system(size: 11.5, weight: .semibold))
+                    .font(interfaceFont(size: 11.5, weight: .semibold))
                     .foregroundStyle(primaryText)
                 Button("Add one in Settings", action: presentSettings)
                     .buttonStyle(.plain)
-                    .font(.system(size: 9.5, weight: .semibold))
+                    .font(interfaceFont(size: 9.5, weight: .semibold))
                     .foregroundStyle(accent)
             } else {
                 ForEach(deadlineSignals.prefix(3)) { deadline in
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Text(countdownLabel(deadline.dueAt))
-                            .font(.system(size: 14, weight: .semibold))
+                            .font(interfaceFont(size: 14, weight: .semibold))
                             .foregroundStyle(accent)
                             .frame(width: 48, alignment: .leading)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(deadline.title)
-                                .font(.system(size: 11, weight: .semibold))
+                                .font(interfaceFont(size: 11, weight: .semibold))
                                 .foregroundStyle(primaryText)
                                 .lineLimit(1)
                             Text(deadline.source)
-                                .font(.system(size: 9.5, weight: .medium))
+                                .font(interfaceFont(size: 9.5, weight: .medium))
                                 .foregroundStyle(secondaryText)
                         }
                     }
@@ -998,10 +1077,10 @@ struct NotchBoardView: View {
     private var calendarPermissionState: some View {
         VStack(spacing: 9) {
             Text(calendarProvider.isDenied ? "Calendar access is off" : "See only what matters next")
-                .font(.system(size: 14, weight: .semibold))
+                .font(interfaceFont(size: 14, weight: .semibold))
                 .foregroundStyle(primaryText)
             Text(calendarProvider.isDenied ? "Open Privacy settings to allow upcoming event access." : "Connect once. Every iCloud and Google calendar enabled in Internet Accounts will appear here and stay live.")
-                .font(.system(size: 10.5))
+                .font(interfaceFont(size: 10.5))
                 .foregroundStyle(secondaryText)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 390)
@@ -1015,167 +1094,20 @@ struct NotchBoardView: View {
 
     private var settingsContent: some View {
         HStack(alignment: .top, spacing: 12) {
-            VStack(alignment: .leading, spacing: 8) {
-                settingsSectionTitle("IDENTITY")
-
-                HStack(spacing: 8) {
-                    TextField("Your name", text: $settingsPreferredName)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(primaryText)
-                        .padding(.horizontal, 10)
-                        .frame(height: 32)
-                        .background(groupedBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .stroke(Color.white.opacity(0.08), lineWidth: 1)
-                        )
-                        .onSubmit(saveIdentity)
-
-                    TextField("Workspace name", text: $settingsWorkspaceName)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(primaryText)
-                        .padding(.horizontal, 10)
-                        .frame(height: 32)
-                        .background(groupedBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .stroke(Color.white.opacity(0.08), lineWidth: 1)
-                        )
-                        .onSubmit(saveIdentity)
-
-                    Button("Save") {
-                        saveIdentity()
-                    }
-                    .buttonStyle(HeaderActionButtonStyle(accent: accent))
+            VStack(spacing: 5) {
+                ForEach(PersonalizePage.allCases) { page in
+                    personalizePageButton(page)
                 }
-
-                HStack(spacing: 8) {
-                    Button(personalization.photoURL == nil ? "Choose personal photo…" : "Replace photo…") {
-                        personalization.choosePhoto()
-                    }
-                    .buttonStyle(HeaderActionButtonStyle(accent: accent))
-
-                    if personalization.photoURL != nil {
-                        Button("Remove") {
-                            personalization.removePhoto()
-                        }
-                        .buttonStyle(HeaderActionButtonStyle(accent: accent))
-                    }
-                }
-
-                settingsSectionTitle("ACCENT")
-
-                HStack(spacing: 10) {
-                    ForEach(AccentPalette.allCases) { palette in
-                        Button {
-                            personalization.updateAccent(palette)
-                        } label: {
-                            Circle()
-                                .fill(palette.color)
-                                .frame(width: 20, height: 20)
-                                .padding(4)
-                                .overlay(
-                                    Circle()
-                                        .stroke(
-                                            personalization.accent == palette ? Color.white.opacity(0.88) : Color.white.opacity(0.12),
-                                            lineWidth: personalization.accent == palette ? 2 : 1
-                                        )
-                                )
-                                .contentShape(Circle())
-                        }
-                        .buttonStyle(RowControlButtonStyle())
-                        .help(palette.title)
-                        .accessibilityLabel("\(palette.title) accent")
-                        .accessibilityAddTraits(personalization.accent == palette ? [.isSelected] : [])
-                    }
-                }
+                Spacer(minLength: 0)
             }
-            .padding(12)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .background(contentSurface, in: RoundedRectangle(cornerRadius: contentRadius, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: contentRadius, style: .continuous)
-                    .stroke(contentBorder, lineWidth: 1)
-            )
+            .frame(width: 140)
 
-            VStack(alignment: .leading, spacing: 10) {
-                settingsSectionTitle("CALENDAR")
-
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(calendarProvider.isAuthorized ? "Apple + Google calendars" : "Calendar accounts")
-                            .font(.system(size: 11.5, weight: .semibold))
-                            .foregroundStyle(primaryText)
-                        Text(calendarProvider.isAuthorized ? "\(calendarProvider.accountCountLabel) · always in sync" : calendarProvider.message)
-                            .font(.system(size: 9.5))
-                            .foregroundStyle(secondaryText)
-                    }
-                    Spacer()
-                    Button(calendarProvider.isAuthorized ? "Accounts…" : calendarProvider.isDenied ? "Settings" : "Connect") {
-                        if calendarProvider.isDenied {
-                            calendarProvider.openPrivacySettings()
-                        } else if calendarProvider.isAuthorized {
-                            calendarProvider.openInternetAccounts()
-                        } else {
-                            calendarProvider.connectOrOpenSettings()
-                        }
-                    }
-                    .buttonStyle(HeaderActionButtonStyle(accent: accent))
-                }
-
-                settingsSectionTitle("PRIMARY GOAL")
-
-                HStack(spacing: 6) {
-                    goalTextField("What are you making true?", text: $primaryGoalTitle)
-
-                    Button("Save", action: savePrimaryGoal)
-                        .buttonStyle(HeaderActionButtonStyle(isEmphasized: true, accent: accent))
-                        .disabled(primaryGoalTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-
-                    if personalization.primaryGoal != nil {
-                        Button {
-                            personalization.clearPrimaryGoal()
-                            resetPrimaryGoalEditor()
-                        } label: {
-                            Image(systemName: "trash")
-                        }
-                        .buttonStyle(CloseButtonStyle())
-                        .help("Clear primary goal")
-                        .accessibilityLabel("Clear primary goal")
-                    }
-                }
-
-                HStack(spacing: 6) {
-                    Picker("Unit", selection: $primaryGoalUnit) {
-                        ForEach(GoalValueUnit.allCases) { unit in
-                            Text(unit.title).tag(unit)
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(width: 48)
-
-                    goalTextField("Now", text: $primaryGoalCurrent, width: 62)
-                    goalTextField("Target", text: $primaryGoalTarget, width: 70)
-                    goalTextField("Metric", text: $primaryGoalMetric)
-                }
-
-                HStack(spacing: 6) {
-                    Text("Finish line")
-                        .font(.system(size: 10.5, weight: .semibold))
-                        .foregroundStyle(secondaryText)
-
-                    Spacer(minLength: 4)
-
-                    Button("30d") { setPrimaryGoalDays(30) }
-                        .buttonStyle(HeaderActionButtonStyle(accent: accent))
-                    Button("60d") { setPrimaryGoalDays(60) }
-                        .buttonStyle(HeaderActionButtonStyle(accent: accent))
-
-                    DatePicker("", selection: $primaryGoalDate, in: Date()..., displayedComponents: .date)
-                        .labelsHidden()
-                        .frame(width: 96)
+            Group {
+                switch personalizePage {
+                case .profile: profileSettingsPage
+                case .appearance: appearanceSettingsPage
+                case .finishLine: finishLineSettingsPage
+                case .calendar: calendarSettingsPage
                 }
             }
             .padding(12)
@@ -1192,9 +1124,505 @@ struct NotchBoardView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    private func personalizePageButton(_ page: PersonalizePage) -> some View {
+        let isSelected = personalizePage == page
+        return Button {
+            if page != .finishLine { closeFinishDatePicker() }
+            withAnimation(.easeOut(duration: 0.16)) { personalizePage = page }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: page.systemImage)
+                    .frame(width: 16)
+                Text(page.title)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                if isSelected {
+                    Image(systemName: "checkmark")
+                        .font(interfaceFont(size: 9, weight: .bold))
+                }
+            }
+            .font(interfaceFont(size: 11.5, weight: .semibold))
+            .foregroundStyle(Color.white.opacity(isSelected ? 0.98 : 0.76))
+            .padding(.horizontal, 10)
+            .frame(maxWidth: .infinity, minHeight: 34)
+            .background(
+                isSelected ? accent.opacity(0.24) : groupedBackground,
+                in: RoundedRectangle(cornerRadius: max(6, contentRadius - 4), style: .continuous)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: max(6, contentRadius - 4), style: .continuous)
+                    .stroke(isSelected ? accent.opacity(0.48) : Color.white.opacity(0.06), lineWidth: 1)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(StatusTabButtonStyle())
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+    }
+
+    private var profileSettingsPage: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            settingsPageHeading("Make it yours", detail: "Your greeting, workspace, and vision image.")
+
+            HStack(spacing: 8) {
+                identityTextField("Your name", text: $settingsPreferredName)
+                identityTextField("Workspace name", text: $settingsWorkspaceName)
+                Button("Save", action: saveIdentity)
+                    .buttonStyle(HeaderActionButtonStyle(isEmphasized: true, accent: accent))
+            }
+
+            HStack(spacing: 10) {
+                if let url = personalization.photoURL,
+                   let image = NSImage(contentsOf: url) {
+                    Image(nsImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 74, height: 74)
+                        .clipShape(RoundedRectangle(cornerRadius: contentRadius, style: .continuous))
+                } else {
+                    RoundedRectangle(cornerRadius: contentRadius, style: .continuous)
+                        .fill(groupedBackground)
+                        .frame(width: 74, height: 74)
+                        .overlay(Image(systemName: "photo").foregroundStyle(secondaryText))
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Keep the why close")
+                        .font(interfaceFont(size: 13, weight: .bold))
+                        .foregroundStyle(primaryText)
+                    Text("Choose a person, place, dream, logo, or finish line that matters to you.")
+                        .font(interfaceFont(size: 11, weight: .medium))
+                        .foregroundStyle(secondaryText)
+                        .lineLimit(2)
+                    HStack(spacing: 8) {
+                        Button(personalization.photoURL == nil ? "Choose photo…" : "Replace…", action: choosePhotoWithLease)
+                            .buttonStyle(HeaderActionButtonStyle(accent: accent))
+                        if personalization.photoURL != nil {
+                            Button("Remove", action: personalization.removePhoto)
+                                .buttonStyle(HeaderActionButtonStyle(accent: accent))
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private var appearanceSettingsPage: some View {
+        HStack(alignment: .top, spacing: 14) {
+            VStack(alignment: .leading, spacing: 7) {
+                settingsPageHeading("Style", detail: "Start somewhere, then mix anything.")
+
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 5) {
+                    ForEach(AppearancePresetID.builtIns, id: \.rawValue) { preset in
+                        appearanceOption(
+                            preset.title,
+                            isSelected: personalization.appearance.presetID == preset,
+                            action: { personalization.applyPreset(preset) }
+                        )
+                    }
+                }
+
+                settingsSectionTitle("ACCENT")
+
+                HStack(spacing: 6) {
+                    appearanceOption("Solid", isSelected: personalization.appearance.accent.mode == .solid) {
+                        personalization.updateAccentMode(.solid)
+                    }
+                    appearanceOption("Gradient", isSelected: personalization.appearance.accent.mode == .gradient) {
+                        personalization.updateAccentMode(.gradient)
+                    }
+                }
+
+                Text("Full spectrum · exact 8-bit RGB + hex")
+                    .font(interfaceFont(size: 11, weight: .semibold))
+                    .foregroundStyle(Color.white.opacity(0.78))
+
+                HStack(spacing: 8) {
+                    ColorPicker("First colour", selection: accentColorBinding(stopIndex: 0), supportsOpacity: false)
+                        .labelsHidden()
+                        .frame(width: 30)
+                    Text(personalization.appearance.accent.primaryColor.hex)
+                        .font(interfaceFont(size: 10.5, weight: .semibold))
+                        .foregroundStyle(primaryText)
+
+                    if personalization.appearance.accent.mode == .gradient {
+                        ColorPicker("Second colour", selection: accentColorBinding(stopIndex: 1), supportsOpacity: false)
+                            .labelsHidden()
+                            .frame(width: 30)
+                        Text(personalization.appearance.accent.secondaryColor.hex)
+                            .font(interfaceFont(size: 10.5, weight: .semibold))
+                            .foregroundStyle(primaryText)
+                    }
+                }
+
+                if personalization.appearance.accent.mode == .gradient {
+                    HStack(spacing: 8) {
+                        Slider(value: accentAngleBinding, in: 0...359, step: 1)
+                            .tint(accent)
+                        Text("\(Int(personalization.appearance.accent.angleDegrees.rounded()))°")
+                            .font(interfaceFont(size: 10.5, weight: .bold))
+                            .foregroundStyle(primaryText)
+                            .frame(width: 34, alignment: .trailing)
+                        RoundedRectangle(cornerRadius: max(3, contentRadius - 5), style: .continuous)
+                            .fill(theme.accentGradient)
+                            .frame(width: 52, height: 18)
+                    }
+                } else {
+                    RoundedRectangle(cornerRadius: max(3, contentRadius - 5), style: .continuous)
+                        .fill(theme.accentGradient)
+                        .frame(height: 18)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+
+            Divider().overlay(Color.white.opacity(0.10))
+
+            VStack(alignment: .leading, spacing: 7) {
+                settingsSectionTitle("MIX & MATCH")
+                appearanceMenuRow(
+                    "Display font",
+                    options: FontChoiceID.builtIns,
+                    selected: personalization.appearance.displayFontID,
+                    title: { $0.title },
+                    action: personalization.updateDisplayFont
+                )
+                appearanceMenuRow(
+                    "UI font",
+                    options: FontChoiceID.builtIns,
+                    selected: personalization.appearance.interfaceFontID,
+                    title: { $0.title },
+                    action: personalization.updateInterfaceFont
+                )
+                appearanceMenuRow(
+                    "Move cards",
+                    options: NodeStyleID.builtIns,
+                    selected: personalization.appearance.nodeStyleID,
+                    title: { $0.title },
+                    action: personalization.updateNodeStyle
+                )
+                appearanceMenuRow(
+                    "Surface",
+                    options: SurfaceStyleID.builtIns,
+                    selected: personalization.appearance.surfaceStyleID,
+                    title: { $0.title },
+                    action: personalization.updateSurfaceStyle
+                )
+            }
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+    }
+
+    private var finishLineSettingsPage: some View {
+        VStack(alignment: .leading, spacing: 11) {
+            settingsPageHeading("Primary finish line", detail: "One measurable thing worth checking every day.")
+
+            HStack(spacing: 7) {
+                goalTextField("What are you making true?", text: $primaryGoalTitle)
+                Button("Save", action: savePrimaryGoal)
+                    .buttonStyle(HeaderActionButtonStyle(isEmphasized: true, accent: accent))
+                    .disabled(primaryGoalTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                if personalization.primaryGoal != nil {
+                    Button {
+                        personalization.clearPrimaryGoal()
+                        resetPrimaryGoalEditor()
+                    } label: {
+                        Image(systemName: "trash")
+                    }
+                    .buttonStyle(CloseButtonStyle())
+                    .help("Clear primary goal")
+                }
+            }
+
+            HStack(spacing: 7) {
+                HStack(spacing: 4) {
+                    ForEach(GoalValueUnit.allCases) { unit in
+                        appearanceOption(unit.title, isSelected: primaryGoalUnit == unit) {
+                            primaryGoalUnit = unit
+                        }
+                    }
+                }
+                goalTextField("Now", text: $primaryGoalCurrent, width: 72)
+                goalTextField("Target", text: $primaryGoalTarget, width: 82)
+                goalTextField("Metric", text: $primaryGoalMetric)
+            }
+
+            HStack(spacing: 7) {
+                Text("Target date")
+                    .font(interfaceFont(size: 12, weight: .bold))
+                    .foregroundStyle(primaryText)
+                Spacer()
+                Button("30 days") { setPrimaryGoalDays(30) }
+                    .buttonStyle(HeaderActionButtonStyle(accent: accent))
+                Button("60 days") { setPrimaryGoalDays(60) }
+                    .buttonStyle(HeaderActionButtonStyle(accent: accent))
+                Button(finishDateLabel, action: openFinishDatePicker)
+                    .buttonStyle(HeaderActionButtonStyle(isEmphasized: true, accent: accent))
+                    .popover(isPresented: $isFinishDatePickerPresented, arrowEdge: .top) {
+                        finishDatePopover
+                    }
+            }
+
+            if let goal = personalization.primaryGoal {
+                HStack(spacing: 8) {
+                    RoundedRectangle(cornerRadius: 3)
+                        .fill(theme.accentGradient)
+                        .frame(width: 54, height: 6)
+                    Text("\(goal.title) · \(daysLeftLabel(goal.dueAt))")
+                        .font(interfaceFont(size: 11.5, weight: .semibold))
+                        .foregroundStyle(primaryText)
+                        .lineLimit(1)
+                }
+            }
+        }
+    }
+
+    private var finishDatePopover: some View {
+        VStack(spacing: 10) {
+            DatePicker("Target date", selection: $finishDateDraft, in: Date()..., displayedComponents: .date)
+                .datePickerStyle(.graphical)
+                .labelsHidden()
+            HStack {
+                Button("Cancel", action: closeFinishDatePicker)
+                Spacer()
+                Button("Done") {
+                    primaryGoalDate = finishDateDraft
+                    savePrimaryGoal()
+                    closeFinishDatePicker()
+                }
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(12)
+        .frame(width: 260)
+        .onDisappear(perform: releaseFinishDateInteraction)
+    }
+
+    private var calendarSettingsPage: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            settingsPageHeading("Calendar", detail: "Connect once. Apple and every enabled Google account stay live.")
+
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(calendarProvider.isAuthorized ? "Calendar is connected" : "Calendar access")
+                        .font(interfaceFont(size: 14, weight: .bold))
+                        .foregroundStyle(primaryText)
+                    Text(calendarProvider.isAuthorized ? calendarProvider.accountCountLabel : calendarProvider.message)
+                        .font(interfaceFont(size: 11.5, weight: .semibold))
+                        .foregroundStyle(secondaryText)
+                }
+                Spacer()
+                Button(calendarProvider.isAuthorized ? "Manage accounts…" : calendarProvider.isDenied ? "Privacy settings" : "Connect") {
+                    if calendarProvider.isDenied {
+                        calendarProvider.openPrivacySettings()
+                    } else if calendarProvider.isAuthorized {
+                        calendarProvider.openInternetAccounts()
+                    } else {
+                        calendarProvider.connectOrOpenSettings()
+                    }
+                }
+                .buttonStyle(HeaderActionButtonStyle(isEmphasized: !calendarProvider.isAuthorized, accent: accent))
+            }
+
+            if calendarProvider.isAuthorized {
+                HStack(spacing: 6) {
+                    ForEach(calendarProvider.accounts.prefix(4)) { account in
+                        calendarAccountChip(account)
+                    }
+                }
+            }
+
+            Text("Founder’s Office reads upcoming event titles and times from the calendars already enabled in macOS. It does not reconnect each time the notch opens.")
+                .font(interfaceFont(size: 11.5, weight: .medium))
+                .foregroundStyle(secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func settingsPageHeading(_ title: String, detail: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(displayFont(size: 20))
+                .foregroundStyle(primaryText)
+            Text(detail)
+                .font(interfaceFont(size: 11.5, weight: .semibold))
+                .foregroundStyle(secondaryText)
+        }
+    }
+
+    private func identityTextField(_ placeholder: String, text: Binding<String>) -> some View {
+        TextField(placeholder, text: text)
+            .textFieldStyle(.plain)
+            .font(interfaceFont(size: 12, weight: .medium))
+            .foregroundStyle(primaryText)
+            .padding(.horizontal, 10)
+            .frame(height: 32)
+            .background(groupedBackground, in: RoundedRectangle(cornerRadius: max(6, contentRadius - 4), style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: max(6, contentRadius - 4), style: .continuous)
+                    .stroke(Color.white.opacity(0.08), lineWidth: 1)
+            )
+            .onSubmit(saveIdentity)
+    }
+
+    private func appearanceOption(
+        _ title: String,
+        isSelected: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Text(title)
+                    .lineLimit(1)
+                if isSelected {
+                    Image(systemName: "checkmark")
+                        .font(interfaceFont(size: 8.5, weight: .bold))
+                }
+            }
+            .font(interfaceFont(size: 10.5, weight: .semibold))
+            .foregroundStyle(Color.white.opacity(isSelected ? 0.98 : 0.78))
+            .padding(.horizontal, 8)
+            .frame(maxWidth: .infinity, minHeight: 27)
+            .background(
+                isSelected ? accent.opacity(0.25) : groupedBackground,
+                in: RoundedRectangle(cornerRadius: max(4, contentRadius - 6), style: .continuous)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: max(4, contentRadius - 6), style: .continuous)
+                    .stroke(isSelected ? accent.opacity(0.50) : Color.white.opacity(0.07), lineWidth: 1)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(StatusTabButtonStyle())
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+    }
+
+    private func appearanceMenuRow<ID: AppearanceIdentifier>(
+        _ label: String,
+        options: [ID],
+        selected: ID,
+        title: @escaping (ID) -> String,
+        action: @escaping (ID) -> Void
+    ) -> some View {
+        ZStack {
+            HStack(spacing: 8) {
+                Text(label)
+                    .font(interfaceFont(size: 11.5, weight: .bold))
+                    .foregroundStyle(primaryText)
+                Spacer(minLength: 8)
+                Text(title(selected))
+                    .font(interfaceFont(size: 11.5, weight: .semibold))
+                    .foregroundStyle(accent)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(interfaceFont(size: 9.5, weight: .bold))
+                    .foregroundStyle(secondaryText)
+            }
+
+            Menu {
+                ForEach(options, id: \.rawValue) { option in
+                    Button {
+                        action(option)
+                    } label: {
+                        HStack {
+                            Text(title(option))
+                            if option == selected {
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    }
+                }
+            } label: {
+                Color.clear
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .contentShape(Rectangle())
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .accessibilityLabel(label)
+            .accessibilityValue(title(selected))
+        }
+        .padding(.horizontal, 10)
+        .frame(maxWidth: .infinity, minHeight: 37)
+        .background(
+            groupedBackground,
+            in: RoundedRectangle(cornerRadius: max(6, contentRadius - 4), style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: max(6, contentRadius - 4), style: .continuous)
+                .stroke(Color.white.opacity(0.075), lineWidth: 1)
+        )
+        .contentShape(Rectangle())
+    }
+
+    private func accentColorBinding(stopIndex: Int) -> Binding<Color> {
+        Binding(
+            get: {
+                let stops = personalization.appearance.accent.normalizedStops
+                return stops[min(stopIndex, stops.count - 1)].color.swiftUIColor
+            },
+            set: { color in
+                guard let rgb = RGB24Color(swiftUIColor: color) else { return }
+                personalization.updateAccentColor(rgb, stopIndex: stopIndex)
+            }
+        )
+    }
+
+    private var accentAngleBinding: Binding<Double> {
+        Binding(
+            get: { personalization.appearance.accent.angleDegrees },
+            set: personalization.updateAccentAngle
+        )
+    }
+
+    private var finishDateLabel: String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_GB")
+        formatter.dateFormat = "d MMM yyyy"
+        return formatter.string(from: primaryGoalDate)
+    }
+
+    private func openFinishDatePicker() {
+        if finishDateInteractionLease == nil {
+            finishDateInteractionLease = presentation.beginInteraction("finish-line-date")
+        }
+        finishDateDraft = primaryGoalDate
+        isFinishDatePickerPresented = true
+    }
+
+    private func closeFinishDatePicker() {
+        isFinishDatePickerPresented = false
+        releaseFinishDateInteraction()
+    }
+
+    private func releaseFinishDateInteraction() {
+        guard let lease = finishDateInteractionLease else { return }
+        presentation.endInteraction(lease)
+        finishDateInteractionLease = nil
+    }
+
+    private func choosePhotoWithLease() {
+        if photoInteractionLease == nil {
+            photoInteractionLease = presentation.beginInteraction("photo-picker")
+        }
+        personalization.choosePhoto {
+            Task { @MainActor in
+                guard let lease = photoInteractionLease else { return }
+                presentation.endInteraction(lease)
+                photoInteractionLease = nil
+            }
+        }
+    }
+
+    private func releaseTransientInteractions() {
+        releaseFinishDateInteraction()
+        if let lease = photoInteractionLease {
+            presentation.endInteraction(lease)
+            photoInteractionLease = nil
+        }
+    }
+
     private func settingsSectionTitle(_ title: String) -> some View {
         Text(title)
-            .font(.system(size: 10, weight: .bold))
+            .font(interfaceFont(size: 10.5, weight: .bold))
             .tracking(0.35)
             .foregroundStyle(secondaryText)
     }
@@ -1206,7 +1634,7 @@ struct NotchBoardView: View {
     ) -> some View {
         TextField(placeholder, text: text)
             .textFieldStyle(.plain)
-            .font(.system(size: 11, weight: .medium))
+            .font(interfaceFont(size: 11.5, weight: .medium))
             .foregroundStyle(primaryText)
             .padding(.horizontal, 8)
             .frame(width: width, height: 30)
@@ -1225,7 +1653,7 @@ struct NotchBoardView: View {
             Text(account.title)
                 .lineLimit(1)
         }
-        .font(.system(size: 9.5, weight: .medium))
+        .font(interfaceFont(size: 9.5, weight: .medium))
         .foregroundStyle(primaryText)
         .padding(.horizontal, 7)
         .frame(height: 22)
@@ -1261,7 +1689,7 @@ struct NotchBoardView: View {
 
             Spacer()
         }
-        .font(.system(size: 10.5, weight: .medium))
+        .font(interfaceFont(size: 10.5, weight: .medium))
         .foregroundStyle(secondaryText)
         .padding(.horizontal, 22)
         .frame(height: 38)
@@ -1316,6 +1744,7 @@ struct NotchBoardView: View {
     }
 
     private func dismissSettings() {
+        closeFinishDatePicker()
         saveIdentity()
         withAnimation(.spring(response: 0.30, dampingFraction: 0.84)) {
             isSettingsPresented = false
@@ -1325,6 +1754,7 @@ struct NotchBoardView: View {
     private func select(_ section: BoardSection) {
         guard section != selectedSection || isSettingsPresented else { return }
         if isSettingsPresented {
+            closeFinishDatePicker()
             saveIdentity()
         }
         if section == .calendar {
@@ -1506,6 +1936,7 @@ struct NotchBoardView: View {
 }
 
 private struct LoopRow: View {
+    @Environment(\.founderTheme) private var theme
     let item: OpenLoop
     let accent: Color
     let onToggle: () -> Void
@@ -1523,7 +1954,7 @@ private struct LoopRow: View {
         HStack(spacing: 12) {
             Button(action: onToggle) {
                 Image(systemName: item.status == .done ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 19, weight: .medium))
+                    .font(theme.interfaceFont(size: 19, weight: .medium))
                     .foregroundStyle(item.status == .done ? Color.green : priorityColor)
                     .frame(width: 34, height: 34)
                     .background(isHovered ? priorityColor.opacity(0.09) : Color.clear, in: Circle())
@@ -1535,14 +1966,14 @@ private struct LoopRow: View {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 8) {
                     Text(item.priority.rawValue)
-                        .font(.system(size: 9, weight: .semibold))
+                        .font(theme.interfaceFont(size: 9, weight: .semibold))
                         .foregroundStyle(priorityColor)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 3)
                         .background(priorityColor.opacity(0.12), in: Capsule())
 
                     Text(item.title)
-                        .font(.system(size: 13.5, weight: .semibold))
+                        .font(theme.interfaceFont(size: 13.5, weight: .semibold))
                         .foregroundStyle(primaryText.opacity(item.status == .done ? 0.55 : 1))
                         .strikethrough(item.status == .done, color: secondaryText)
                         .lineLimit(1)
@@ -1550,7 +1981,7 @@ private struct LoopRow: View {
 
                 if !item.details.isEmpty {
                     Text(item.details)
-                        .font(.system(size: 10.5, weight: .regular))
+                        .font(theme.interfaceFont(size: 10.5, weight: .regular))
                         .foregroundStyle(secondaryText)
                         .lineLimit(1)
                 }
@@ -1560,7 +1991,7 @@ private struct LoopRow: View {
 
             if let dueAt = item.dueAt {
                 Text(dueLabel(dueAt))
-                    .font(.system(size: 10, weight: .medium))
+                    .font(theme.interfaceFont(size: 10, weight: .medium))
                     .foregroundStyle(isOverdue(dueAt) && item.status != .done ? Color.red.opacity(0.9) : secondaryText)
             }
 
@@ -1581,7 +2012,7 @@ private struct LoopRow: View {
                 Button("Delete task", role: .destructive, action: onDelete)
             } label: {
                 Image(systemName: "ellipsis")
-                    .font(.system(size: 13, weight: .bold))
+                    .font(theme.interfaceFont(size: 13, weight: .bold))
                     .foregroundStyle(secondaryText)
                     .frame(width: 34, height: 34)
                     .background(isHovered ? Color.white.opacity(0.07) : Color.clear, in: Circle())
@@ -1652,9 +2083,11 @@ private struct CodexRunFooter: View {
 }
 
 private struct AppleNavigationButton: View {
+    @Environment(\.founderTheme) private var theme
     let icon: ClayIconName
     let isSelected: Bool
     let accent: Color
+    var secondaryAccent: Color? = nil
     let label: String
     let action: () -> Void
 
@@ -1664,7 +2097,7 @@ private struct AppleNavigationButton: View {
         Button(action: action) {
             Image(systemName: icon.systemFallback)
                 .symbolRenderingMode(.monochrome)
-                .font(.system(size: 13, weight: .semibold))
+                .font(theme.interfaceFont(size: 13, weight: .semibold))
                 .foregroundStyle(Color.white.opacity(isSelected ? 0.98 : (isHovered ? 0.92 : 0.68)))
                 .frame(width: 42, height: 28)
                 .background(
@@ -1673,6 +2106,19 @@ private struct AppleNavigationButton: View {
                         : Color.white.opacity(isHovered ? 0.10 : 0.045),
                     in: RoundedRectangle(cornerRadius: 8, style: .continuous)
                 )
+                .overlay {
+                    if isSelected {
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(
+                                LinearGradient(
+                                    colors: [accent, secondaryAccent ?? accent],
+                                    startPoint: .leading,
+                                    endPoint: .trailing
+                                )
+                            )
+                            .opacity(0.20)
+                    }
+                }
                 .overlay(
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
                         .stroke(
@@ -1698,12 +2144,13 @@ private struct AppleNavigationButton: View {
 }
 
 private struct HeaderActionButtonStyle: ButtonStyle {
+    @Environment(\.founderTheme) private var theme
     var isEmphasized = false
     var accent = Color(nsColor: .systemBlue)
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 11, weight: .semibold))
+            .font(theme.interfaceFont(size: 11, weight: .semibold))
             .foregroundStyle(isEmphasized ? Color.white : Color.white.opacity(configuration.isPressed ? 0.92 : 0.68))
             .padding(.horizontal, 11)
             .frame(height: 28)
@@ -1741,11 +2188,12 @@ private struct RowControlButtonStyle: ButtonStyle {
 }
 
 private struct FooterActionButtonStyle: ButtonStyle {
+    @Environment(\.founderTheme) private var theme
     let accent: Color
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 10, weight: .semibold))
+            .font(theme.interfaceFont(size: 10, weight: .semibold))
             .foregroundStyle(accent.opacity(configuration.isPressed ? 0.72 : 1))
             .padding(.horizontal, 6)
             .frame(height: 24)
@@ -1756,9 +2204,10 @@ private struct FooterActionButtonStyle: ButtonStyle {
 }
 
 private struct CloseButtonStyle: ButtonStyle {
+    @Environment(\.founderTheme) private var theme
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 10.5, weight: .semibold))
+            .font(theme.interfaceFont(size: 10.5, weight: .semibold))
             .foregroundStyle(Color.white.opacity(configuration.isPressed ? 0.94 : 0.6))
             .frame(width: 28, height: 28)
             .background(Color.white.opacity(configuration.isPressed ? 0.11 : 0.055), in: Circle())

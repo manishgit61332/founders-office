@@ -5,14 +5,16 @@ import UIKit
 struct HomeView: View {
     @EnvironmentObject private var model: AppModel
 
+    private var appearance: AppearancePreferences { model.personalization.resolvedAppearance }
+
     var body: some View {
         List {
             Section {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(greeting)
-                        .font(.founderDisplay)
+                        .font(model.personalization.resolvedAppearance.displayFont(size: 40))
                     Text("What moves the office forward today?")
-                        .font(.headline)
+                        .font(appearance.interfaceFont(size: 17, weight: .semibold))
                 }
                 .padding(.vertical, 4)
             }
@@ -70,11 +72,12 @@ struct HomeView: View {
                         .scaledToFill()
                         .frame(maxWidth: .infinity)
                         .frame(height: 220)
-                        .clipShape(.rect(cornerRadius: 18))
+                        .clipShape(.rect(cornerRadius: appearance.visionCornerRadius))
                         .listRowInsets(EdgeInsets())
                 }
             }
         }
+        .founderSurface(appearance)
         .navigationTitle(model.personalization.resolvedWorkspaceName)
     }
 
@@ -85,7 +88,11 @@ struct HomeView: View {
 }
 
 private struct PrimaryGoalCard: View {
+    @EnvironmentObject private var model: AppModel
+
     let goal: PrimaryGoal
+
+    private var appearance: AppearancePreferences { model.personalization.resolvedAppearance }
 
     private var progress: Double? {
         guard let current = goal.currentValue,
@@ -98,17 +105,17 @@ private struct PrimaryGoalCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(goal.title)
-                .font(.title3.weight(.semibold))
+                .font(appearance.interfaceFont(size: 20, weight: .semibold))
 
             if let current = goal.currentValue, let target = goal.targetValue {
                 HStack(alignment: .firstTextBaseline) {
                     Text(goal.unit.format(current))
-                        .font(.title2.weight(.bold))
+                        .font(appearance.displayFont(size: 25, weight: .bold))
                     Text("of \(goal.unit.format(target)) \(goal.metric)")
-                        .font(.body)
+                        .font(appearance.interfaceFont(size: 16))
                     Spacer()
                     Text(goal.dueAt, style: .relative)
-                        .font(.headline)
+                        .font(appearance.interfaceFont(size: 16, weight: .semibold))
                 }
             }
 
@@ -116,27 +123,41 @@ private struct PrimaryGoalCard: View {
                 ProgressView(value: progress)
             }
         }
-        .padding(.vertical, 4)
+        .padding(12)
+        .background(
+            appearance.nodeBackgroundColor,
+            in: RoundedRectangle(cornerRadius: appearance.nodeCornerRadius, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: appearance.nodeCornerRadius, style: .continuous)
+                .stroke(appearance.nodeBorderColor, lineWidth: 1)
+        )
+        .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
+        .listRowBackground(Color.clear)
     }
 }
 
 struct TaskRow: View {
+    @EnvironmentObject private var model: AppModel
+
     let loop: OpenLoop
+
+    private var appearance: AppearancePreferences { model.personalization.resolvedAppearance }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(alignment: .firstTextBaseline) {
                 Text(loop.title)
-                    .font(.headline)
+                    .font(appearance.interfaceFont(size: 17, weight: .semibold))
                 Spacer()
                 Text(loop.priority.rawValue)
-                    .font(.caption.weight(.bold))
+                    .font(appearance.interfaceFont(size: 12, weight: .bold))
                     .foregroundStyle(.secondary)
             }
 
             if !loop.details.isEmpty {
                 Text(loop.details)
-                    .font(.body)
+                    .font(appearance.interfaceFont(size: 15))
                     .lineLimit(2)
             }
 
@@ -146,7 +167,7 @@ struct TaskRow: View {
                 } icon: {
                     Image(systemName: "calendar")
                 }
-                .font(.subheadline.weight(.medium))
+                .font(appearance.interfaceFont(size: 14, weight: .medium))
                 .foregroundStyle(
                     dueAt < .now && loop.status != .done
                         ? Color.red
@@ -154,6 +175,17 @@ struct TaskRow: View {
                 )
             }
         }
-        .padding(.vertical, 4)
+        .padding(12)
+        .background(
+            appearance.nodeBackgroundColor,
+            in: RoundedRectangle(cornerRadius: appearance.nodeCornerRadius, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: appearance.nodeCornerRadius, style: .continuous)
+                .stroke(appearance.nodeBorderColor, lineWidth: 1)
+        )
+        .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
     }
 }

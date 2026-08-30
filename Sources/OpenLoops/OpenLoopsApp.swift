@@ -87,6 +87,10 @@ final class FoundersOfficeAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    func applicationWillTerminate(_ notification: Notification) {
+        notchController?.prepareForTermination()
+    }
+
     private func registerBundledFonts() {
         guard let fontURL = Bundle.main.url(
             forResource: "InstrumentSerif-Regular",

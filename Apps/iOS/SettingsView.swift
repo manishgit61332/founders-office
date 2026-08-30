@@ -11,10 +11,32 @@ struct SettingsView: View {
     @State private var preferredNameDraft = ""
     @State private var workspaceNameDraft = ""
 
-    private var accent: Binding<AccentPalette> {
+    private var appearance: AppearancePreferences { model.personalization.resolvedAppearance }
+
+    private var accentMode: Binding<AccentMode> {
         Binding(
-            get: { model.personalization.accent },
-            set: model.updateAccent
+            get: { model.personalization.resolvedAppearance.accent.mode },
+            set: model.updateAccentMode
+        )
+    }
+
+    private var accentAngle: Binding<Double> {
+        Binding(
+            get: { model.personalization.resolvedAppearance.accent.angleDegrees },
+            set: model.updateAccentAngle
+        )
+    }
+
+    private func accentColor(stopIndex: Int) -> Binding<Color> {
+        Binding(
+            get: {
+                let stops = model.personalization.resolvedAppearance.accent.normalizedStops
+                return stops[min(stopIndex, stops.count - 1)].color.swiftUIColor
+            },
+            set: { color in
+                guard let rgb = RGB24Color(swiftUIColor: color) else { return }
+                model.updateAccentColor(rgb, stopIndex: stopIndex)
+            }
         )
     }
 
@@ -46,9 +68,66 @@ struct SettingsView: View {
             }
 
             Section("Appearance") {
-                Picker("Accent", selection: accent) {
-                    ForEach(AccentPalette.allCases) { palette in
-                        Text(palette.title).tag(palette)
+                Picker("Starting style", selection: Binding(
+                    get: { model.personalization.resolvedAppearance.presetID },
+                    set: model.applyAppearancePreset
+                )) {
+                    ForEach(AppearancePresetID.builtIns, id: \.rawValue) { preset in
+                        Text(preset.title).tag(preset)
+                    }
+                    if model.personalization.resolvedAppearance.presetID == .custom {
+                        Text("Custom").tag(AppearancePresetID.custom)
+                    }
+                }
+
+                Picker("Accent", selection: accentMode) {
+                    ForEach(AccentMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                ColorPicker("First colour", selection: accentColor(stopIndex: 0), supportsOpacity: false)
+                if model.personalization.resolvedAppearance.accent.mode == .gradient {
+                    ColorPicker("Second colour", selection: accentColor(stopIndex: 1), supportsOpacity: false)
+                    LabeledContent("Direction") {
+                        Slider(value: accentAngle, in: 0...359, step: 1)
+                    }
+                }
+
+                Picker("Display font", selection: Binding(
+                    get: { model.personalization.resolvedAppearance.displayFontID },
+                    set: model.updateDisplayFont
+                )) {
+                    ForEach(FontChoiceID.builtIns, id: \.rawValue) { font in
+                        Text(font.title).tag(font)
+                    }
+                }
+
+                Picker("Interface font", selection: Binding(
+                    get: { model.personalization.resolvedAppearance.interfaceFontID },
+                    set: model.updateInterfaceFont
+                )) {
+                    ForEach(FontChoiceID.builtIns, id: \.rawValue) { font in
+                        Text(font.title).tag(font)
+                    }
+                }
+
+                Picker("Move cards", selection: Binding(
+                    get: { model.personalization.resolvedAppearance.nodeStyleID },
+                    set: model.updateNodeStyle
+                )) {
+                    ForEach(NodeStyleID.builtIns, id: \.rawValue) { style in
+                        Text(style.title).tag(style)
+                    }
+                }
+
+                Picker("Surface", selection: Binding(
+                    get: { model.personalization.resolvedAppearance.surfaceStyleID },
+                    set: model.updateSurfaceStyle
+                )) {
+                    ForEach(SurfaceStyleID.builtIns, id: \.rawValue) { surface in
+                        Text(surface.title).tag(surface)
                     }
                 }
             }
@@ -96,6 +175,7 @@ struct SettingsView: View {
                 }
             }
         }
+        .founderSurface(appearance)
         .navigationTitle("Settings")
         .onAppear {
             preferredNameDraft = model.personalization.resolvedPreferredName ?? ""
@@ -125,6 +205,8 @@ private struct PrimaryGoalEditor: View {
     @State private var targetValue: Double
     @State private var unit: GoalValueUnit
     @State private var dueAt: Date
+
+    private var appearance: AppearancePreferences { model.personalization.resolvedAppearance }
 
     init(goal: PrimaryGoal?) {
         existingID = goal?.id ?? UUID()
@@ -175,6 +257,7 @@ private struct PrimaryGoalEditor: View {
                 }
             }
         }
+        .founderSurface(appearance)
         .navigationTitle("Primary goal")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
