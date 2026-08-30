@@ -149,6 +149,7 @@ struct NotchBoardView: View {
         .flatMap(LoopStatus.init(rawValue:)) ?? .doing
     @State private var selectedCalendarDay = Calendar.current.startOfDay(for: Date())
     @State private var isAdding = false
+    @State private var isShowingPreviousTasks = ProcessInfo.processInfo.environment["OPENLOOPS_PREVIEW_PREVIOUS_TASKS"] == "1"
     @State private var isSettingsPresented = ProcessInfo.processInfo.environment["OPENLOOPS_PREVIEW_SETTINGS"] == "1"
     @State private var personalizePage: PersonalizePage = ProcessInfo.processInfo.environment["OPENLOOPS_PREVIEW_PERSONALIZE_PAGE"]
         .flatMap(PersonalizePage.init(rawValue:)) ?? .profile
@@ -767,54 +768,193 @@ struct NotchBoardView: View {
     }
 
     private var loopsContent: some View {
+        TimelineView(.periodic(from: .now, by: 60)) { context in
+            groupedLoopsContent(
+                MovePresentation(items: store.items, now: context.date, calendar: .current)
+            )
+        }
+    }
+
+    private func groupedLoopsContent(_ movePresentation: MovePresentation) -> some View {
         VStack(spacing: 7) {
             if isAdding {
                 addComposer
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
 
-            let visibleItems = store.items(in: selectedStatus)
-            if visibleItems.isEmpty {
-                emptyState
+            if selectedStatus == .done {
+                doneLoopsContent(movePresentation)
             } else {
-                ScrollView(showsIndicators: false) {
-                    LazyVStack(spacing: 0) {
-                        ForEach(Array(visibleItems.enumerated()), id: \.element.id) { index, item in
-                            LoopRow(
-                                item: item,
-                                accent: accent,
-                                onToggle: { store.toggleCompletion(item) },
-                                onMove: { status in store.move(item, to: status) },
-                                codexAction: codexRunner.action(for: item),
-                                isCodexBusy: codexRunner.isRunning,
-                                onRunWithCodex: { codexRunner.run(item) },
-                                onDelete: {
-                                    NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .now)
-                                    withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
-                                        store.delete(item)
-                                    }
-                                }
-                            )
-
-                            if index < visibleItems.count - 1 {
-                                Divider()
-                                    .overlay(Color.white.opacity(0.065))
-                                    .padding(.leading, 46)
-                            }
-                        }
-                    }
-                    .background(contentSurface, in: RoundedRectangle(cornerRadius: contentRadius, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: contentRadius, style: .continuous)
-                            .stroke(contentBorder, lineWidth: 1)
-                    )
-                }
+                activeLoopsContent(movePresentation)
             }
         }
         .padding(.horizontal, 20)
         .padding(.top, 9)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipped()
+    }
+
+    @ViewBuilder
+    private func activeLoopsContent(_ movePresentation: MovePresentation) -> some View {
+        let groups = movePresentation.activeGroups.compactMap { group -> ActiveMoveGroup? in
+            let items = group.items.filter { $0.status == selectedStatus }
+            return items.isEmpty ? nil : ActiveMoveGroup(bucket: group.bucket, items: items)
+        }
+
+        if groups.isEmpty {
+            emptyState
+        } else {
+            ScrollView(showsIndicators: false) {
+                LazyVStack(spacing: 10) {
+                    ForEach(groups) { group in
+                        moveSection(
+                            title: group.bucket.title,
+                            items: group.items,
+                            showsCompletionDate: false
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func doneLoopsContent(_ movePresentation: MovePresentation) -> some View {
+        if isShowingPreviousTasks {
+            HistoryNavigationButton(
+                title: "Back to recent",
+                detail: nil,
+                leadingSystemImage: "chevron.left",
+                trailingSystemImage: nil,
+                accent: accent
+            ) {
+                NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+                withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
+                    isShowingPreviousTasks = false
+                }
+            }
+            .accessibilityLabel("Back to completions from today and yesterday")
+
+            if movePresentation.olderCompleted.isEmpty {
+                compactHistoryEmptyState(
+                    title: "No previous tasks",
+                    message: "Older completed work will stay here."
+                )
+            } else {
+                ScrollView(showsIndicators: false) {
+                    moveRowsCard(movePresentation.olderCompleted, showsCompletionDate: true)
+                }
+            }
+        } else {
+            let today = movePresentation.recentCompleted.filter { item in
+                item.completedAt.map(Calendar.current.isDateInToday) ?? false
+            }
+            let yesterday = movePresentation.recentCompleted.filter { item in
+                item.completedAt.map(Calendar.current.isDateInYesterday) ?? false
+            }
+
+            if movePresentation.recentCompleted.isEmpty {
+                compactHistoryEmptyState(
+                    title: "Nothing completed recently",
+                    message: "Today and yesterday will appear here."
+                )
+            } else {
+                ScrollView(showsIndicators: false) {
+                    LazyVStack(spacing: 10) {
+                        if !today.isEmpty {
+                            moveSection(title: "Today", items: today, showsCompletionDate: true)
+                        }
+                        if !yesterday.isEmpty {
+                            moveSection(title: "Yesterday", items: yesterday, showsCompletionDate: true)
+                        }
+                    }
+                }
+            }
+
+            if !movePresentation.olderCompleted.isEmpty {
+                HistoryNavigationButton(
+                    title: "Previous tasks",
+                    detail: "\(movePresentation.olderCompleted.count)",
+                    leadingSystemImage: "clock.arrow.circlepath",
+                    trailingSystemImage: "chevron.right",
+                    accent: accent
+                ) {
+                    NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+                    withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
+                        isShowingPreviousTasks = true
+                    }
+                }
+                .accessibilityLabel("Show \(movePresentation.olderCompleted.count) previous completed tasks")
+            }
+        }
+    }
+
+    private func moveSection(
+        title: String,
+        items: [OpenLoop],
+        showsCompletionDate: Bool
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 6) {
+                Text(title.uppercased())
+                    .font(interfaceFont(size: 11.5, weight: .bold))
+                    .tracking(0.25)
+                    .foregroundStyle(primaryText.opacity(0.86))
+
+                Text("\(items.count)")
+                    .font(interfaceFont(size: 10.5, weight: .semibold))
+                    .foregroundStyle(secondaryText.opacity(0.86))
+                    .contentTransition(.numericText())
+
+                Spacer()
+            }
+            .padding(.horizontal, 4)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("\(title), \(items.count) tasks")
+
+            moveRowsCard(items, showsCompletionDate: showsCompletionDate)
+        }
+    }
+
+    private func moveRowsCard(_ items: [OpenLoop], showsCompletionDate: Bool) -> some View {
+        LazyVStack(spacing: 0) {
+            ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                LoopRow(
+                    item: item,
+                    accent: accent,
+                    trailingLabel: showsCompletionDate ? completedLabel(for: item) : nil,
+                    onToggle: { store.toggleCompletion(item) },
+                    onMove: { status in store.move(item, to: status) },
+                    codexAction: codexRunner.action(for: item),
+                    isCodexBusy: codexRunner.isRunning,
+                    onRunWithCodex: { codexRunner.run(item) },
+                    onDelete: { deleteMove(item) }
+                )
+
+                if index < items.count - 1 {
+                    Divider()
+                        .overlay(Color.white.opacity(0.065))
+                        .padding(.leading, 46)
+                }
+            }
+        }
+        .background(contentSurface, in: RoundedRectangle(cornerRadius: contentRadius, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: contentRadius, style: .continuous)
+                .stroke(contentBorder, lineWidth: 1)
+        )
+    }
+
+    private func compactHistoryEmptyState(title: String, message: String) -> some View {
+        VStack(spacing: 6) {
+            Text(title)
+                .font(interfaceFont(size: 13, weight: .semibold))
+                .foregroundStyle(primaryText)
+            Text(message)
+                .font(interfaceFont(size: 11, weight: .regular))
+                .foregroundStyle(secondaryText)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var addComposer: some View {
@@ -1850,14 +1990,39 @@ struct NotchBoardView: View {
         NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
         withAnimation(.spring(response: 0.30, dampingFraction: 0.78, blendDuration: 0.08)) {
             selectedStatus = status
+            isShowingPreviousTasks = false
         }
     }
 
     private func addItem() {
         store.add(title: newTitle, status: newStatus, priority: newPriority, dueAt: nil)
         selectedStatus = newStatus
+        isShowingPreviousTasks = false
         newTitle = ""
         isAdding = false
+    }
+
+    private func deleteMove(_ item: OpenLoop) {
+        NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .now)
+        withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
+            store.delete(item)
+        }
+    }
+
+    private func completedLabel(for item: OpenLoop) -> String {
+        guard let completedAt = item.completedAt else { return "Completed" }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_GB")
+
+        if Calendar.current.isDateInToday(completedAt) {
+            formatter.dateFormat = "h:mm a"
+        } else if Calendar.current.isDateInYesterday(completedAt) {
+            formatter.dateFormat = "'Yesterday'"
+        } else {
+            formatter.dateFormat = "d MMM"
+        }
+
+        return formatter.string(from: completedAt)
     }
 
     private func priorityColor(for priority: LoopPriority) -> Color {
@@ -1935,10 +2100,70 @@ struct NotchBoardView: View {
     }
 }
 
+private struct HistoryNavigationButton: View {
+    @Environment(\.founderTheme) private var theme
+    let title: String
+    let detail: String?
+    let leadingSystemImage: String
+    let trailingSystemImage: String?
+    let accent: Color
+    let action: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 9) {
+                Image(systemName: leadingSystemImage)
+                    .font(theme.interfaceFont(size: 11.5, weight: .semibold))
+                    .foregroundStyle(accent)
+                    .frame(width: 18)
+
+                Text(title)
+                    .font(theme.interfaceFont(size: 12, weight: .semibold))
+                    .foregroundStyle(Color.white.opacity(0.94))
+
+                Spacer(minLength: 8)
+
+                if let detail {
+                    Text(detail)
+                        .font(theme.interfaceFont(size: 10.5, weight: .semibold))
+                        .foregroundStyle(Color.white.opacity(0.58))
+                        .contentTransition(.numericText())
+                }
+
+                if let trailingSystemImage {
+                    Image(systemName: trailingSystemImage)
+                        .font(theme.interfaceFont(size: 10, weight: .bold))
+                        .foregroundStyle(Color.white.opacity(isHovered ? 0.88 : 0.52))
+                }
+            }
+            .padding(.horizontal, 13)
+            .frame(maxWidth: .infinity, minHeight: 40)
+            .background(
+                isHovered ? Color.white.opacity(0.075) : Color.white.opacity(0.045),
+                in: RoundedRectangle(cornerRadius: 11, style: .continuous)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    .stroke(isHovered ? accent.opacity(0.34) : Color.white.opacity(0.085), lineWidth: 1)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+        }
+        .buttonStyle(StatusTabButtonStyle())
+        .onHover { hovering in
+            withAnimation(.easeOut(duration: 0.14)) {
+                isHovered = hovering
+            }
+        }
+    }
+}
+
 private struct LoopRow: View {
     @Environment(\.founderTheme) private var theme
     let item: OpenLoop
     let accent: Color
+    let trailingLabel: String?
     let onToggle: () -> Void
     let onMove: (LoopStatus) -> Void
     let codexAction: CodexTaskAction
@@ -1989,7 +2214,11 @@ private struct LoopRow: View {
 
             Spacer(minLength: 8)
 
-            if let dueAt = item.dueAt {
+            if let trailingLabel {
+                Text(trailingLabel)
+                    .font(theme.interfaceFont(size: 10, weight: .medium))
+                    .foregroundStyle(secondaryText)
+            } else if let dueAt = item.dueAt {
                 Text(dueLabel(dueAt))
                     .font(theme.interfaceFont(size: 10, weight: .medium))
                     .foregroundStyle(isOverdue(dueAt) && item.status != .done ? Color.red.opacity(0.9) : secondaryText)

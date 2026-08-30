@@ -42,6 +42,55 @@ func makeLoop(
     )
 }
 
+func makePresentationLoop(
+    id: UUID,
+    title: String,
+    status: LoopStatus,
+    priority: LoopPriority = .p1,
+    dueAt: Date? = nil,
+    completedAt: Date? = nil,
+    deletedAt: Date? = nil,
+    updatedAt: Date
+) -> OpenLoop {
+    OpenLoop(
+        id: id,
+        title: title,
+        details: "",
+        status: status,
+        previousStatus: status == .done ? .next : nil,
+        priority: priority,
+        dueAt: dueAt,
+        createdAt: date(0),
+        updatedAt: updatedAt,
+        completedAt: completedAt,
+        deletedAt: deletedAt,
+        source: "presentation-check"
+    )
+}
+
+func calendarDate(
+    _ year: Int,
+    _ month: Int,
+    _ day: Int,
+    hour: Int = 0,
+    minute: Int = 0,
+    calendar: Calendar
+) throws -> Date {
+    var components = DateComponents()
+    components.calendar = calendar
+    components.timeZone = calendar.timeZone
+    components.year = year
+    components.month = month
+    components.day = day
+    components.hour = hour
+    components.minute = minute
+    components.second = 0
+    guard let result = calendar.date(from: components) else {
+        throw CheckFailure.failed("Could not construct deterministic calendar date")
+    }
+    return result
+}
+
 func document(items: [OpenLoop], updatedAt: Date) -> OpenLoopsDocument {
     OpenLoopsDocument(schemaVersion: 2, updatedAt: updatedAt, items: items)
 }
@@ -88,6 +137,259 @@ func runChecks() async throws {
     try expect(completed.status == .done, "Completion did not move task to Done")
     try expect(completed.previousStatus == .waiting, "Completion lost the previous column")
     try expect(reopened.status == .waiting, "Reopen did not restore the previous column")
+
+    var presentationCalendar = Calendar(identifier: .gregorian)
+    presentationCalendar.locale = Locale(identifier: "en_US_POSIX")
+    presentationCalendar.timeZone = TimeZone(identifier: "America/Los_Angeles")!
+    let presentationNow = try calendarDate(
+        2026,
+        3,
+        9,
+        hour: 12,
+        calendar: presentationCalendar
+    )
+    let startOfYesterday = try calendarDate(2026, 3, 8, calendar: presentationCalendar)
+    let justBeforeToday = try calendarDate(
+        2026,
+        3,
+        8,
+        hour: 23,
+        minute: 59,
+        calendar: presentationCalendar
+    )
+    let startOfToday = try calendarDate(2026, 3, 9, calendar: presentationCalendar)
+    let todayMorning = try calendarDate(
+        2026,
+        3,
+        9,
+        hour: 9,
+        calendar: presentationCalendar
+    )
+    let todayEvening = try calendarDate(
+        2026,
+        3,
+        9,
+        hour: 18,
+        calendar: presentationCalendar
+    )
+    let startOfTomorrow = try calendarDate(2026, 3, 10, calendar: presentationCalendar)
+    let beforeRecentWindow = try calendarDate(
+        2026,
+        3,
+        7,
+        hour: 23,
+        minute: 59,
+        calendar: presentationCalendar
+    )
+
+    let overdueID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+    let todayP0ID = UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
+    let todayAlphaID = UUID(uuidString: "00000000-0000-0000-0000-000000000003")!
+    let todayZuluID = UUID(uuidString: "00000000-0000-0000-0000-000000000004")!
+    let upcomingID = UUID(uuidString: "00000000-0000-0000-0000-000000000005")!
+    let noDeadlineID = UUID(uuidString: "00000000-0000-0000-0000-000000000006")!
+    let waitingID = UUID(uuidString: "00000000-0000-0000-0000-000000000007")!
+    let deletedActiveID = UUID(uuidString: "00000000-0000-0000-0000-000000000008")!
+    let recentTodayID = UUID(uuidString: "00000000-0000-0000-0000-000000000009")!
+    let recentYesterdayID = UUID(uuidString: "00000000-0000-0000-0000-000000000010")!
+    let olderID = UUID(uuidString: "00000000-0000-0000-0000-000000000011")!
+    let nilCompletionID = UUID(uuidString: "00000000-0000-0000-0000-000000000012")!
+    let deletedDoneID = UUID(uuidString: "00000000-0000-0000-0000-000000000013")!
+    let todayLaterP1ID = UUID(uuidString: "00000000-0000-0000-0000-000000000014")!
+    let noDeadlineTieFirstID = UUID(uuidString: "00000000-0000-0000-0000-000000000015")!
+    let noDeadlineTieSecondID = UUID(uuidString: "00000000-0000-0000-0000-000000000016")!
+    let olderP0ID = UUID(uuidString: "00000000-0000-0000-0000-000000000017")!
+
+    let presentationItems = [
+        makePresentationLoop(
+            id: noDeadlineID,
+            title: "No date",
+            status: .next,
+            priority: .p2,
+            updatedAt: presentationNow
+        ),
+        makePresentationLoop(
+            id: todayZuluID,
+            title: "Zulu",
+            status: .doing,
+            dueAt: todayMorning,
+            updatedAt: presentationNow
+        ),
+        makePresentationLoop(
+            id: deletedDoneID,
+            title: "Deleted Done",
+            status: .done,
+            completedAt: todayEvening,
+            deletedAt: presentationNow,
+            updatedAt: presentationNow
+        ),
+        makePresentationLoop(
+            id: upcomingID,
+            title: "Tomorrow",
+            status: .next,
+            dueAt: startOfTomorrow,
+            updatedAt: presentationNow
+        ),
+        makePresentationLoop(
+            id: olderID,
+            title: "Older completion",
+            status: .done,
+            completedAt: beforeRecentWindow,
+            updatedAt: presentationNow
+        ),
+        makePresentationLoop(
+            id: todayP0ID,
+            title: "Critical later today",
+            status: .next,
+            priority: .p0,
+            dueAt: todayEvening,
+            updatedAt: presentationNow
+        ),
+        makePresentationLoop(
+            id: waitingID,
+            title: "Blocked today",
+            status: .waiting,
+            priority: .p2,
+            dueAt: startOfToday,
+            updatedAt: presentationNow
+        ),
+        makePresentationLoop(
+            id: overdueID,
+            title: "Overdue",
+            status: .doing,
+            dueAt: justBeforeToday,
+            updatedAt: presentationNow
+        ),
+        makePresentationLoop(
+            id: recentYesterdayID,
+            title: "Yesterday completion",
+            status: .done,
+            completedAt: startOfYesterday,
+            updatedAt: presentationNow
+        ),
+        makePresentationLoop(
+            id: nilCompletionID,
+            title: "Legacy completion",
+            status: .done,
+            completedAt: nil,
+            updatedAt: presentationNow
+        ),
+        makePresentationLoop(
+            id: deletedActiveID,
+            title: "Deleted active",
+            status: .doing,
+            dueAt: todayMorning,
+            deletedAt: presentationNow,
+            updatedAt: presentationNow
+        ),
+        makePresentationLoop(
+            id: todayAlphaID,
+            title: "Alpha",
+            status: .doing,
+            dueAt: todayMorning,
+            updatedAt: presentationNow
+        ),
+        makePresentationLoop(
+            id: recentTodayID,
+            title: "Today completion",
+            status: .done,
+            completedAt: todayEvening,
+            updatedAt: presentationNow
+        ),
+        makePresentationLoop(
+            id: todayLaterP1ID,
+            title: "A title that sorts first",
+            status: .next,
+            dueAt: todayEvening,
+            updatedAt: presentationNow
+        ),
+        makePresentationLoop(
+            id: noDeadlineTieSecondID,
+            title: "Same title",
+            status: .doing,
+            updatedAt: presentationNow
+        ),
+        makePresentationLoop(
+            id: noDeadlineTieFirstID,
+            title: "Same title",
+            status: .doing,
+            updatedAt: presentationNow
+        ),
+        makePresentationLoop(
+            id: olderP0ID,
+            title: "Priority tie breaker",
+            status: .done,
+            priority: .p0,
+            completedAt: beforeRecentWindow,
+            updatedAt: presentationNow
+        )
+    ]
+
+    let movePresentation = MovePresentation(
+        items: presentationItems,
+        now: presentationNow,
+        calendar: presentationCalendar
+    )
+    try expect(
+        movePresentation.activeGroups.map(\.bucket) == [.overdue, .today, .upcoming, .noDeadline],
+        "Active deadline groups were not emitted in urgency order"
+    )
+    try expect(
+        movePresentation.items(in: .overdue).map(\.id) == [overdueID],
+        "Pre-midnight deadline was not classified as overdue"
+    )
+    try expect(
+        movePresentation.items(in: .today).map(\.id)
+            == [waitingID, todayAlphaID, todayZuluID, todayP0ID, todayLaterP1ID],
+        "Today Moves were not sorted by deadline, priority, and title"
+    )
+    try expect(
+        movePresentation.items(in: .upcoming).map(\.id) == [upcomingID],
+        "Tomorrow boundary was not classified as upcoming"
+    )
+    try expect(
+        movePresentation.items(in: .noDeadline).map(\.id)
+            == [noDeadlineTieFirstID, noDeadlineTieSecondID, noDeadlineID],
+        "Undated Moves were not classified and deterministically tie-broken"
+    )
+    try expect(
+        !movePresentation.activeGroups.flatMap(\.items).contains(where: { $0.id == deletedActiveID }),
+        "Soft-deleted active Move remained visible"
+    )
+    try expect(
+        movePresentation.recentCompleted.map(\.id) == [recentTodayID, recentYesterdayID],
+        "Recent Done history did not use today-and-yesterday calendar boundaries"
+    )
+    try expect(
+        movePresentation.olderCompleted.map(\.id) == [olderP0ID, olderID, nilCompletionID],
+        "Older Done history did not retain dated and legacy nil-completion Moves"
+    )
+    try expect(
+        movePresentation.allCompleted.count == 5,
+        "Visible Done history was lost during presentation grouping"
+    )
+    try expect(
+        !movePresentation.allCompleted.contains(where: { $0.id == deletedDoneID }),
+        "Soft-deleted Done Move remained visible"
+    )
+
+    let reversedPresentation = MovePresentation(
+        items: presentationItems.reversed(),
+        now: presentationNow,
+        calendar: presentationCalendar
+    )
+    try expect(
+        reversedPresentation == movePresentation,
+        "Move presentation changed when the input order changed"
+    )
+
+    let emptyPresentation = MovePresentation(
+        items: [],
+        now: presentationNow,
+        calendar: presentationCalendar
+    )
+    try expect(emptyPresentation.activeGroups.isEmpty, "Empty store emitted empty presentation sections")
+    try expect(emptyPresentation.items(in: .today).isEmpty, "Missing bucket did not return an empty collection")
 
     struct LegacyPersonalization: Encodable {
         var schemaVersion = 3

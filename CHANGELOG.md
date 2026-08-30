@@ -6,6 +6,8 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Added
 
+- Deadline-first Move sections shared by macOS and iOS, with Overdue, Today, Upcoming, and No deadline groups.
+- A focused completion history that keeps today and yesterday visible while preserving older work behind Previous tasks.
 - Mix-and-match appearance controls for full-spectrum 8-bit RGB accents, two-colour gradients, display and interface fonts, move-card styles, and glass, frosted, or solid-black surfaces.
 - A versioned appearance model shared by macOS and iOS, with forward-compatible identifiers and legacy personalization fallback.
 - Private-repository governance, pull-request and issue templates, repository safety checks, and automated CI.
