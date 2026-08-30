@@ -5,6 +5,8 @@ struct LoopsView: View {
     @EnvironmentObject private var model: AppModel
     @State private var isPresentingNewTask = false
 
+    private var appearance: AppearancePreferences { model.personalization.resolvedAppearance }
+
     var body: some View {
         List {
             Section {
@@ -12,7 +14,7 @@ struct LoopsView: View {
                     isPresentingNewTask = true
                 } label: {
                     Label("New task", systemImage: "plus.circle.fill")
-                        .font(.headline)
+                        .font(appearance.interfaceFont(size: 17, weight: .semibold))
                 }
             }
 
@@ -57,6 +59,7 @@ struct LoopsView: View {
                 }
             }
         }
+        .founderSurface(appearance)
         .overlay {
             if model.visibleLoops.isEmpty {
                 ContentUnavailableView {
@@ -100,6 +103,8 @@ private struct NewTaskView: View {
     @State private var hasDueDate = false
     @State private var dueAt = Date()
 
+    private var appearance: AppearancePreferences { model.personalization.resolvedAppearance }
+
     private var canSave: Bool {
         !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
@@ -131,6 +136,7 @@ private struct NewTaskView: View {
                 }
             }
         }
+        .founderSurface(appearance)
         .navigationTitle("New task")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {

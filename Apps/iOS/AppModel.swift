@@ -21,7 +21,7 @@ final class AppModel: ObservableObject {
             items: []
         )
         let initialPersonalization = storage.loadPersonalization() ?? PersonalizationDocument(
-            schemaVersion: 5,
+            schemaVersion: 6,
             displayName: "Founder's Office",
             accent: .blue,
             iconStyle: .system,
@@ -29,7 +29,8 @@ final class AppModel: ObservableObject {
             primaryGoal: nil,
             milestones: [],
             preferredName: nil,
-            workspaceName: "Founder's Office"
+            workspaceName: "Founder's Office",
+            appearance: .manish()
         )
 
         self.storage = storage
@@ -137,7 +138,68 @@ final class AppModel: ObservableObject {
 
     func updateAccent(_ accent: AccentPalette) {
         personalization.accent = accent
+        var appearance = personalization.resolvedAppearance
+        appearance.presetID = .custom
+        appearance.accent = AccentStyle(
+            mode: .solid,
+            stops: [AccentStop(color: accent.rgb24, location: 0)]
+        )
+        appearance.updatedAt = .now
+        personalization.appearance = appearance
         persistPersonalization()
+    }
+
+    func applyAppearancePreset(_ preset: AppearancePresetID) {
+        guard preset != .custom else { return }
+        let appearance = AppearancePreferences.preset(preset)
+        personalization.appearance = appearance
+        personalization.accent = nearestLegacyAccent(to: appearance.accent.primaryColor)
+        persistPersonalization()
+    }
+
+    func updateAccentMode(_ mode: AccentMode) {
+        updateAppearance { appearance in
+            var stops = appearance.accent.normalizedStops
+            if mode == .gradient, stops.count == 1 {
+                stops.append(AccentStop(color: RGB24Color(red: 126, green: 87, blue: 194), location: 1))
+            }
+            appearance.accent = AccentStyle(mode: mode, stops: stops, angleDegrees: appearance.accent.angleDegrees)
+        }
+    }
+
+    func updateAccentColor(_ color: RGB24Color, stopIndex: Int) {
+        updateAppearance { appearance in
+            var stops = appearance.accent.normalizedStops
+            while stops.count <= stopIndex {
+                stops.append(AccentStop(color: color, location: stops.isEmpty ? 0 : 1))
+            }
+            stops[stopIndex].color = color
+            appearance.accent = AccentStyle(
+                mode: appearance.accent.mode,
+                stops: stops,
+                angleDegrees: appearance.accent.angleDegrees
+            )
+        }
+    }
+
+    func updateAccentAngle(_ angle: Double) {
+        updateAppearance { $0.accent.angleDegrees = angle }
+    }
+
+    func updateDisplayFont(_ font: FontChoiceID) {
+        updateAppearance { $0.displayFontID = font }
+    }
+
+    func updateInterfaceFont(_ font: FontChoiceID) {
+        updateAppearance { $0.interfaceFontID = font }
+    }
+
+    func updateNodeStyle(_ style: NodeStyleID) {
+        updateAppearance { $0.nodeStyleID = style }
+    }
+
+    func updateSurfaceStyle(_ style: SurfaceStyleID) {
+        updateAppearance { $0.surfaceStyleID = style }
     }
 
     func setPrimaryGoal(_ goal: PrimaryGoal) {
@@ -199,10 +261,33 @@ final class AppModel: ObservableObject {
     }
 
     private func persistPersonalization(at date: Date = .now) {
-        personalization.schemaVersion = max(personalization.schemaVersion, 5)
+        personalization.schemaVersion = max(personalization.schemaVersion, 6)
         personalization.updatedAt = date
         storage.save(personalization)
         queueCloudSave()
+    }
+
+    private func updateAppearance(_ update: (inout AppearancePreferences) -> Void) {
+        var appearance = personalization.resolvedAppearance
+        update(&appearance)
+        appearance.presetID = .custom
+        appearance.updatedAt = .now
+        personalization.appearance = appearance
+        personalization.accent = nearestLegacyAccent(to: appearance.accent.primaryColor)
+        persistPersonalization()
+    }
+
+    private func nearestLegacyAccent(to color: RGB24Color) -> AccentPalette {
+        AccentPalette.allCases.min { lhs, rhs in
+            colorDistance(lhs.rgb24, color) < colorDistance(rhs.rgb24, color)
+        } ?? .blue
+    }
+
+    private func colorDistance(_ lhs: RGB24Color, _ rhs: RGB24Color) -> Int {
+        let red = Int(lhs.red) - Int(rhs.red)
+        let green = Int(lhs.green) - Int(rhs.green)
+        let blue = Int(lhs.blue) - Int(rhs.blue)
+        return red * red + green * green + blue * blue
     }
 
     private func queueCloudSave() {

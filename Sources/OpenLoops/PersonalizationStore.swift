@@ -27,6 +27,7 @@ final class PersonalizationStore: ObservableObject {
 
     private var previewPhotoURL: URL?
     private var watcher: Timer?
+    private var pendingAppearanceSave: Task<Void, Never>?
     private var lastKnownModificationDate: Date?
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
@@ -50,12 +51,16 @@ final class PersonalizationStore: ObservableObject {
 
     deinit {
         watcher?.invalidate()
+        pendingAppearanceSave?.cancel()
     }
 
     var preferredName: String { document.resolvedPreferredName ?? "" }
     var workspaceName: String { document.resolvedWorkspaceName }
     var accent: AccentPalette { document.accent }
-    var accentColor: Color { document.accent.color }
+    var appearance: AppearancePreferences { document.resolvedAppearance }
+    var accentColor: Color { appearance.accent.primaryColor.swiftUIColor }
+    var secondaryAccentColor: Color { appearance.accent.secondaryColor.swiftUIColor }
+    var accentHex: String { appearance.accent.primaryColor.hex }
     // Navigation now follows macOS and always uses SF Symbols. Keep the stored
     // field only so older personalization documents continue to decode safely.
     var iconStyle: IconStyle { .system }
@@ -90,6 +95,86 @@ final class PersonalizationStore: ObservableObject {
 
     func updateAccent(_ accent: AccentPalette) {
         document.accent = accent
+        var updatedAppearance = appearance
+        updatedAppearance.presetID = .custom
+        updatedAppearance.accent = AccentStyle(
+            mode: .solid,
+            stops: [AccentStop(color: accent.rgb24, location: 0)],
+            angleDegrees: updatedAppearance.accent.angleDegrees
+        )
+        updatedAppearance.updatedAt = .now
+        document.appearance = updatedAppearance
+        persist()
+    }
+
+    func applyPreset(_ preset: AppearancePresetID) {
+        guard preset != .custom else { return }
+        let updatedAppearance = AppearancePreferences.preset(preset)
+        document.appearance = updatedAppearance
+        document.accent = Self.nearestLegacyAccent(to: updatedAppearance.accent.primaryColor)
+        persist()
+    }
+
+    func updateAccentMode(_ mode: AccentMode) {
+        updateAppearance(debounced: true) { appearance in
+            var stops = appearance.accent.normalizedStops
+            if mode == .gradient, stops.count == 1 {
+                stops.append(
+                    AccentStop(
+                        color: RGB24Color(red: 126, green: 87, blue: 194),
+                        location: 1
+                    )
+                )
+            }
+            appearance.accent = AccentStyle(
+                mode: mode,
+                stops: stops,
+                angleDegrees: appearance.accent.angleDegrees
+            )
+        }
+    }
+
+    func updateAccentColor(_ color: RGB24Color, stopIndex: Int) {
+        updateAppearance(debounced: true) { appearance in
+            var stops = appearance.accent.normalizedStops
+            while stops.count <= stopIndex {
+                stops.append(AccentStop(color: color, location: stops.isEmpty ? 0 : 1))
+            }
+            stops[stopIndex].color = color
+            appearance.accent = AccentStyle(
+                mode: appearance.accent.mode,
+                stops: stops,
+                angleDegrees: appearance.accent.angleDegrees
+            )
+        }
+    }
+
+    func updateAccentAngle(_ angle: Double) {
+        updateAppearance(debounced: true) { appearance in
+            appearance.accent.angleDegrees = angle
+        }
+    }
+
+    func updateDisplayFont(_ font: FontChoiceID) {
+        updateAppearance { $0.displayFontID = font }
+    }
+
+    func updateInterfaceFont(_ font: FontChoiceID) {
+        updateAppearance { $0.interfaceFontID = font }
+    }
+
+    func updateNodeStyle(_ style: NodeStyleID) {
+        updateAppearance { $0.nodeStyleID = style }
+    }
+
+    func updateSurfaceStyle(_ style: SurfaceStyleID) {
+        updateAppearance { $0.surfaceStyleID = style }
+    }
+
+    func flushPendingChanges() {
+        guard pendingAppearanceSave != nil else { return }
+        pendingAppearanceSave?.cancel()
+        pendingAppearanceSave = nil
         persist()
     }
 
@@ -98,7 +183,7 @@ final class PersonalizationStore: ObservableObject {
         persist()
     }
 
-    func choosePhoto() {
+    func choosePhoto(onCompletion: @escaping () -> Void = {}) {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.image]
         panel.allowsMultipleSelection = false
@@ -107,6 +192,7 @@ final class PersonalizationStore: ObservableObject {
         panel.prompt = "Use Photo"
 
         panel.begin { [weak self] response in
+            defer { onCompletion() }
             guard response == .OK, let sourceURL = panel.url else { return }
             Task { @MainActor in
                 self?.importPhoto(from: sourceURL)
@@ -223,7 +309,7 @@ final class PersonalizationStore: ObservableObject {
 
     private func persist() {
         do {
-            document.schemaVersion = 5
+            document.schemaVersion = max(document.schemaVersion, 6)
             document.updatedAt = Date()
             try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
             let data = try encoder.encode(document)
@@ -233,6 +319,38 @@ final class PersonalizationStore: ObservableObject {
         } catch {
             message = "Save failed"
             AppDiagnostics.failure(.personalizationSave, category: .storage, error: error)
+        }
+    }
+
+    private func updateAppearance(
+        debounced: Bool = false,
+        _ update: (inout AppearancePreferences) -> Void
+    ) {
+        var updatedAppearance = appearance
+        update(&updatedAppearance)
+        updatedAppearance.presetID = .custom
+        updatedAppearance.updatedAt = .now
+        document.appearance = updatedAppearance
+        document.accent = Self.nearestLegacyAccent(to: updatedAppearance.accent.primaryColor)
+
+        if debounced {
+            persistAppearanceAfterDelay()
+        } else {
+            pendingAppearanceSave?.cancel()
+            pendingAppearanceSave = nil
+            persist()
+        }
+    }
+
+    private func persistAppearanceAfterDelay() {
+        pendingAppearanceSave?.cancel()
+        pendingAppearanceSave = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(180))
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                self?.persist()
+                self?.pendingAppearanceSave = nil
+            }
         }
     }
 
@@ -254,9 +372,17 @@ final class PersonalizationStore: ObservableObject {
 
     private func applyPreviewOverrides() {
         let environment = ProcessInfo.processInfo.environment
+        if let rawPreset = environment["OPENLOOPS_PREVIEW_APPEARANCE_PRESET"] {
+            let preset = AppearancePresetID(rawValue: rawPreset)
+            if AppearancePresetID.builtIns.contains(preset) {
+                document.appearance = AppearancePreferences.preset(preset)
+                document.accent = Self.nearestLegacyAccent(to: document.resolvedAppearance.accent.primaryColor)
+            }
+        }
         if let rawAccent = environment["OPENLOOPS_PREVIEW_ACCENT"],
            let accent = AccentPalette(rawValue: rawAccent) {
             document.accent = accent
+            document.appearance = .manish(accent: accent.rgb24)
         }
         if let rawStyle = environment["OPENLOOPS_PREVIEW_ICON_STYLE"],
            let style = IconStyle(rawValue: rawStyle) {
@@ -286,7 +412,7 @@ final class PersonalizationStore: ObservableObject {
     }
 
     private static let defaultDocument = PersonalizationDocument(
-        schemaVersion: 5,
+        schemaVersion: 6,
         displayName: "Founder's Office",
         accent: .blue,
         iconStyle: .system,
@@ -294,6 +420,20 @@ final class PersonalizationStore: ObservableObject {
         primaryGoal: nil,
         milestones: [],
         preferredName: nil,
-        workspaceName: "Founder's Office"
+        workspaceName: "Founder's Office",
+        appearance: .manish()
     )
+
+    private static func nearestLegacyAccent(to color: RGB24Color) -> AccentPalette {
+        AccentPalette.allCases.min { lhs, rhs in
+            colorDistance(lhs.rgb24, color) < colorDistance(rhs.rgb24, color)
+        } ?? .blue
+    }
+
+    private static func colorDistance(_ lhs: RGB24Color, _ rhs: RGB24Color) -> Int {
+        let red = Int(lhs.red) - Int(rhs.red)
+        let green = Int(lhs.green) - Int(rhs.green)
+        let blue = Int(lhs.blue) - Int(rhs.blue)
+        return red * red + green * green + blue * blue
+    }
 }
