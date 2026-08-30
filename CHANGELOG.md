@@ -29,7 +29,7 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 - Codex runs are now scoped to the Founder’s Office workspace instead of the parent Application Support directory.
 - Development builds and release builds now use separate scripts; the development path cannot accidentally produce a distributable release artifact.
-- CloudKit now resolves one explicit, entitlement-matched container from the signed app instead of a source-code default.
+- CloudKit now resolves one explicit container from product configuration instead of a source-code default; macOS also verifies the signed process entitlement, while iOS relies on its provisioning profile and CKContainer enforcement.
 - Existing beta workspaces remain local until their owner completes the new storage and privacy review.
 - Customer Release builds compile external Codex CLI execution out until its separately scoped helper and consent gates pass.
 - The codebase now passes complete Swift 6 concurrency checking with warnings treated as errors.

@@ -2,7 +2,9 @@ import CloudKit
 import Foundation
 import FounderOfficeCore
 import os
+#if os(macOS)
 import Security
+#endif
 
 public enum FounderOfficeCloudConfigurationError: Error, Equatable, Sendable {
     case cloudDisabled
@@ -30,10 +32,10 @@ public struct FounderOfficeCloudConfiguration: Sendable {
         self.recordName = recordName
     }
 
-    /// Resolves the CloudKit container from the signed product instead of from
-    /// source defaults. A missing key or a signature entitlement mismatch is a
-    /// hard failure: callers must keep the workspace local rather than connect
-    /// to a different container.
+    /// Resolves the CloudKit container from product configuration instead of
+    /// source defaults. A missing or malformed declaration is a hard failure;
+    /// macOS also verifies that it exactly matches the process entitlement.
+    /// iOS provisioning and CKContainer enforce that platform's entitlement.
     public static func bundled(in bundle: Bundle = .main) throws -> Self {
         let cloudEnabled = bundle.object(
             forInfoDictionaryKey: cloudEnabledInfoPlistKey
@@ -41,21 +43,30 @@ public struct FounderOfficeCloudConfiguration: Sendable {
         let configuredContainer = bundle.object(
             forInfoDictionaryKey: infoPlistContainerKey
         ) as? String
-        guard cloudEnabled else {
-            throw FounderOfficeCloudConfigurationError.cloudDisabled
-        }
 
+        let declaredConfiguration = try validatedDeclaredConfiguration(
+            cloudEnabled: cloudEnabled,
+            configuredContainer: configuredContainer
+        )
+
+        #if os(macOS)
         return try validatedBundledConfiguration(
             cloudEnabled: true,
-            configuredContainer: configuredContainer,
+            configuredContainer: declaredConfiguration.containerIdentifier,
             entitledContainers: try signedContainerIdentifiers()
         )
+        #else
+        // SecTask entitlement inspection is not public on iOS. The signed
+        // provisioning profile and CKContainer enforce the entitlement there;
+        // runtime configuration still fails closed on a missing or malformed
+        // single declared container identifier.
+        return declaredConfiguration
+        #endif
     }
 
-    static func validatedBundledConfiguration(
+    static func validatedDeclaredConfiguration(
         cloudEnabled: Bool,
-        configuredContainer: String?,
-        entitledContainers: [String]
+        configuredContainer: String?
     ) throws -> Self {
         guard cloudEnabled else {
             throw FounderOfficeCloudConfigurationError.cloudDisabled
@@ -71,16 +82,29 @@ public struct FounderOfficeCloudConfiguration: Sendable {
               }) else {
             throw FounderOfficeCloudConfigurationError.malformedContainerIdentifier
         }
+        return Self(containerIdentifier: configuredContainer)
+    }
+
+    static func validatedBundledConfiguration(
+        cloudEnabled: Bool,
+        configuredContainer: String?,
+        entitledContainers: [String]
+    ) throws -> Self {
+        let declaredConfiguration = try validatedDeclaredConfiguration(
+            cloudEnabled: cloudEnabled,
+            configuredContainer: configuredContainer
+        )
         guard !entitledContainers.isEmpty else {
             throw FounderOfficeCloudConfigurationError.missingContainerEntitlement
         }
         guard entitledContainers.count == 1,
-              entitledContainers[0] == configuredContainer else {
+              entitledContainers[0] == declaredConfiguration.containerIdentifier else {
             throw FounderOfficeCloudConfigurationError.containerEntitlementMismatch
         }
-        return Self(containerIdentifier: configuredContainer)
+        return declaredConfiguration
     }
 
+    #if os(macOS)
     private static func signedContainerIdentifiers() throws -> [String] {
         guard let task = SecTaskCreateFromSelf(nil) else {
             throw FounderOfficeCloudConfigurationError.missingContainerEntitlement
@@ -99,6 +123,7 @@ public struct FounderOfficeCloudConfiguration: Sendable {
         }
         return identifiers
     }
+    #endif
 }
 
 public enum FounderOfficeCloudStatus: String, Codable, Sendable {

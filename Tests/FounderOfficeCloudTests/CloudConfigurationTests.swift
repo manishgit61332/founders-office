@@ -16,6 +16,16 @@ struct CloudConfigurationTests {
     }
 
     @Test
+    func acceptsOneExplicitDeclaredContainerForPlatformsWithoutEntitlementInspection() throws {
+        let configuration = try FounderOfficeCloudConfiguration.validatedDeclaredConfiguration(
+            cloudEnabled: true,
+            configuredContainer: finalContainer
+        )
+
+        #expect(configuration.containerIdentifier == finalContainer)
+    }
+
+    @Test
     func rejectsDisabledOrMissingConfiguration() {
         #expect(throws: FounderOfficeCloudConfigurationError.cloudDisabled) {
             try FounderOfficeCloudConfiguration.validatedBundledConfiguration(
