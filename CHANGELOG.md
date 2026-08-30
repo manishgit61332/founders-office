@@ -22,6 +22,7 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Fixed
 
+- Removed the clipped outer shadow that made the transparent lower notch corners look like a second rectangular container.
 - Personalize now stays open while a calendar picker, colour panel, menu, or photo chooser is active, then resumes normal notch hover dismissal when the interaction ends.
 - The finish-line calendar now applies a date only when **Done** is pressed; **Cancel** preserves the previous date.
 

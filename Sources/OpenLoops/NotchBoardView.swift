@@ -240,7 +240,8 @@ struct NotchBoardView: View {
                 .mask(shellShape)
         )
         .opacity(metrics.shellVisibility)
-        .shadow(color: Color.black.opacity(0.44 * metrics.settledProgress), radius: 30, x: 0, y: 16)
+        // Keep depth inside the silhouette. An outer shadow is clipped by this
+        // fixed-size transparent panel and reads as a rectangular container.
         .allowsHitTesting(metrics.isInteractive)
         .accessibilityHidden(!metrics.isInteractive)
         .preferredColorScheme(.dark)
