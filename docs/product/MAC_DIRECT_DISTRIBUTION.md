@@ -1,0 +1,166 @@
+# macOS direct-distribution runbook
+
+The public download stays closed until this runbook passes. A local ad-hoc app is not a release candidate.
+
+## Release contract
+
+A website build is publishable only when all of these statements are true:
+
+1. The source comes from a clean commit with an exact `vX.Y.Z` tag.
+2. The product version and Apple build number have a matching release record.
+3. Apple product identifiers belong to the production organization and will not change after launch.
+4. Xcode signs the app with a `Developer ID Application` certificate and the production provisioning profile.
+5. Every required architecture has the expected signature, hardened runtime, and trusted timestamp.
+6. Every required architecture's effective entitlements name the production iCloud container, production push environment, Calendar access, and user-selected read-only file access.
+7. The app's runtime CloudKit container is explicit in `Info.plist` and exactly matches its entitlement.
+8. Apple accepts the notarization submission.
+9. The notarization ticket is stapled to the app.
+10. Gatekeeper reports `Notarized Developer ID` for the stapled app.
+11. The customer executable has no external Codex runner, workspace override, or preview/capture hook.
+12. The privacy manifest exactly matches the committed, reviewed privacy policy.
+13. The final ZIP matches the SHA-256 and sealed `release.json` record.
+
+`Scripts/release-macos.sh` enforces this contract. It stops at the first failed condition and does not leave a publishable directory.
+
+## One-time Apple setup
+
+Complete these steps before the first external beta:
+
+1. Install full Xcode and select it with `xcode-select`. Command Line Tools alone are insufficient.
+2. Install XcodeGen 2.46.0, the same version pinned in CI. The release script rejects another version and generates the Xcode project from the committed `project.yml`.
+3. Freeze the organization Team ID, macOS bundle ID, App Group, and iCloud container. The release script explicitly rejects the known provisional bundle and iCloud identifiers in the repository.
+4. Create a `Developer ID Application` certificate for that team and install its private key in the release keychain.
+5. Create a Developer ID provisioning profile for the final macOS bundle ID. It must authorize the production CloudKit and push entitlements.
+6. Create and commit `Config/Release/FoundersOfficeMac.entitlements` after the identifiers are frozen. The release script accepts no external or untracked entitlement file. It must contain:
+   - `com.apple.security.app-sandbox` set to `true`;
+   - `aps-environment` set to `production`;
+   - `com.apple.developer.icloud-container-environment` set to `Production`;
+   - the final iCloud container in `com.apple.developer.icloud-container-identifiers`;
+   - `CloudKit` in `com.apple.developer.icloud-services`;
+   - `com.apple.security.personal-information.calendars` set to `true`;
+   - `com.apple.security.files.user-selected.read-only` set to `true` so a customer can explicitly choose a vision image without broad file access.
+
+   Debug, JIT, unsigned-memory, library-validation bypass, and temporary-exception entitlements are release blockers.
+7. Store notarization credentials in Keychain. Do not put an Apple password, private key, issuer ID, or notary token in the repository.
+
+For an interactive local release, create the Keychain profile once:
+
+```bash
+xcrun notarytool store-credentials founders-office-notary \
+  --apple-id RELEASE_APPLE_ID \
+  --team-id TEAM_ID
+```
+
+The command asks for the app-specific password without writing it to the shell script. A release service should use a locked CI keychain and encrypted CI secrets instead.
+
+Apple's current process is documented in [Notarizing macOS software before distribution](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution) and [Distributing your app for beta testing and releases](https://developer.apple.com/documentation/xcode/distributing-your-app-for-beta-testing-and-releases).
+
+## Prepare a release
+
+1. Pass the repository checks and the paid-beta gates.
+2. Update the version and build record at `docs/releases/vX.Y.Z-build-N.md`.
+3. Commit every intended change. Leave no untracked file in the worktree.
+4. Create the exact `vX.Y.Z` tag on that commit.
+5. Set the non-secret release selectors for the current shell:
+
+```bash
+export FOUNDER_OFFICE_TEAM_ID="TEAM_ID"
+export FOUNDER_OFFICE_BUNDLE_ID="FINAL_ORGANIZATION_BUNDLE_ID"
+export FOUNDER_OFFICE_ICLOUD_CONTAINER="iCloud.FINAL_ORGANIZATION_CONTAINER"
+export FOUNDER_OFFICE_DEVELOPER_ID_APPLICATION="Developer ID Application: ORGANIZATION (TEAM_ID)"
+export FOUNDER_OFFICE_PROVISIONING_PROFILE_SPECIFIER="PRODUCTION_PROFILE_NAME"
+export FOUNDER_OFFICE_NOTARY_PROFILE="founders-office-notary"
+```
+
+Do not copy the example values. The script validates the installed certificate, provisioning choice, bundle, signature, and effective entitlements.
+
+The default product is universal for Apple silicon and Intel. If the product decision explicitly drops Intel support, record that decision and set `FOUNDER_OFFICE_REQUIRED_ARCHS=arm64` for the release. Do not change architecture support silently.
+
+## Build, sign, notarize, and seal
+
+Run:
+
+```bash
+Scripts/release-macos.sh --version X.Y.Z --build N
+```
+
+The script performs an Xcode archive and Developer ID export, then:
+
+- accepts only a three-component numeric product version such as `1.2.3`;
+- checks the bundle identifier, version, build, CloudKit flag and runtime container, architectures, app icon, and the exact reviewed privacy-manifest semantics;
+- rejects a developer workspace path in the app;
+- rejects customer binaries containing external Codex execution, workspace override, or preview/capture hooks;
+- verifies the timestamped Developer ID signature and hardened runtime for every required architecture;
+- verifies the tracked source entitlements and each architecture's effective production entitlements, including Calendar and user-selected read-only file access;
+- submits a ZIP to Apple and requires an `Accepted` result;
+- staples and validates the ticket;
+- requires a passing Gatekeeper assessment;
+- creates the final ZIP and SHA-256;
+- creates strict-schema `release.json` metadata and copies the release record and verification evidence;
+- runs an independent extraction-and-verification pass;
+- writes a new read-only directory under `dist/releases/macos/`.
+
+The script refuses to reuse a version, build, tag, and commit path and makes the local output read-only. Local file permissions are not immutable storage: the publication origin must enforce object versioning or retention. Publish a new build to correct a defect; never replace an existing ZIP at the same URL.
+
+## Publish to the website
+
+Publish only the final ZIP from the sealed release directory. Publish `release.json`, `release-record.md`, and the `.sha256` file beside it. Use a versioned, immutable object URL. Configure the download response as an attachment and do not serve user-uploaded content from the release origin.
+
+Keep the website download control disabled until the artifact exists at the immutable URL and a clean Mac passes the verification below. The website requires both a committed verified-release manifest and an independently configured HTTPS origin before it renders the download. Never point the website at:
+
+- `dist/development/`;
+- an Xcode archive export that has not completed this script;
+- a mutable `latest.zip` object;
+- a file with no matching `release.json` and SHA-256.
+
+After upload, download the public bytes again. Verify those bytes, not the local pre-upload copy:
+
+```bash
+Scripts/verify-macos-release.sh \
+  --artifact /path/to/downloaded/FoundersOffice-X.Y.Z-build-N-macOS.zip \
+  --metadata /path/to/downloaded/release.json \
+  --expected-team-id TEAM_ID \
+  --expected-bundle-id FINAL_ORGANIZATION_BUNDLE_ID \
+  --expected-icloud-container iCloud.FINAL_ORGANIZATION_CONTAINER \
+  --expected-archs "arm64 x86_64"
+```
+
+Only after that verifier passes, generate the website gate from the same canonical metadata and verified downloaded ZIP. The URL must use the immutable version/build/commit path; `latest.zip`, redirects, query aliases, and a hand-edited website manifest are rejected:
+
+```bash
+python3 Scripts/prepare-website-mac-release.py \
+  --metadata /path/to/downloaded/release.json \
+  --verified-artifact /path/to/downloaded/FoundersOffice-X.Y.Z-build-N-macOS.zip \
+  --download-url https://DOWNLOAD_ORIGIN/releases/macos/vX.Y.Z/build-N/FULL_COMMIT/FoundersOffice-X.Y.Z-build-N-macOS.zip \
+  --approved-origin https://DOWNLOAD_ORIGIN \
+  --output Website/release/mac-release.json
+```
+
+Set `FOUNDER_OFFICE_APPROVED_DOWNLOAD_ORIGIN` to that same bare HTTPS origin in the website deployment. CI exercises deny fixtures so a malformed or manually loosened manifest stays closed.
+
+Publish the final Team ID, bundle ID, iCloud container, and supported architectures on the release page. Pass them to the verifier independently; do not trust identity values read only from the downloaded metadata.
+
+## Clean-Mac acceptance
+
+Use a macOS account that has never installed Founder's Office. It must not have the developer certificate or source checkout.
+
+1. Download the ZIP, `release.json`, and `release-record.md` through the public website into the same directory.
+2. Run the independent release verifier.
+3. Drag the app to Applications and launch it through Finder.
+4. Confirm there is no Gatekeeper bypass instruction.
+5. Complete onboarding in local-only mode first.
+6. Repeat with iCloud sync enabled and confirm production CloudKit behavior.
+7. Restart the Mac and verify the launch-at-login choice.
+8. Install the next signed build and verify preferences and user data survive the upgrade.
+
+Record the Mac model, macOS version, artifact SHA-256, and results in the release record. A test on the development Mac is not sufficient evidence.
+
+## Failure and rollback
+
+Notarization rejection, a Gatekeeper failure, an entitlement mismatch, or a checksum mismatch blocks publication. A rejected or interrupted notarization response is preserved under `dist/release-failures/macos/`, outside the publishable release path. Retrieve Apple's notarization log with its submission ID, fix the source or release configuration, increase the build number, and run the full process again.
+
+If a published build is unsafe, remove its download link and mark it withdrawn. Keep its immutable artifact and evidence for incident review. Publish a higher build number after the fix; do not replace the withdrawn bytes.
+
+## Local development remains separate
+
+`Scripts/build-app.sh` still supports fast local installation. It writes to `dist/development/`, uses an ad-hoc signature, embeds the checkout path, disables release claims, and prints a non-distributable warning. This is intentional. It cannot be promoted into a website download.

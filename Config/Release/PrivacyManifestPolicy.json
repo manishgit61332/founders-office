@@ -1,0 +1,20 @@
+{
+  "accessedAPITypes": [
+    {
+      "category": "NSPrivacyAccessedAPICategoryFileTimestamp",
+      "reasons": [
+        "C617.1"
+      ]
+    },
+    {
+      "category": "NSPrivacyAccessedAPICategoryUserDefaults",
+      "reasons": [
+        "CA92.1"
+      ]
+    }
+  ],
+  "collectedDataTypes": [],
+  "schemaVersion": 1,
+  "tracking": false,
+  "trackingDomains": []
+}

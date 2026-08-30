@@ -5,6 +5,10 @@ public extension Notification.Name {
     static let founderOfficeSnapshotDidChange = Notification.Name("FounderOfficeSnapshotDidChange")
 }
 
+public enum JSONSnapshotStoreError: Error {
+    case invalidAssetFileName
+}
+
 /// A cross-platform, offline-first store used by both app targets. On the Mac,
 /// these files remain the Codex-facing mirror; on iPhone they live inside the
 /// app's Application Support directory.
@@ -61,7 +65,7 @@ public actor JSONSnapshotStore {
     }
 
     public func photoURL(named fileName: String?) -> URL? {
-        guard let fileName, !fileName.isEmpty else { return nil }
+        guard let fileName = fileName.flatMap(AssetFileName.validated) else { return nil }
         let url = rootURL
             .appendingPathComponent("Personalization", isDirectory: true)
             .appendingPathComponent(fileName)
@@ -69,6 +73,9 @@ public actor JSONSnapshotStore {
     }
 
     public func importPhoto(from sourceURL: URL, named fileName: String) throws {
+        guard let fileName = AssetFileName.validated(fileName) else {
+            throw JSONSnapshotStoreError.invalidAssetFileName
+        }
         let directory = rootURL.appendingPathComponent("Personalization", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let destination = directory.appendingPathComponent(fileName)

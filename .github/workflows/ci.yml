@@ -65,6 +65,31 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             build
 
+      - name: Build and verify unsigned macOS customer Release
+        run: |
+          derived_data="${RUNNER_TEMP}/DerivedData-macOS-Release"
+          build_settings="${RUNNER_TEMP}/FoundersOfficeMac-Release-build-settings.txt"
+          app_bundle="${derived_data}/Build/Products/Release/Founder's Office.app"
+
+          xcodebuild \
+            -project FoundersOffice.xcodeproj \
+            -scheme FoundersOfficeMac \
+            -configuration Release \
+            -sdk macosx \
+            CODE_SIGNING_ALLOWED=NO \
+            -showBuildSettings > "${build_settings}"
+
+          xcodebuild \
+            -project FoundersOffice.xcodeproj \
+            -scheme FoundersOfficeMac \
+            -configuration Release \
+            -sdk macosx \
+            -derivedDataPath "${derived_data}" \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+          Scripts/verify-macos-ci-release.sh "${app_bundle}" "${build_settings}"
+
       - name: Build unsigned iOS Simulator target
         run: |
           xcodebuild \
@@ -75,3 +100,89 @@ jobs:
             -derivedDataPath "${RUNNER_TEMP}/DerivedData-iOS" \
             CODE_SIGNING_ALLOWED=NO \
             build
+
+  website:
+    name: Website safety and build
+    runs-on: macos-15
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Use pinned Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.13.0
+          cache: npm
+          cache-dependency-path: Website/package-lock.json
+
+      - name: Install locked dependencies
+        working-directory: Website
+        run: npm ci
+
+      - name: Audit production dependencies
+        working-directory: Website
+        run: |
+          npm audit
+          npm audit --omit=dev
+
+      - name: Format, lint, and build
+        working-directory: Website
+        run: |
+          npm run format:check
+          npm run lint
+          npm run build
+          npm run test:production-headers
+          npm run test:release-policy
+
+  report-ci-failure:
+    name: File a private CI incident
+    needs: [build, website]
+    if: >-
+      ${{ always() &&
+          (needs.build.result == 'failure' || needs.website.result == 'failure') &&
+          (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+
+    steps:
+      - name: Create or update the run incident
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          WEBSITE_RESULT: ${{ needs.website.result }}
+          COMMIT_SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          marker="ci-run:${RUN_ID}"
+          existing="$(gh issue list \
+            --repo "${GH_REPO}" \
+            --state open \
+            --search "\"${marker}\" in:body" \
+            --json number \
+            --jq '.[0].number // empty')"
+          summary="build=${BUILD_RESULT}; website=${WEBSITE_RESULT}; attempt=${RUN_ATTEMPT}"
+          body="$(printf '%s\n' \
+            "<!-- ${marker} -->" \
+            "Founder’s Office CI failed on commit \`${COMMIT_SHA}\`." \
+            "" \
+            "Result: ${summary}" \
+            "Run: ${RUN_URL}" \
+            "" \
+            "This automated incident contains no customer workspace data or build logs. Review the linked run before changing code.")"
+
+          if [[ -n "${existing}" ]]; then
+            gh issue comment "${existing}" --repo "${GH_REPO}" --body "${body}"
+          else
+            gh issue create \
+              --repo "${GH_REPO}" \
+              --title "CI failure: run ${RUN_ID}" \
+              --body "${body}"
+          fi

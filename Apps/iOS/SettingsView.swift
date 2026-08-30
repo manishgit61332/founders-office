@@ -12,6 +12,7 @@ struct SettingsView: View {
     @State private var workspaceNameDraft = ""
 
     private var appearance: AppearancePreferences { model.personalization.resolvedAppearance }
+    private var isRecoveryRequired: Bool { model.recoveryMessage != nil }
 
     private var accentMode: Binding<AccentMode> {
         Binding(
@@ -157,10 +158,32 @@ struct SettingsView: View {
 
             Section("Cloud") {
                 LabeledContent("Private iCloud", value: cloudAccount.state.title)
-                LabeledContent("Workspace", value: model.cloudStatus.title)
+                LabeledContent(
+                    "Workspace",
+                    value: isRecoveryRequired ? "Recovery required" : model.cloudStatus.title
+                )
+
+                if isRecoveryRequired {
+                    Label(
+                        "Sync is paused until workspace recovery is complete.",
+                        systemImage: "pause.circle.fill"
+                    )
+                    .foregroundStyle(.orange)
+                    .accessibilityLabel(
+                        "iCloud sync is paused until workspace recovery is complete."
+                    )
+                }
+
                 Button("Sync now") {
                     model.syncCloudNow()
                 }
+                .disabled(isRecoveryRequired)
+                .accessibilityHint(
+                    isRecoveryRequired
+                        ? "Unavailable while workspace recovery is required."
+                        : "Syncs this workspace with iCloud."
+                )
+
                 Button("Check iCloud again") {
                     cloudAccount.refresh()
                 }
@@ -169,9 +192,12 @@ struct SettingsView: View {
                     Button("Keep this workspace and sync") {
                         model.resumeCloudAfterAccountReview(uploadLocalWorkspace: true)
                     }
+                    .disabled(isRecoveryRequired)
+
                     Button("Use the workspace from iCloud") {
                         model.resumeCloudAfterAccountReview(uploadLocalWorkspace: false)
                     }
+                    .disabled(isRecoveryRequired)
                 }
             }
         }

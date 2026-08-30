@@ -8,6 +8,7 @@ final class OpenLoopStore: ObservableObject {
     @Published private(set) var lastSavedAt: Date?
     @Published private(set) var syncMessage = "Loading…"
     @Published private(set) var recentlyDeleted: OpenLoop?
+    @Published private(set) var recoveryState: WorkspaceRecoveryState = .ready
 
     let rootURL: URL
     let jsonURL: URL
@@ -30,11 +31,13 @@ final class OpenLoopStore: ObservableObject {
         decoder.dateDecodingStrategy = .iso8601
 
         loadFromDisk()
+        #if !FOUNDER_OFFICE_DISTRIBUTION
         applyPreviewOverrides()
+        #endif
         startWatching()
     }
 
-    deinit {
+    isolated deinit {
         watcher?.invalidate()
     }
 
@@ -53,18 +56,21 @@ final class OpenLoopStore: ObservableObject {
     }
 
     func toggleCompletion(_ item: OpenLoop) {
+        guard canEdit else { return }
         guard let index = items.firstIndex(where: { $0.id == item.id }) else { return }
         items[index] = OpenLoopRules.toggledCompletion(items[index], at: Date())
         persist()
     }
 
     func move(_ item: OpenLoop, to status: LoopStatus) {
+        guard canEdit else { return }
         guard let index = items.firstIndex(where: { $0.id == item.id }) else { return }
         items[index] = OpenLoopRules.moved(items[index], to: status, at: Date())
         persist()
     }
 
     func add(title: String, details: String = "", status: LoopStatus, priority: LoopPriority, dueAt: Date?) {
+        guard canEdit else { return }
         let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleanTitle.isEmpty else { return }
         let now = Date()
@@ -89,6 +95,7 @@ final class OpenLoopStore: ObservableObject {
     }
 
     func delete(_ item: OpenLoop) {
+        guard canEdit else { return }
         guard let index = items.firstIndex(where: { $0.id == item.id && $0.deletedAt == nil }) else { return }
         items[index] = OpenLoopRules.softDeleted(items[index], at: Date())
         recentlyDeleted = items[index]
@@ -96,6 +103,7 @@ final class OpenLoopStore: ObservableObject {
     }
 
     func undoLastDelete() {
+        guard canEdit else { return }
         guard let deleted = recentlyDeleted,
               let index = items.firstIndex(where: { $0.id == deleted.id }) else { return }
         items[index] = OpenLoopRules.restored(items[index], at: Date())
@@ -120,6 +128,10 @@ final class OpenLoopStore: ObservableObject {
             try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
 
             guard FileManager.default.fileExists(atPath: jsonURL.path) else {
+                guard !recoveryState.requiresRecovery else {
+                    syncMessage = recoveryState.message
+                    return
+                }
                 items = Self.seedItems
                 persist()
                 return
@@ -128,11 +140,27 @@ final class OpenLoopStore: ObservableObject {
             let modificationDate = fileModificationDate()
             if !force, modificationDate == lastKnownModificationDate, !items.isEmpty { return }
 
-            let data = try Data(contentsOf: jsonURL)
-            let document = try decoder.decode(OpenLoopsDocument.self, from: data)
+            let data: Data
+            do {
+                data = try Data(contentsOf: jsonURL)
+            } catch {
+                requireRecovery(preservedCopyName: nil, error: error)
+                return
+            }
+
+            let document: OpenLoopsDocument
+            do {
+                document = try decoder.decode(OpenLoopsDocument.self, from: data)
+            } catch {
+                let preservedCopyName = (try? CorruptFileQuarantine.preserve(jsonURL))?.lastPathComponent
+                requireRecovery(preservedCopyName: preservedCopyName, error: error)
+                return
+            }
+
             items = document.items
             lastSavedAt = document.updatedAt
             lastKnownModificationDate = modificationDate
+            recoveryState = .ready
             syncMessage = "Synced"
 
             if !FileManager.default.fileExists(atPath: contextURL.path) {
@@ -144,6 +172,7 @@ final class OpenLoopStore: ObservableObject {
         }
     }
 
+    #if !FOUNDER_OFFICE_DISTRIBUTION
     private func applyPreviewOverrides() {
         guard let rawID = ProcessInfo.processInfo.environment["OPENLOOPS_PREVIEW_DELETED_ID"],
               let id = UUID(uuidString: rawID),
@@ -151,8 +180,10 @@ final class OpenLoopStore: ObservableObject {
         items[index].deletedAt = Date()
         recentlyDeleted = items[index]
     }
+    #endif
 
     private func persist() {
+        guard canEdit else { return }
         let now = Date()
         let document = OpenLoopsDocument(schemaVersion: 2, updatedAt: now, items: items)
 
@@ -188,6 +219,24 @@ final class OpenLoopStore: ObservableObject {
     private func fileModificationDate() -> Date? {
         let attributes = try? FileManager.default.attributesOfItem(atPath: jsonURL.path)
         return attributes?[.modificationDate] as? Date
+    }
+
+    private var canEdit: Bool {
+        guard !recoveryState.requiresRecovery else {
+            syncMessage = recoveryState.message
+            return false
+        }
+        return true
+    }
+
+    private func requireRecovery(preservedCopyName: String?, error: Error) {
+        lastKnownModificationDate = fileModificationDate()
+        recoveryState = WorkspaceRecoveryState(
+            affectedComponents: [.openLoops],
+            preservedCopyNames: preservedCopyName.map { [$0] } ?? []
+        )
+        syncMessage = recoveryState.message
+        AppDiagnostics.failure(.moveStoreLoad, category: .storage, error: error)
     }
 
     private func writeContext(updatedAt: Date) throws {
@@ -237,6 +286,7 @@ final class OpenLoopStore: ObservableObject {
 
 enum WorkspaceLocator {
     static var openLoopsRoot: URL {
+        #if !FOUNDER_OFFICE_DISTRIBUTION
         if let override = ProcessInfo.processInfo.environment["OPENLOOPS_ROOT"], !override.isEmpty {
             return URL(fileURLWithPath: override, isDirectory: true)
         }
@@ -245,6 +295,7 @@ enum WorkspaceLocator {
            !configured.isEmpty {
             return URL(fileURLWithPath: configured, isDirectory: true)
         }
+        #endif
 
         let applicationSupport = FileManager.default.urls(
             for: .applicationSupportDirectory,

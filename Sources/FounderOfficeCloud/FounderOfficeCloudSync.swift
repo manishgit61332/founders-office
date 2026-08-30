@@ -2,20 +2,102 @@ import CloudKit
 import Foundation
 import FounderOfficeCore
 import os
+import Security
+
+public enum FounderOfficeCloudConfigurationError: Error, Equatable, Sendable {
+    case cloudDisabled
+    case missingContainerIdentifier
+    case malformedContainerIdentifier
+    case missingContainerEntitlement
+    case containerEntitlementMismatch
+}
 
 public struct FounderOfficeCloudConfiguration: Sendable {
+    public static let infoPlistContainerKey = "FounderOfficeCloudContainerIdentifier"
+    public static let cloudEnabledInfoPlistKey = "FounderOfficeCloudEnabled"
+
     public var containerIdentifier: String
     public var zoneName: String
     public var recordName: String
 
     public init(
-        containerIdentifier: String = "iCloud.com.manish.foundersoffice",
+        containerIdentifier: String,
         zoneName: String = "FounderOffice",
         recordName: String = "workspace-default"
     ) {
         self.containerIdentifier = containerIdentifier
         self.zoneName = zoneName
         self.recordName = recordName
+    }
+
+    /// Resolves the CloudKit container from the signed product instead of from
+    /// source defaults. A missing key or a signature entitlement mismatch is a
+    /// hard failure: callers must keep the workspace local rather than connect
+    /// to a different container.
+    public static func bundled(in bundle: Bundle = .main) throws -> Self {
+        let cloudEnabled = bundle.object(
+            forInfoDictionaryKey: cloudEnabledInfoPlistKey
+        ) as? Bool == true
+        let configuredContainer = bundle.object(
+            forInfoDictionaryKey: infoPlistContainerKey
+        ) as? String
+        guard cloudEnabled else {
+            throw FounderOfficeCloudConfigurationError.cloudDisabled
+        }
+
+        return try validatedBundledConfiguration(
+            cloudEnabled: true,
+            configuredContainer: configuredContainer,
+            entitledContainers: try signedContainerIdentifiers()
+        )
+    }
+
+    static func validatedBundledConfiguration(
+        cloudEnabled: Bool,
+        configuredContainer: String?,
+        entitledContainers: [String]
+    ) throws -> Self {
+        guard cloudEnabled else {
+            throw FounderOfficeCloudConfigurationError.cloudDisabled
+        }
+        guard let configuredContainer, !configuredContainer.isEmpty else {
+            throw FounderOfficeCloudConfigurationError.missingContainerIdentifier
+        }
+        guard configuredContainer.hasPrefix("iCloud."),
+              configuredContainer.unicodeScalars.allSatisfy({
+                  CharacterSet.alphanumerics
+                      .union(CharacterSet(charactersIn: ".-"))
+                      .contains($0)
+              }) else {
+            throw FounderOfficeCloudConfigurationError.malformedContainerIdentifier
+        }
+        guard !entitledContainers.isEmpty else {
+            throw FounderOfficeCloudConfigurationError.missingContainerEntitlement
+        }
+        guard entitledContainers.count == 1,
+              entitledContainers[0] == configuredContainer else {
+            throw FounderOfficeCloudConfigurationError.containerEntitlementMismatch
+        }
+        return Self(containerIdentifier: configuredContainer)
+    }
+
+    private static func signedContainerIdentifiers() throws -> [String] {
+        guard let task = SecTaskCreateFromSelf(nil) else {
+            throw FounderOfficeCloudConfigurationError.missingContainerEntitlement
+        }
+        var copyError: Unmanaged<CFError>?
+        guard let rawValue = SecTaskCopyValueForEntitlement(
+            task,
+            "com.apple.developer.icloud-container-identifiers" as CFString,
+            &copyError
+        ) else {
+            _ = copyError?.takeRetainedValue()
+            throw FounderOfficeCloudConfigurationError.missingContainerEntitlement
+        }
+        guard let identifiers = rawValue as? [String] else {
+            throw FounderOfficeCloudConfigurationError.missingContainerEntitlement
+        }
+        return identifiers
     }
 }
 
@@ -61,7 +143,7 @@ public final actor FounderOfficeCloudSync: CKSyncEngineDelegate {
     public init(
         snapshotStore: JSONSnapshotStore,
         sidecarURL: URL,
-        configuration: FounderOfficeCloudConfiguration = .init(),
+        configuration: FounderOfficeCloudConfiguration,
         automaticallySync: Bool = true
     ) {
         self.snapshotStore = snapshotStore

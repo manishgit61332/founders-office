@@ -15,6 +15,7 @@ The product advances by evidence, not by a calendar date.
 9. Keep external Codex execution out of the App Store target until a separately scoped helper is proven.
 10. Finish sandboxing, icons, licenses, privacy manifests, export/erase, StoreKit recovery, signed CI, and production CloudKit tests.
 11. Use synthetic preview data and privacy-safe diagnostics only.
+12. Keep the website download disabled until the versioned macOS ZIP passes Developer ID signing, hardened-runtime, notarization, stapling, Gatekeeper, checksum, and clean-Mac acceptance checks.
 
 ## Alpha gate
 

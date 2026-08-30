@@ -14,18 +14,19 @@ final class CloudSyncBridge {
     private var lastOpenLoopsModification: Date?
     private var lastPersonalizationModification: Date?
 
-    init(rootURL: URL) {
+    init(rootURL: URL, configuration: FounderOfficeCloudConfiguration) {
         self.rootURL = rootURL
         let snapshotStore = JSONSnapshotStore(rootURL: rootURL)
         sync = FounderOfficeCloudSync(
             snapshotStore: snapshotStore,
             sidecarURL: rootURL
                 .appendingPathComponent(".founders-office-cloud", isDirectory: true)
-                .appendingPathComponent("sync-state.json")
+                .appendingPathComponent("sync-state.json"),
+            configuration: configuration
         )
     }
 
-    deinit {
+    isolated deinit {
         watcher?.invalidate()
     }
 

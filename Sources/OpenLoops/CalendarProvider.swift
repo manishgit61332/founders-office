@@ -34,6 +34,11 @@ struct CalendarSignal: Identifiable, Hashable {
 
 @MainActor
 final class CalendarProvider: ObservableObject {
+    enum Mode {
+        case live
+        case syntheticPreview
+    }
+
     @Published private(set) var authorizationStatus: EKAuthorizationStatus
     @Published private(set) var events: [CalendarSignal] = []
     @Published private(set) var accounts: [CalendarAccountSignal] = []
@@ -41,15 +46,26 @@ final class CalendarProvider: ObservableObject {
     @Published private(set) var lastSyncedAt: Date?
 
     private let eventStore = EKEventStore()
+    private let mode: Mode
     private var cancellables = Set<AnyCancellable>()
 
-    init() {
+    init(mode requestedMode: Mode = .live) {
+        #if FOUNDER_OFFICE_DISTRIBUTION
+        mode = requestedMode
+        #else
+        mode = ProcessInfo.processInfo.environment["OPENLOOPS_PREVIEW_CALENDAR"] == "1"
+            ? .syntheticPreview
+            : requestedMode
+        #endif
         authorizationStatus = EKEventStore.authorizationStatus(for: .event)
-        startLiveSync()
 
-        if ProcessInfo.processInfo.environment["OPENLOOPS_PREVIEW_CALENDAR"] == "1" {
+        if mode == .syntheticPreview {
             seedPreviewEvents()
-        } else if isAuthorized {
+        } else {
+            startLiveSync()
+        }
+
+        if mode == .live, isAuthorized {
             refresh()
         }
     }
@@ -92,7 +108,7 @@ final class CalendarProvider: ObservableObject {
     }
 
     func syncOnOpen() {
-        guard ProcessInfo.processInfo.environment["OPENLOOPS_PREVIEW_CALENDAR"] != "1" else { return }
+        guard mode == .live else { return }
         refresh()
     }
 

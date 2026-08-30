@@ -14,6 +14,12 @@ let package = Package(
         .executable(name: "FounderOfficeCoreChecks", targets: ["FounderOfficeCoreChecks"]),
         .executable(name: "OpenLoops", targets: ["OpenLoops"])
     ],
+    dependencies: [
+        .package(
+            url: "https://github.com/swiftlang/swift-testing.git",
+            exact: "0.10.0"
+        )
+    ],
     targets: [
         .target(
             name: "FounderOfficeCore",
@@ -33,6 +39,22 @@ let package = Package(
             name: "FounderOfficeCoreChecks",
             dependencies: ["FounderOfficeCore", "FounderOfficeCloud"],
             path: "Checks/FounderOfficeCoreChecks"
+        ),
+        .testTarget(
+            name: "FounderOfficeCoreTests",
+            dependencies: [
+                "FounderOfficeCore",
+                .product(name: "Testing", package: "swift-testing")
+            ],
+            path: "Tests/FounderOfficeCoreTests"
+        ),
+        .testTarget(
+            name: "FounderOfficeCloudTests",
+            dependencies: [
+                "FounderOfficeCloud",
+                .product(name: "Testing", package: "swift-testing")
+            ],
+            path: "Tests/FounderOfficeCloudTests"
         )
     ]
 )
