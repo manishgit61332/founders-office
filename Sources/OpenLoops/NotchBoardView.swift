@@ -1,0 +1,1768 @@
+import AppKit
+import FounderOfficeCore
+import SwiftUI
+
+private enum BoardSection: String, CaseIterable, Identifiable {
+    case home
+    case loops
+    case calendar
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .home: return "Home"
+        case .loops: return "Moves"
+        case .calendar: return "Calendar"
+        }
+    }
+
+    var icon: ClayIconName {
+        switch self {
+        case .home: return .home
+        case .loops: return .loops
+        case .calendar: return .calendar
+        }
+    }
+}
+
+private struct DeadlineSignal: Identifiable {
+    var id: String
+    var title: String
+    var dueAt: Date
+    var source: String
+}
+
+private struct NotchMorphShape: InsettableShape {
+    var width: CGFloat
+    var topWidth: CGFloat
+    var height: CGFloat
+    var topRadius: CGFloat
+    var bottomRadius: CGFloat
+    var shoulderDepth: CGFloat
+    var bodyOffsetX: CGFloat
+    var insetAmount: CGFloat = 0
+
+    func path(in rect: CGRect) -> Path {
+        let resolvedWidth = max(0, min(width, rect.width) - insetAmount * 2)
+        let resolvedTopWidth = max(0, min(topWidth, width) - insetAmount * 2)
+        let resolvedHeight = max(0, min(height, rect.height) - insetAmount * 2)
+        let maximumRadius = max(0, min(resolvedWidth, resolvedHeight) / 2)
+        let resolvedTopRadius = min(max(topRadius - insetAmount, 0), maximumRadius)
+        let resolvedBottomRadius = min(max(bottomRadius - insetAmount, 0), maximumRadius)
+        let resolvedShoulderDepth = min(
+            max(shoulderDepth - insetAmount, resolvedTopRadius),
+            max(resolvedHeight - resolvedBottomRadius, 0)
+        )
+        let top = rect.minY + insetAmount
+        let bottom = top + resolvedHeight
+        let bodyCenter = rect.midX + bodyOffsetX
+        let left = bodyCenter - resolvedWidth / 2
+        let right = bodyCenter + resolvedWidth / 2
+        let topLeft = rect.midX - resolvedTopWidth / 2
+        let topRight = rect.midX + resolvedTopWidth / 2
+        let shoulderControl = 0.5523
+
+        var path = Path()
+        path.move(to: CGPoint(x: topLeft + resolvedTopRadius, y: top))
+        path.addLine(to: CGPoint(x: topRight - resolvedTopRadius, y: top))
+        path.addCurve(
+            to: CGPoint(x: right, y: top + resolvedShoulderDepth),
+            control1: CGPoint(
+                x: topRight - resolvedTopRadius + (right - topRight + resolvedTopRadius) * shoulderControl,
+                y: top
+            ),
+            control2: CGPoint(x: right, y: top + resolvedShoulderDepth * (1 - shoulderControl))
+        )
+        path.addLine(to: CGPoint(x: right, y: bottom - resolvedBottomRadius))
+        path.addCurve(
+            to: CGPoint(x: right - resolvedBottomRadius, y: bottom),
+            control1: CGPoint(x: right, y: bottom - resolvedBottomRadius * (1 - shoulderControl)),
+            control2: CGPoint(x: right - resolvedBottomRadius * (1 - shoulderControl), y: bottom)
+        )
+        path.addLine(to: CGPoint(x: left + resolvedBottomRadius, y: bottom))
+        path.addCurve(
+            to: CGPoint(x: left, y: bottom - resolvedBottomRadius),
+            control1: CGPoint(x: left + resolvedBottomRadius * (1 - shoulderControl), y: bottom),
+            control2: CGPoint(x: left, y: bottom - resolvedBottomRadius * (1 - shoulderControl))
+        )
+        path.addLine(to: CGPoint(x: left, y: top + resolvedShoulderDepth))
+        path.addCurve(
+            to: CGPoint(x: topLeft + resolvedTopRadius, y: top),
+            control1: CGPoint(x: left, y: top + resolvedShoulderDepth * (1 - shoulderControl)),
+            control2: CGPoint(
+                x: topLeft + resolvedTopRadius - (topLeft - left + resolvedTopRadius) * shoulderControl,
+                y: top
+            )
+        )
+        path.closeSubpath()
+        return path
+    }
+
+    func inset(by amount: CGFloat) -> NotchMorphShape {
+        var copy = self
+        copy.insetAmount += amount
+        return copy
+    }
+}
+
+struct NotchBoardView: View {
+    @ObservedObject var store: OpenLoopStore
+    @ObservedObject var codexRunner: CodexRunner
+    @ObservedObject var personalization: PersonalizationStore
+    @ObservedObject var calendarProvider: CalendarProvider
+    @ObservedObject var presentation: NotchPresentationModel
+    let onClose: () -> Void
+
+    @State private var selectedSection: BoardSection = ProcessInfo.processInfo.environment["OPENLOOPS_PREVIEW_SECTION"]
+        .flatMap(BoardSection.init(rawValue:)) ?? .home
+    @State private var selectedStatus: LoopStatus = ProcessInfo.processInfo.environment["OPENLOOPS_PREVIEW_SELECTED_STATUS"]
+        .flatMap(LoopStatus.init(rawValue:)) ?? .doing
+    @State private var selectedCalendarDay = Calendar.current.startOfDay(for: Date())
+    @State private var isAdding = false
+    @State private var isSettingsPresented = ProcessInfo.processInfo.environment["OPENLOOPS_PREVIEW_SETTINGS"] == "1"
+    @State private var newTitle = ""
+    @State private var newPriority: LoopPriority = .p1
+    @State private var newStatus: LoopStatus = .doing
+    @State private var hoveredStatus: LoopStatus? = ProcessInfo.processInfo.environment["OPENLOOPS_PREVIEW_HOVER_STATUS"]
+        .flatMap(LoopStatus.init(rawValue:))
+    @State private var settingsPreferredName = ""
+    @State private var settingsWorkspaceName = ""
+    @State private var primaryGoalTitle = ""
+    @State private var primaryGoalMetric = ""
+    @State private var primaryGoalCurrent = ""
+    @State private var primaryGoalTarget = ""
+    @State private var primaryGoalUnit: GoalValueUnit = .usd
+    @State private var primaryGoalDate = Calendar.current.date(byAdding: .day, value: 60, to: Date()) ?? Date()
+    @Namespace private var statusSelection
+    @FocusState private var addFieldFocused: Bool
+
+    private let groupedBackground = Color.white.opacity(0.042)
+    private let border = Color.white.opacity(0.085)
+    private let primaryText = Color.white.opacity(0.96)
+    private let secondaryText = Color.white.opacity(0.74)
+    private let contentSurface = Color.white.opacity(0.06)
+    private let contentBorder = Color.white.opacity(0.10)
+    private let contentRadius: CGFloat = 14
+    private var accent: Color { personalization.accentColor }
+
+    var body: some View {
+        let metrics = NotchMorphMetrics(
+            progress: presentation.progress,
+            notchWidth: presentation.notchWidth,
+            notchHeight: presentation.notchHeight
+        )
+        let shellShape = NotchMorphShape(
+            width: metrics.shellWidth,
+            topWidth: metrics.topWidth,
+            height: metrics.shellHeight,
+            topRadius: metrics.topRadius,
+            bottomRadius: metrics.bottomRadius,
+            shoulderDepth: metrics.shoulderDepth,
+            bodyOffsetX: presentation.horizontalPull * metrics.pullEnvelope
+        )
+
+        ZStack(alignment: .top) {
+            panelSurface
+
+            boardContent
+                .opacity(metrics.contentProgress)
+                .scaleEffect(0.975 + metrics.contentProgress * 0.025, anchor: .top)
+                .offset(y: -8 * (1 - metrics.contentProgress))
+                .blur(radius: 3.5 * (1 - metrics.contentProgress))
+        }
+        .frame(width: 720, height: 350, alignment: .top)
+        .mask(shellShape)
+        .overlay(
+            shellShape
+                .inset(by: 1)
+                .stroke(
+                    LinearGradient(
+                        colors: [
+                            Color.white.opacity(0.105 * metrics.settledProgress),
+                            Color.white.opacity(0.035 * metrics.settledProgress),
+                            Color.clear
+                        ],
+                        startPoint: .top,
+                        endPoint: UnitPoint(x: 0.5, y: 0.68)
+                    ),
+                    lineWidth: 0.8
+                )
+                .blur(radius: 0.55)
+                .mask(shellShape)
+        )
+        .opacity(metrics.shellVisibility)
+        .shadow(color: Color.black.opacity(0.44 * metrics.settledProgress), radius: 30, x: 0, y: 16)
+        .allowsHitTesting(metrics.isInteractive)
+        .accessibilityHidden(!metrics.isInteractive)
+        .preferredColorScheme(.dark)
+        .onAppear {
+            loadIdentityEditor()
+            loadPrimaryGoalEditor()
+        }
+        .onExitCommand {
+            if isSettingsPresented {
+                dismissSettings()
+            } else {
+                onClose()
+            }
+        }
+    }
+
+    private var boardContent: some View {
+        Group {
+            if isEditorialHome {
+                homeContent
+            } else {
+                VStack(spacing: 0) {
+                    header
+
+                    if isSettingsPresented {
+                        settingsContent
+                    } else {
+                        sectionContent
+                    }
+
+                    if showsContextualFooter {
+                        footer
+                    }
+                }
+            }
+        }
+        .frame(width: 720, height: 350)
+    }
+
+    private var panelSurface: some View {
+        return ZStack {
+            Rectangle()
+                .fill(.ultraThinMaterial)
+
+            Rectangle()
+                .fill(Color(red: 0.012, green: 0.014, blue: 0.018).opacity(0.48))
+        }
+        .frame(width: 720, height: 350)
+    }
+
+    private var header: some View {
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(headerTitle)
+                    .font(.custom("Instrument Serif", size: 25))
+                    .foregroundStyle(primaryText)
+
+                if !isEditorialHome {
+                    Text(headerSubtitle)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(secondaryText)
+                        .lineLimit(1)
+                }
+            }
+            .frame(width: isEditorialHome ? 220 : 188, alignment: .leading)
+
+            Spacer(minLength: 8)
+
+            sectionSwitcher
+
+            AppleNavigationButton(
+                icon: .settings,
+                isSelected: isSettingsPresented,
+                accent: accent,
+                label: "Personalize",
+                action: presentSettings
+            )
+
+            Button(action: onClose) {
+                Image(systemName: "xmark")
+            }
+            .buttonStyle(CloseButtonStyle())
+            .help("Close")
+        }
+        .padding(.horizontal, 20)
+        .frame(height: 66)
+    }
+
+    private var isEditorialHome: Bool {
+        selectedSection == .home && !isSettingsPresented
+    }
+
+    private var headerTitle: String {
+        if isSettingsPresented { return "Personalize" }
+        if selectedSection != .home { return personalization.workspaceName }
+
+        let name = personalization.preferredName
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? "Welcome" : "Hi \(name)!"
+    }
+
+    private var headerSubtitle: String {
+        if isSettingsPresented { return "Make the notch feel like yours" }
+        switch selectedSection {
+        case .home:
+            return "\(personalization.workspaceName)  ·  \(store.activeCount) active"
+        case .loops:
+            return "\(store.activeCount) active"
+        case .calendar:
+            return calendarProvider.message
+        }
+    }
+
+    private var sectionSwitcher: some View {
+        HStack(spacing: 6) {
+            ForEach(BoardSection.allCases) { section in
+                AppleNavigationButton(
+                    icon: section.icon,
+                    isSelected: !isSettingsPresented && selectedSection == section,
+                    accent: accent,
+                    label: section.title,
+                    action: { select(section) }
+                )
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var sectionContent: some View {
+        switch selectedSection {
+        case .home:
+            homeContent
+        case .loops:
+            loopsSection
+        case .calendar:
+            calendarContent
+        }
+    }
+
+    private var homeContent: some View {
+        ZStack(alignment: .topLeading) {
+            Text(headerTitle)
+                .font(.custom("Instrument Serif", size: 34))
+                .foregroundStyle(primaryText)
+                .offset(x: 32, y: 44)
+
+            Text("Next move")
+                .font(.system(size: 22, weight: .bold))
+                .foregroundStyle(primaryText)
+                .offset(x: 32, y: 106)
+
+            Group {
+                if let focusItem {
+                    homeFocus(item: focusItem)
+                } else {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("Nothing is pulling at you")
+                            .font(.system(size: 15, weight: .bold))
+                            .foregroundStyle(primaryText)
+                        Text("The board is clear.")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Color.white.opacity(0.84))
+                    }
+                    .padding(12)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .background(contentSurface, in: RoundedRectangle(cornerRadius: contentRadius, style: .continuous))
+                }
+            }
+            .frame(width: 344, height: 76)
+            .offset(x: 32, y: 137)
+
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("Up next")
+                        .font(.system(size: 18, weight: .bold))
+                        .foregroundStyle(primaryText)
+                    homeCalendarSignal
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                Rectangle()
+                    .fill(Color.white.opacity(0.18))
+                    .frame(width: 1, height: 76)
+                    .padding(.top, 27)
+
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("Primary goal")
+                        .font(.system(size: 18, weight: .bold))
+                        .foregroundStyle(primaryText)
+                    homePrimaryGoal
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(width: 344)
+            .offset(x: 32, y: 222)
+
+            visionPhoto
+                .frame(width: 294, height: 283)
+                .offset(x: 410, y: 55)
+
+            HStack(spacing: 10) {
+                sectionSwitcher
+
+                AppleNavigationButton(
+                    icon: .settings,
+                    isSelected: false,
+                    accent: accent,
+                    label: "Personalize",
+                    action: presentSettings
+                )
+
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(CloseButtonStyle())
+                .help("Close")
+            }
+            .offset(x: 472, y: 19)
+        }
+        .frame(width: 720, height: 350, alignment: .topLeading)
+    }
+
+    private var focusItem: OpenLoop? {
+        store.items(in: .doing).first ?? store.items(in: .next).first
+    }
+
+    private func homeFocus(item: OpenLoop) -> some View {
+        HStack(alignment: .top, spacing: 11) {
+            Button {
+                store.toggleCompletion(item)
+            } label: {
+                Image(systemName: "circle")
+                    .font(.system(size: 19, weight: .medium))
+                    .foregroundStyle(priorityColor(for: item.priority))
+                    .frame(width: 34, height: 34)
+            }
+            .buttonStyle(RowControlButtonStyle())
+            .accessibilityLabel("Complete \(item.title)")
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text(item.title)
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundStyle(primaryText)
+                    .lineLimit(1)
+
+                if let dueAt = item.dueAt {
+                    Text(homeDueLabel(dueAt))
+                        .font(.system(size: 11.5, weight: .bold))
+                        .foregroundStyle(dueAt < Calendar.current.startOfDay(for: Date()) ? Color.red.opacity(0.94) : Color.white.opacity(0.92))
+                }
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, minHeight: 76, maxHeight: 76, alignment: .topLeading)
+        .background(contentSurface, in: RoundedRectangle(cornerRadius: contentRadius, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: contentRadius, style: .continuous)
+                .stroke(contentBorder, lineWidth: 1)
+        )
+    }
+
+    private var homeCalendarSignal: some View {
+        Button {
+            select(.calendar)
+        } label: {
+            VStack(alignment: .leading, spacing: 5) {
+                if let event = calendarProvider.events.first {
+                    Text(event.title)
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(primaryText)
+                        .lineLimit(2)
+                    Text(eventDateLabel(event))
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundStyle(Color.white.opacity(0.82))
+                } else {
+                    Text(calendarProvider.isAuthorized ? "No meetings soon" : "Connect Calendar")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(primaryText)
+                    Text(calendarProvider.isAuthorized ? "Your time is clear" : "Only important dates")
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundStyle(Color.white.opacity(0.82))
+                }
+            }
+            .padding(11)
+            .frame(maxWidth: .infinity, minHeight: 76, maxHeight: 76, alignment: .topLeading)
+            .background(contentSurface, in: RoundedRectangle(cornerRadius: contentRadius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: contentRadius, style: .continuous)
+                    .stroke(contentBorder, lineWidth: 1)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(StatusTabButtonStyle())
+        .help("Open Calendar")
+    }
+
+    private var homePrimaryGoal: some View {
+        Button(action: presentSettings) {
+            VStack(alignment: .leading, spacing: 4) {
+                if let goal = personalization.primaryGoal {
+                    if let target = goal.targetValue, target > 0 {
+                        Text(primaryGoalTargetLabel(goal, target: target))
+                            .font(.custom("Instrument Serif", size: 21))
+                            .foregroundStyle(primaryText)
+                            .lineLimit(1)
+
+                        HStack(spacing: 4) {
+                            Text("\(goal.unit.format(goal.currentValue ?? 0)) now")
+                            Spacer(minLength: 3)
+                            Text(daysLeftLabel(goal.dueAt))
+                        }
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Color.white.opacity(0.84))
+
+                        ProgressView(value: primaryGoalProgress(goal))
+                            .progressViewStyle(.linear)
+                            .tint(accent)
+                            .controlSize(.mini)
+                    } else {
+                        Text(daysLeftLabel(goal.dueAt))
+                            .font(.custom("Instrument Serif", size: 21))
+                            .foregroundStyle(primaryText)
+                        Text(goal.title)
+                            .font(.system(size: 11.5, weight: .bold))
+                            .foregroundStyle(primaryText)
+                            .lineLimit(1)
+                    }
+                } else {
+                    Text("Set the finish line")
+                        .font(.custom("Instrument Serif", size: 21))
+                        .foregroundStyle(primaryText)
+                    Text("Metric + deadline")
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundStyle(Color.white.opacity(0.82))
+                }
+            }
+            .padding(11)
+            .frame(maxWidth: .infinity, minHeight: 76, maxHeight: 76, alignment: .topLeading)
+            .background(contentSurface, in: RoundedRectangle(cornerRadius: contentRadius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: contentRadius, style: .continuous)
+                    .stroke(contentBorder, lineWidth: 1)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(StatusTabButtonStyle())
+        .help("Edit the primary goal")
+    }
+
+    private var visionPhoto: some View {
+        Group {
+            if let url = personalization.photoURL,
+               let image = NSImage(contentsOf: url) {
+                Button(action: personalization.choosePhoto) {
+                    Image(nsImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 294, height: 283)
+                        .clipped()
+                }
+                .buttonStyle(StatusTabButtonStyle())
+                .clipShape(RoundedRectangle(cornerRadius: 25, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 25, style: .continuous)
+                        .stroke(Color.white.opacity(0.14), lineWidth: 1)
+                )
+                .help("Choose a different image")
+            } else {
+                Button {
+                    personalization.choosePhoto()
+                } label: {
+                    VStack(spacing: 8) {
+                        ClayIconView(name: .photo, style: personalization.iconStyle, size: 34)
+                        Text("Add a personal photo")
+                            .font(.system(size: 14, weight: .bold))
+                        Text("A dream, a person, a logo")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(Color.white.opacity(0.82))
+                    }
+                    .foregroundStyle(primaryText)
+                    .frame(width: 294, height: 283)
+                    .background(contentSurface, in: RoundedRectangle(cornerRadius: 25, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 25, style: .continuous)
+                            .stroke(Color.white.opacity(0.12), lineWidth: 1)
+                    )
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(StatusTabButtonStyle())
+            }
+        }
+    }
+
+    private var loopsSection: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                statusTabs
+
+                Button(action: toggleAddComposer) {
+                    HStack(spacing: 5) {
+                        Image(systemName: isAdding ? "xmark" : "plus")
+                            .font(.system(size: 10.5, weight: .bold))
+                        Text(isAdding ? "Cancel" : "New")
+                    }
+                }
+                .buttonStyle(HeaderActionButtonStyle(isEmphasized: !isAdding, accent: accent))
+                .keyboardShortcut("n", modifiers: .command)
+                .help(isAdding ? "Cancel adding a move" : "Add a move")
+            }
+            .padding(.trailing, 16)
+
+            Divider()
+                .overlay(border)
+                .padding(.horizontal, 20)
+
+            loopsContent
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var statusTabs: some View {
+        HStack(spacing: 4) {
+            ForEach(LoopStatus.allCases) { status in
+                let isSelected = selectedStatus == status
+                let isHovered = hoveredStatus == status
+
+                Button {
+                    select(status)
+                } label: {
+                    HStack(spacing: 6) {
+                        Text(status.title)
+                            .font(.system(size: 11.5, weight: isSelected ? .semibold : .medium))
+
+                        Text("\(store.count(in: status))")
+                            .font(.system(size: 10.5, weight: .semibold))
+                            .foregroundStyle(isSelected ? Color.white.opacity(0.70) : secondaryText.opacity(isHovered ? 1 : 0.76))
+                            .contentTransition(.numericText())
+                    }
+                    .foregroundStyle(isSelected || isHovered ? primaryText : secondaryText)
+                    .frame(maxWidth: .infinity, minHeight: 40)
+                    .background {
+                        ZStack {
+                            Rectangle().fill(Color.white.opacity(0.001))
+                            if isSelected {
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .fill(accent.opacity(0.13))
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                            .stroke(accent.opacity(0.18), lineWidth: 1)
+                                    )
+                                    .shadow(color: accent.opacity(0.11), radius: 9, y: 4)
+                                    .matchedGeometryEffect(id: "selected-status-surface", in: statusSelection)
+                            } else if isHovered {
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .fill(Color.white.opacity(0.065))
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                            .stroke(Color.white.opacity(0.055), lineWidth: 1)
+                                    )
+                            }
+                        }
+                    }
+                    .overlay(alignment: .bottom) {
+                        if isSelected {
+                            Capsule()
+                                .fill(accent)
+                                .frame(width: 30, height: 2)
+                                .offset(y: 1)
+                                .matchedGeometryEffect(id: "selected-status-underline", in: statusSelection)
+                        }
+                    }
+                    .contentShape(Rectangle())
+                    .animation(.easeOut(duration: 0.14), value: isHovered)
+                }
+                .buttonStyle(StatusTabButtonStyle())
+                .frame(maxWidth: .infinity, minHeight: 42)
+                .contentShape(Rectangle())
+                .onHover { hovering in
+                    withAnimation(.easeOut(duration: 0.14)) {
+                        if hovering {
+                            hoveredStatus = status
+                        } else if hoveredStatus == status {
+                            hoveredStatus = nil
+                        }
+                    }
+                }
+                .accessibilityLabel("\(status.title), \(store.count(in: status)) items")
+                .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+            }
+        }
+        .padding(.leading, 16)
+        .padding(.bottom, 4)
+    }
+
+    private var loopsContent: some View {
+        VStack(spacing: 7) {
+            if isAdding {
+                addComposer
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+
+            let visibleItems = store.items(in: selectedStatus)
+            if visibleItems.isEmpty {
+                emptyState
+            } else {
+                ScrollView(showsIndicators: false) {
+                    LazyVStack(spacing: 0) {
+                        ForEach(Array(visibleItems.enumerated()), id: \.element.id) { index, item in
+                            LoopRow(
+                                item: item,
+                                accent: accent,
+                                onToggle: { store.toggleCompletion(item) },
+                                onMove: { status in store.move(item, to: status) },
+                                codexAction: codexRunner.action(for: item),
+                                isCodexBusy: codexRunner.isRunning,
+                                onRunWithCodex: { codexRunner.run(item) },
+                                onDelete: {
+                                    NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .now)
+                                    withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
+                                        store.delete(item)
+                                    }
+                                }
+                            )
+
+                            if index < visibleItems.count - 1 {
+                                Divider()
+                                    .overlay(Color.white.opacity(0.065))
+                                    .padding(.leading, 46)
+                            }
+                        }
+                    }
+                    .background(contentSurface, in: RoundedRectangle(cornerRadius: contentRadius, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: contentRadius, style: .continuous)
+                            .stroke(contentBorder, lineWidth: 1)
+                    )
+                }
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 9)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .clipped()
+    }
+
+    private var addComposer: some View {
+        HStack(spacing: 10) {
+            TextField("Capture a move…", text: $newTitle)
+                .textFieldStyle(.plain)
+                .font(.system(size: 13, weight: .regular))
+                .foregroundStyle(primaryText)
+                .focused($addFieldFocused)
+                .onSubmit(addItem)
+
+            Picker("Priority", selection: $newPriority) {
+                ForEach(LoopPriority.allCases) { priority in
+                    Text(priority.rawValue).tag(priority)
+                }
+            }
+            .labelsHidden()
+            .frame(width: 58)
+
+            Picker("Status", selection: $newStatus) {
+                ForEach(LoopStatus.allCases.filter { $0 != .done }) { status in
+                    Text(status.title).tag(status)
+                }
+            }
+            .labelsHidden()
+            .frame(width: 86)
+
+            Button("Add", action: addItem)
+                .buttonStyle(HeaderActionButtonStyle(isEmphasized: true, accent: accent))
+                .disabled(newTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        }
+        .padding(.horizontal, 13)
+        .frame(height: 46)
+        .background(contentSurface, in: RoundedRectangle(cornerRadius: contentRadius, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: contentRadius, style: .continuous)
+                .stroke(accent.opacity(0.38), lineWidth: 1)
+        )
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 6) {
+            Text(emptyStateTitle)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(primaryText)
+            Text(emptyStateMessage)
+                .font(.system(size: 11, weight: .regular))
+                .foregroundStyle(secondaryText)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var emptyStateTitle: String {
+        switch selectedStatus {
+        case .waiting: return "Nothing blocked"
+        case .done: return "Nothing completed yet"
+        case .doing, .next: return "No moves here"
+        }
+    }
+
+    private var emptyStateMessage: String {
+        switch selectedStatus {
+        case .waiting:
+            return "Moves held by a person, permission, or named dependency appear here."
+        case .done:
+            return "Finished work stays visible here."
+        case .doing, .next:
+            return "Choose New to capture the next one."
+        }
+    }
+
+    private var calendarContent: some View {
+        VStack(spacing: 0) {
+            weekStrip
+
+            Divider()
+                .overlay(border)
+                .padding(.horizontal, 20)
+
+            if calendarProvider.isAuthorized {
+                HStack(alignment: .top, spacing: 12) {
+                    calendarEvents
+                        .padding(12)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                        .background(contentSurface, in: RoundedRectangle(cornerRadius: contentRadius, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: contentRadius, style: .continuous)
+                                .stroke(contentBorder, lineWidth: 1)
+                        )
+
+                    calendarDeadlines
+                        .padding(12)
+                        .frame(width: 244)
+                        .frame(maxHeight: .infinity, alignment: .topLeading)
+                        .background(contentSurface, in: RoundedRectangle(cornerRadius: contentRadius, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: contentRadius, style: .continuous)
+                                .stroke(contentBorder, lineWidth: 1)
+                        )
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 9)
+                .padding(.bottom, 8)
+            } else {
+                calendarPermissionState
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var weekStrip: some View {
+        HStack(spacing: 8) {
+            ForEach(nextSevenDays, id: \.self) { day in
+                let isSelected = Calendar.current.isDate(day, inSameDayAs: selectedCalendarDay)
+                let isToday = Calendar.current.isDateInToday(day)
+                Button {
+                    withAnimation(.easeOut(duration: 0.16)) {
+                        selectedCalendarDay = day
+                    }
+                } label: {
+                    VStack(spacing: 3) {
+                        Text(shortWeekday(day))
+                            .font(.system(size: 8.5, weight: .semibold))
+                        Text(dayNumber(day))
+                            .font(.system(size: 11.5, weight: isSelected ? .semibold : .medium))
+                    }
+                    .foregroundStyle(isSelected ? primaryText : secondaryText)
+                    .frame(maxWidth: .infinity, minHeight: 43)
+                    .background(
+                        isSelected ? accent.opacity(0.14) : Color.clear,
+                        in: RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    )
+                    .overlay {
+                        if isSelected {
+                            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                .stroke(accent.opacity(0.22), lineWidth: 1)
+                        } else if isToday {
+                            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                .stroke(accent.opacity(0.32), lineWidth: 1)
+                        }
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(StatusTabButtonStyle())
+            }
+
+            Button {
+                if calendarProvider.isAuthorized {
+                    calendarProvider.refresh()
+                } else {
+                    calendarProvider.connectOrOpenSettings()
+                }
+            } label: {
+                Group {
+                    if calendarProvider.isAuthorized {
+                        HStack(spacing: 5) {
+                            Circle()
+                                .fill(Color(nsColor: .systemGreen))
+                                .frame(width: 5, height: 5)
+                            Text("Live")
+                        }
+                    } else {
+                        Text("Connect")
+                    }
+                }
+                .font(.system(size: 9.5, weight: .semibold))
+                .foregroundStyle(calendarProvider.isAuthorized ? primaryText : accent)
+                .frame(width: 58, height: 43)
+                .background(Color.white.opacity(calendarProvider.isAuthorized ? 0.045 : 0), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .stroke(Color.white.opacity(calendarProvider.isAuthorized ? 0.08 : 0), lineWidth: 1)
+                )
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(StatusTabButtonStyle())
+            .help(calendarProvider.isAuthorized ? "Synced automatically. Click to sync now." : "Connect Calendar")
+            .accessibilityLabel(calendarProvider.isAuthorized ? "Calendar live. Sync now" : "Connect Calendar")
+        }
+        .padding(.horizontal, 16)
+        .padding(.bottom, 4)
+    }
+
+    private var calendarEvents: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text(Calendar.current.isDateInToday(selectedCalendarDay) ? "TODAY" : selectedDayTitle)
+                .font(.system(size: 10, weight: .bold))
+                .tracking(0.35)
+                .foregroundStyle(accent)
+
+            let events = selectedDayEvents
+            if events.isEmpty {
+                Text("Nothing scheduled")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(primaryText)
+                Text("This day has room to breathe.")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(secondaryText)
+            } else {
+                ForEach(events.prefix(3)) { event in
+                    HStack(spacing: 10) {
+                        Capsule()
+                            .fill(accent)
+                            .frame(width: 3, height: 28)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(event.title)
+                                .font(.system(size: 11.5, weight: .semibold))
+                                .foregroundStyle(primaryText)
+                                .lineLimit(1)
+                            Text("\(eventTimeLabel(event))  ·  \(event.sourceLabel)")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundStyle(secondaryText)
+                                .lineLimit(1)
+                        }
+                    }
+                    .frame(height: 37)
+                }
+            }
+        }
+    }
+
+    private var calendarDeadlines: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("IMPORTANT DATES")
+                .font(.system(size: 10, weight: .bold))
+                .tracking(0.35)
+                .foregroundStyle(secondaryText)
+
+            if deadlineSignals.isEmpty {
+                Text("No countdowns yet")
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(primaryText)
+                Button("Add one in Settings", action: presentSettings)
+                    .buttonStyle(.plain)
+                    .font(.system(size: 9.5, weight: .semibold))
+                    .foregroundStyle(accent)
+            } else {
+                ForEach(deadlineSignals.prefix(3)) { deadline in
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(countdownLabel(deadline.dueAt))
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(accent)
+                            .frame(width: 48, alignment: .leading)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(deadline.title)
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(primaryText)
+                                .lineLimit(1)
+                            Text(deadline.source)
+                                .font(.system(size: 9.5, weight: .medium))
+                                .foregroundStyle(secondaryText)
+                        }
+                    }
+                    .frame(height: 35)
+                }
+            }
+        }
+    }
+
+    private var calendarPermissionState: some View {
+        VStack(spacing: 9) {
+            Text(calendarProvider.isDenied ? "Calendar access is off" : "See only what matters next")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(primaryText)
+            Text(calendarProvider.isDenied ? "Open Privacy settings to allow upcoming event access." : "Connect once. Every iCloud and Google calendar enabled in Internet Accounts will appear here and stay live.")
+                .font(.system(size: 10.5))
+                .foregroundStyle(secondaryText)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 390)
+            Button(calendarProvider.isDenied ? "Open Privacy Settings" : "Connect Calendar") {
+                calendarProvider.connectOrOpenSettings()
+            }
+            .buttonStyle(HeaderActionButtonStyle(isEmphasized: true, accent: accent))
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var settingsContent: some View {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 8) {
+                settingsSectionTitle("IDENTITY")
+
+                HStack(spacing: 8) {
+                    TextField("Your name", text: $settingsPreferredName)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(primaryText)
+                        .padding(.horizontal, 10)
+                        .frame(height: 32)
+                        .background(groupedBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                        )
+                        .onSubmit(saveIdentity)
+
+                    TextField("Workspace name", text: $settingsWorkspaceName)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(primaryText)
+                        .padding(.horizontal, 10)
+                        .frame(height: 32)
+                        .background(groupedBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                        )
+                        .onSubmit(saveIdentity)
+
+                    Button("Save") {
+                        saveIdentity()
+                    }
+                    .buttonStyle(HeaderActionButtonStyle(accent: accent))
+                }
+
+                HStack(spacing: 8) {
+                    Button(personalization.photoURL == nil ? "Choose personal photo…" : "Replace photo…") {
+                        personalization.choosePhoto()
+                    }
+                    .buttonStyle(HeaderActionButtonStyle(accent: accent))
+
+                    if personalization.photoURL != nil {
+                        Button("Remove") {
+                            personalization.removePhoto()
+                        }
+                        .buttonStyle(HeaderActionButtonStyle(accent: accent))
+                    }
+                }
+
+                settingsSectionTitle("ACCENT")
+
+                HStack(spacing: 10) {
+                    ForEach(AccentPalette.allCases) { palette in
+                        Button {
+                            personalization.updateAccent(palette)
+                        } label: {
+                            Circle()
+                                .fill(palette.color)
+                                .frame(width: 20, height: 20)
+                                .padding(4)
+                                .overlay(
+                                    Circle()
+                                        .stroke(
+                                            personalization.accent == palette ? Color.white.opacity(0.88) : Color.white.opacity(0.12),
+                                            lineWidth: personalization.accent == palette ? 2 : 1
+                                        )
+                                )
+                                .contentShape(Circle())
+                        }
+                        .buttonStyle(RowControlButtonStyle())
+                        .help(palette.title)
+                        .accessibilityLabel("\(palette.title) accent")
+                        .accessibilityAddTraits(personalization.accent == palette ? [.isSelected] : [])
+                    }
+                }
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background(contentSurface, in: RoundedRectangle(cornerRadius: contentRadius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: contentRadius, style: .continuous)
+                    .stroke(contentBorder, lineWidth: 1)
+            )
+
+            VStack(alignment: .leading, spacing: 10) {
+                settingsSectionTitle("CALENDAR")
+
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(calendarProvider.isAuthorized ? "Apple + Google calendars" : "Calendar accounts")
+                            .font(.system(size: 11.5, weight: .semibold))
+                            .foregroundStyle(primaryText)
+                        Text(calendarProvider.isAuthorized ? "\(calendarProvider.accountCountLabel) · always in sync" : calendarProvider.message)
+                            .font(.system(size: 9.5))
+                            .foregroundStyle(secondaryText)
+                    }
+                    Spacer()
+                    Button(calendarProvider.isAuthorized ? "Accounts…" : calendarProvider.isDenied ? "Settings" : "Connect") {
+                        if calendarProvider.isDenied {
+                            calendarProvider.openPrivacySettings()
+                        } else if calendarProvider.isAuthorized {
+                            calendarProvider.openInternetAccounts()
+                        } else {
+                            calendarProvider.connectOrOpenSettings()
+                        }
+                    }
+                    .buttonStyle(HeaderActionButtonStyle(accent: accent))
+                }
+
+                settingsSectionTitle("PRIMARY GOAL")
+
+                HStack(spacing: 6) {
+                    goalTextField("What are you making true?", text: $primaryGoalTitle)
+
+                    Button("Save", action: savePrimaryGoal)
+                        .buttonStyle(HeaderActionButtonStyle(isEmphasized: true, accent: accent))
+                        .disabled(primaryGoalTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                    if personalization.primaryGoal != nil {
+                        Button {
+                            personalization.clearPrimaryGoal()
+                            resetPrimaryGoalEditor()
+                        } label: {
+                            Image(systemName: "trash")
+                        }
+                        .buttonStyle(CloseButtonStyle())
+                        .help("Clear primary goal")
+                        .accessibilityLabel("Clear primary goal")
+                    }
+                }
+
+                HStack(spacing: 6) {
+                    Picker("Unit", selection: $primaryGoalUnit) {
+                        ForEach(GoalValueUnit.allCases) { unit in
+                            Text(unit.title).tag(unit)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 48)
+
+                    goalTextField("Now", text: $primaryGoalCurrent, width: 62)
+                    goalTextField("Target", text: $primaryGoalTarget, width: 70)
+                    goalTextField("Metric", text: $primaryGoalMetric)
+                }
+
+                HStack(spacing: 6) {
+                    Text("Finish line")
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .foregroundStyle(secondaryText)
+
+                    Spacer(minLength: 4)
+
+                    Button("30d") { setPrimaryGoalDays(30) }
+                        .buttonStyle(HeaderActionButtonStyle(accent: accent))
+                    Button("60d") { setPrimaryGoalDays(60) }
+                        .buttonStyle(HeaderActionButtonStyle(accent: accent))
+
+                    DatePicker("", selection: $primaryGoalDate, in: Date()..., displayedComponents: .date)
+                        .labelsHidden()
+                        .frame(width: 96)
+                }
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background(contentSurface, in: RoundedRectangle(cornerRadius: contentRadius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: contentRadius, style: .continuous)
+                    .stroke(contentBorder, lineWidth: 1)
+            )
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 9)
+        .padding(.bottom, 8)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func settingsSectionTitle(_ title: String) -> some View {
+        Text(title)
+            .font(.system(size: 10, weight: .bold))
+            .tracking(0.35)
+            .foregroundStyle(secondaryText)
+    }
+
+    private func goalTextField(
+        _ placeholder: String,
+        text: Binding<String>,
+        width: CGFloat? = nil
+    ) -> some View {
+        TextField(placeholder, text: text)
+            .textFieldStyle(.plain)
+            .font(.system(size: 11, weight: .medium))
+            .foregroundStyle(primaryText)
+            .padding(.horizontal, 8)
+            .frame(width: width, height: 30)
+            .background(groupedBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(Color.white.opacity(0.08), lineWidth: 1)
+            )
+    }
+
+    private func calendarAccountChip(_ account: CalendarAccountSignal) -> some View {
+        HStack(spacing: 4) {
+            Circle()
+                .fill(account.providerTitle == "Google" ? Color(red: 0.26, green: 0.52, blue: 0.96) : accent)
+                .frame(width: 5, height: 5)
+            Text(account.title)
+                .lineLimit(1)
+        }
+        .font(.system(size: 9.5, weight: .medium))
+        .foregroundStyle(primaryText)
+        .padding(.horizontal, 7)
+        .frame(height: 22)
+        .background(Color.white.opacity(0.045), in: Capsule())
+        .overlay(Capsule().stroke(Color.white.opacity(0.07), lineWidth: 1))
+        .help("\(account.providerTitle) · \(account.calendarCount) calendars")
+    }
+
+    private var showsContextualFooter: Bool {
+        guard selectedSection == .loops, !isSettingsPresented else { return false }
+        if store.recentlyDeleted != nil { return true }
+        switch codexRunner.state {
+        case .idle: return false
+        case .running, .finished, .failed: return true
+        }
+    }
+
+    private var footer: some View {
+        HStack(spacing: 6) {
+            if store.recentlyDeleted != nil {
+                Text("Task removed")
+                Button("Undo") {
+                    NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+                    withAnimation(.spring(response: 0.26, dampingFraction: 0.82)) {
+                        store.undoLastDelete()
+                    }
+                }
+                .buttonStyle(FooterActionButtonStyle(accent: accent))
+                .transition(.opacity.combined(with: .move(edge: .leading)))
+            } else {
+                CodexRunFooter(runner: codexRunner, accent: accent)
+            }
+
+            Spacer()
+        }
+        .font(.system(size: 10.5, weight: .medium))
+        .foregroundStyle(secondaryText)
+        .padding(.horizontal, 22)
+        .frame(height: 38)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var deadlineSignals: [DeadlineSignal] {
+        let primary = personalization.primaryGoal.map {
+            DeadlineSignal(id: "primary-goal-\($0.id.uuidString)", title: $0.title, dueAt: $0.dueAt, source: "Primary goal")
+        }.map { [$0] } ?? []
+
+        let custom = personalization.milestones.map {
+            DeadlineSignal(id: "milestone-\($0.id.uuidString)", title: $0.title, dueAt: $0.dueAt, source: "Goal")
+        }
+
+        let taskDeadlines = store.items
+            .filter { $0.deletedAt == nil && $0.status != .done && $0.dueAt != nil }
+            .compactMap { item -> DeadlineSignal? in
+                guard let dueAt = item.dueAt else { return nil }
+                return DeadlineSignal(id: "task-\(item.id.uuidString)", title: item.title, dueAt: dueAt, source: "Move")
+            }
+
+        return (primary + custom + taskDeadlines)
+            .filter { Calendar.current.startOfDay(for: $0.dueAt) >= Calendar.current.startOfDay(for: Date()) }
+            .sorted { $0.dueAt < $1.dueAt }
+    }
+
+    private var nextSevenDays: [Date] {
+        let today = Calendar.current.startOfDay(for: Date())
+        return (0..<7).compactMap { Calendar.current.date(byAdding: .day, value: $0, to: today) }
+    }
+
+    private var selectedDayEvents: [CalendarSignal] {
+        calendarProvider.events.filter { Calendar.current.isDate($0.startDate, inSameDayAs: selectedCalendarDay) }
+    }
+
+    private var selectedDayTitle: String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_GB")
+        formatter.dateFormat = "EEEE, d MMM"
+        return formatter.string(from: selectedCalendarDay).uppercased()
+    }
+
+    private func presentSettings() {
+        loadIdentityEditor()
+        loadPrimaryGoalEditor()
+        calendarProvider.syncOnOpen()
+        withAnimation(.spring(response: 0.30, dampingFraction: 0.84)) {
+            isSettingsPresented = true
+            isAdding = false
+        }
+    }
+
+    private func dismissSettings() {
+        saveIdentity()
+        withAnimation(.spring(response: 0.30, dampingFraction: 0.84)) {
+            isSettingsPresented = false
+        }
+    }
+
+    private func select(_ section: BoardSection) {
+        guard section != selectedSection || isSettingsPresented else { return }
+        if isSettingsPresented {
+            saveIdentity()
+        }
+        if section == .calendar {
+            calendarProvider.syncOnOpen()
+        }
+        NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+        withAnimation(.spring(response: 0.30, dampingFraction: 0.80, blendDuration: 0.08)) {
+            selectedSection = section
+            isSettingsPresented = false
+            isAdding = false
+        }
+    }
+
+    private func toggleAddComposer() {
+        withAnimation(.easeOut(duration: 0.16)) {
+            isAdding.toggle()
+        }
+        if isAdding {
+            newStatus = selectedStatus == .done ? .doing : selectedStatus
+            Task { @MainActor in addFieldFocused = true }
+        }
+    }
+
+    private func loadPrimaryGoalEditor() {
+        guard let goal = personalization.primaryGoal else {
+            resetPrimaryGoalEditor()
+            return
+        }
+
+        primaryGoalTitle = goal.title
+        primaryGoalMetric = goal.metric
+        primaryGoalCurrent = goal.currentValue.map(editingNumber) ?? ""
+        primaryGoalTarget = goal.targetValue.map(editingNumber) ?? ""
+        primaryGoalUnit = goal.unit
+        primaryGoalDate = goal.dueAt
+    }
+
+    private func loadIdentityEditor() {
+        settingsPreferredName = personalization.preferredName
+        settingsWorkspaceName = personalization.workspaceName
+    }
+
+    private func saveIdentity() {
+        personalization.updatePreferredName(settingsPreferredName)
+        personalization.updateWorkspaceName(settingsWorkspaceName)
+    }
+
+    private func resetPrimaryGoalEditor() {
+        primaryGoalTitle = ""
+        primaryGoalMetric = ""
+        primaryGoalCurrent = ""
+        primaryGoalTarget = ""
+        primaryGoalUnit = .usd
+        primaryGoalDate = Calendar.current.date(byAdding: .day, value: 60, to: Date()) ?? Date()
+    }
+
+    private func savePrimaryGoal() {
+        let cleanTitle = primaryGoalTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanTitle.isEmpty else { return }
+
+        let parsedTarget = parsedGoalValue(primaryGoalTarget).flatMap { $0 > 0 ? $0 : nil }
+        personalization.setPrimaryGoal(
+            title: cleanTitle,
+            metric: primaryGoalMetric,
+            currentValue: parsedGoalValue(primaryGoalCurrent),
+            targetValue: parsedTarget,
+            unit: primaryGoalUnit,
+            dueAt: primaryGoalDate
+        )
+        NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+    }
+
+    private func setPrimaryGoalDays(_ days: Int) {
+        primaryGoalDate = Calendar.current.date(byAdding: .day, value: days, to: Date()) ?? primaryGoalDate
+    }
+
+    private func parsedGoalValue(_ text: String) -> Double? {
+        let clean = text
+            .replacingOccurrences(of: ",", with: "")
+            .replacingOccurrences(of: "$", with: "")
+            .replacingOccurrences(of: "₹", with: "")
+            .replacingOccurrences(of: "%", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return clean.isEmpty ? nil : Double(clean)
+    }
+
+    private func editingNumber(_ value: Double) -> String {
+        value.rounded() == value ? String(format: "%.0f", value) : String(format: "%.1f", value)
+    }
+
+    private func select(_ status: LoopStatus) {
+        guard status != selectedStatus else { return }
+        NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+        withAnimation(.spring(response: 0.30, dampingFraction: 0.78, blendDuration: 0.08)) {
+            selectedStatus = status
+        }
+    }
+
+    private func addItem() {
+        store.add(title: newTitle, status: newStatus, priority: newPriority, dueAt: nil)
+        selectedStatus = newStatus
+        newTitle = ""
+        isAdding = false
+    }
+
+    private func priorityColor(for priority: LoopPriority) -> Color {
+        switch priority {
+        case .p0: return Color(nsColor: .systemRed)
+        case .p1: return Color(nsColor: .systemOrange)
+        case .p2: return accent
+        case .p3: return secondaryText
+        }
+    }
+
+    private func homeDueLabel(_ date: Date) -> String {
+        if Calendar.current.isDateInToday(date) { return "Due today" }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_GB")
+        formatter.dateFormat = "'Due' d MMM"
+        return formatter.string(from: date)
+    }
+
+    private func primaryGoalTargetLabel(_ goal: PrimaryGoal, target: Double) -> String {
+        let metric = goal.metric.trimmingCharacters(in: .whitespacesAndNewlines)
+        return metric.isEmpty ? goal.unit.format(target) : "\(goal.unit.format(target)) \(metric)"
+    }
+
+    private func primaryGoalProgress(_ goal: PrimaryGoal) -> Double {
+        guard let target = goal.targetValue, target > 0 else { return 0 }
+        return min(max((goal.currentValue ?? 0) / target, 0), 1)
+    }
+
+    private func daysLeftLabel(_ date: Date) -> String {
+        let start = Calendar.current.startOfDay(for: Date())
+        let end = Calendar.current.startOfDay(for: date)
+        let days = max(0, Calendar.current.dateComponents([.day], from: start, to: end).day ?? 0)
+        if days == 0 { return "Today" }
+        if days == 1 { return "1 day left" }
+        return "\(days) days left"
+    }
+
+    private func countdownLabel(_ date: Date) -> String {
+        let start = Calendar.current.startOfDay(for: Date())
+        let end = Calendar.current.startOfDay(for: date)
+        let days = max(0, Calendar.current.dateComponents([.day], from: start, to: end).day ?? 0)
+        if days == 0 { return "Today" }
+        return "\(days)d"
+    }
+
+    private func eventDateLabel(_ event: CalendarSignal) -> String {
+        if Calendar.current.isDateInToday(event.startDate) { return eventTimeLabel(event) }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_GB")
+        formatter.dateFormat = event.isAllDay ? "EEE d MMM" : "EEE d MMM · h:mm a"
+        return formatter.string(from: event.startDate)
+    }
+
+    private func eventTimeLabel(_ event: CalendarSignal) -> String {
+        if event.isAllDay { return "All day" }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_GB")
+        formatter.dateFormat = "h:mm a"
+        return formatter.string(from: event.startDate)
+    }
+
+    private func shortWeekday(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_GB")
+        formatter.dateFormat = "EEE"
+        return formatter.string(from: date).uppercased()
+    }
+
+    private func dayNumber(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_GB")
+        formatter.dateFormat = "d"
+        return formatter.string(from: date)
+    }
+}
+
+private struct LoopRow: View {
+    let item: OpenLoop
+    let accent: Color
+    let onToggle: () -> Void
+    let onMove: (LoopStatus) -> Void
+    let codexAction: CodexTaskAction
+    let isCodexBusy: Bool
+    let onRunWithCodex: () -> Void
+    let onDelete: () -> Void
+
+    private let primaryText = Color.white.opacity(0.95)
+    private let secondaryText = Color.white.opacity(0.64)
+    @State private var isHovered = false
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Button(action: onToggle) {
+                Image(systemName: item.status == .done ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 19, weight: .medium))
+                    .foregroundStyle(item.status == .done ? Color.green : priorityColor)
+                    .frame(width: 34, height: 34)
+                    .background(isHovered ? priorityColor.opacity(0.09) : Color.clear, in: Circle())
+                    .contentShape(Circle())
+            }
+            .buttonStyle(RowControlButtonStyle())
+            .accessibilityLabel(item.status == .done ? "Reopen \(item.title)" : "Complete \(item.title)")
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    Text(item.priority.rawValue)
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(priorityColor)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(priorityColor.opacity(0.12), in: Capsule())
+
+                    Text(item.title)
+                        .font(.system(size: 13.5, weight: .semibold))
+                        .foregroundStyle(primaryText.opacity(item.status == .done ? 0.55 : 1))
+                        .strikethrough(item.status == .done, color: secondaryText)
+                        .lineLimit(1)
+                }
+
+                if !item.details.isEmpty {
+                    Text(item.details)
+                        .font(.system(size: 10.5, weight: .regular))
+                        .foregroundStyle(secondaryText)
+                        .lineLimit(1)
+                }
+            }
+
+            Spacer(minLength: 8)
+
+            if let dueAt = item.dueAt {
+                Text(dueLabel(dueAt))
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(isOverdue(dueAt) && item.status != .done ? Color.red.opacity(0.9) : secondaryText)
+            }
+
+            Menu {
+                Button(codexAction.label, action: onRunWithCodex)
+                    .disabled(isCodexBusy)
+
+                Divider()
+
+                ForEach(LoopStatus.allCases) { status in
+                    if status != item.status {
+                        Button("Move to \(status.title)") { onMove(status) }
+                    }
+                }
+
+                Divider()
+
+                Button("Delete task", role: .destructive, action: onDelete)
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(secondaryText)
+                    .frame(width: 34, height: 34)
+                    .background(isHovered ? Color.white.opacity(0.07) : Color.clear, in: Circle())
+                    .contentShape(Circle())
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+        }
+        .padding(.horizontal, 14)
+        .frame(height: 58)
+        .background(isHovered ? Color.white.opacity(0.045) : Color.clear)
+        .offset(x: isHovered ? 2 : 0)
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            withAnimation(.spring(response: 0.24, dampingFraction: 0.82)) {
+                isHovered = hovering
+            }
+        }
+    }
+
+    private var priorityColor: Color {
+        switch item.priority {
+        case .p0: return Color(nsColor: .systemRed)
+        case .p1: return Color(nsColor: .systemOrange)
+        case .p2: return accent
+        case .p3: return secondaryText
+        }
+    }
+
+    private func dueLabel(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_GB")
+        formatter.dateFormat = Calendar.current.isDateInToday(date) ? "'Today'" : "d MMM"
+        return formatter.string(from: date)
+    }
+
+    private func isOverdue(_ date: Date) -> Bool {
+        date < Calendar.current.startOfDay(for: Date())
+    }
+}
+
+private struct CodexRunFooter: View {
+    @ObservedObject var runner: CodexRunner
+    let accent: Color
+
+    var body: some View {
+        switch runner.state {
+        case .idle:
+            EmptyView()
+        case let .running(title):
+            ProgressView()
+                .controlSize(.mini)
+                .tint(.white.opacity(0.7))
+            Text("Codex is working on \(title)")
+                .lineLimit(1)
+        case let .finished(title, summaryURL):
+            Text("Codex finished \(title)")
+                .lineLimit(1)
+            Button("Review") { NSWorkspace.shared.open(summaryURL) }
+                .buttonStyle(FooterActionButtonStyle(accent: accent))
+        case let .failed(_, message):
+            Text(message)
+                .lineLimit(1)
+                .foregroundStyle(Color.red.opacity(0.88))
+        }
+    }
+}
+
+private struct AppleNavigationButton: View {
+    let icon: ClayIconName
+    let isSelected: Bool
+    let accent: Color
+    let label: String
+    let action: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: icon.systemFallback)
+                .symbolRenderingMode(.monochrome)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Color.white.opacity(isSelected ? 0.98 : (isHovered ? 0.92 : 0.68)))
+                .frame(width: 42, height: 28)
+                .background(
+                    isSelected
+                        ? accent.opacity(0.30)
+                        : Color.white.opacity(isHovered ? 0.10 : 0.045),
+                    in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(
+                            isSelected ? accent.opacity(0.50) : Color.white.opacity(isHovered ? 0.14 : 0.07),
+                            lineWidth: 1
+                        )
+                )
+                .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+        .buttonStyle(StatusTabButtonStyle())
+        .scaleEffect(isHovered ? 1.035 : 1)
+        .offset(y: isHovered ? -1 : 0)
+        .shadow(color: Color.black.opacity(isHovered ? 0.32 : 0.12), radius: isHovered ? 8 : 3, y: isHovered ? 4 : 1)
+        .onHover { hovering in
+            withAnimation(.spring(response: 0.24, dampingFraction: 0.76)) {
+                isHovered = hovering
+            }
+        }
+        .help(label)
+        .accessibilityLabel(label)
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+    }
+}
+
+private struct HeaderActionButtonStyle: ButtonStyle {
+    var isEmphasized = false
+    var accent = Color(nsColor: .systemBlue)
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(isEmphasized ? Color.white : Color.white.opacity(configuration.isPressed ? 0.92 : 0.68))
+            .padding(.horizontal, 11)
+            .frame(height: 28)
+            .background(
+                isEmphasized ? accent : Color.white.opacity(configuration.isPressed ? 0.10 : 0.055),
+                in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(
+                        isEmphasized ? accent.opacity(0.58) : Color.white.opacity(configuration.isPressed ? 0.14 : 0.08),
+                        lineWidth: 1
+                    )
+            )
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .animation(.easeOut(duration: 0.11), value: configuration.isPressed)
+    }
+}
+
+private struct StatusTabButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.975 : 1)
+            .brightness(configuration.isPressed ? 0.035 : 0)
+            .animation(.spring(response: 0.20, dampingFraction: 0.72), value: configuration.isPressed)
+    }
+}
+
+private struct RowControlButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.88 : 1)
+            .animation(.spring(response: 0.18, dampingFraction: 0.68), value: configuration.isPressed)
+    }
+}
+
+private struct FooterActionButtonStyle: ButtonStyle {
+    let accent: Color
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(accent.opacity(configuration.isPressed ? 0.72 : 1))
+            .padding(.horizontal, 6)
+            .frame(height: 24)
+            .background(Color.white.opacity(configuration.isPressed ? 0.08 : 0.045), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .scaleEffect(configuration.isPressed ? 0.96 : 1)
+            .animation(.easeOut(duration: 0.10), value: configuration.isPressed)
+    }
+}
+
+private struct CloseButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 10.5, weight: .semibold))
+            .foregroundStyle(Color.white.opacity(configuration.isPressed ? 0.94 : 0.6))
+            .frame(width: 28, height: 28)
+            .background(Color.white.opacity(configuration.isPressed ? 0.11 : 0.055), in: Circle())
+            .scaleEffect(configuration.isPressed ? 0.92 : 1)
+            .animation(.easeOut(duration: 0.11), value: configuration.isPressed)
+    }
+}

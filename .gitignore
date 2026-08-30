@@ -1,0 +1,60 @@
+# Build and local installation output
+.build/
+.swiftpm/
+build/
+dist/
+install-backups/
+DerivedData/
+*.xcodeproj/
+*.xcresult/
+*.xcuserstate
+xcuserdata/
+*.dSYM/
+
+# Founder/customer runtime data — never commit these
+openloops.json
+personalization.json
+OPEN_LOOPS_CONTEXT.md
+Personalization/
+Codex Runs/
+cloud-sync-state.json
+support-bundles/
+exports/
+*.log
+*.jsonl
+*.sqlite
+*.sqlite-*
+*.bak
+*.trace
+*.crash
+
+# Local visual QA and audits can contain tasks, calendars, identities, or photos.
+qa/
+audits/
+design-qa.md
+
+# Credentials and signing material
+.env
+.env.*
+!.env.example
+.secrets/
+Secrets.xcconfig
+*.p8
+*.p12
+*.cer
+*.pem
+*.key
+*.mobileprovision
+*.provisionprofile
+GoogleService-Info.plist
+client_secret*.json
+service-account*.json
+
+# Tool and editor state
+__pycache__/
+*.py[cod]
+.idea/
+.vscode/
+.fleet/
+
+.DS_Store

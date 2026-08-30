@@ -1,0 +1,77 @@
+name: Founder's Office CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: founders-office-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build and verify
+    runs-on: macos-15
+    timeout-minutes: 25
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Report Apple toolchain
+        run: |
+          swift --version
+          xcodebuild -version
+
+      - name: Enforce repository privacy boundary
+        run: Scripts/check-repository-safety.sh
+
+      - name: Run package and source checks
+        run: Scripts/ci-checks.sh
+
+      - name: Install pinned XcodeGen
+        env:
+          XCODEGEN_VERSION: "2.46.0"
+          XCODEGEN_SHA256: "4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806"
+        run: |
+          archive="${RUNNER_TEMP}/xcodegen.zip"
+          install_dir="${RUNNER_TEMP}/xcodegen"
+          curl --fail --silent --show-error --location \
+            "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip" \
+            --output "${archive}"
+          echo "${XCODEGEN_SHA256}  ${archive}" | shasum -a 256 --check
+          mkdir -p "${install_dir}"
+          unzip -q "${archive}" -d "${install_dir}"
+          echo "${install_dir}/xcodegen/bin" >> "${GITHUB_PATH}"
+
+      - name: Generate Xcode project
+        run: xcodegen generate --spec project.yml
+
+      - name: Build unsigned macOS target
+        run: |
+          xcodebuild \
+            -project FoundersOffice.xcodeproj \
+            -scheme FoundersOfficeMac \
+            -configuration Debug \
+            -sdk macosx \
+            -derivedDataPath "${RUNNER_TEMP}/DerivedData-macOS" \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Build unsigned iOS Simulator target
+        run: |
+          xcodebuild \
+            -project FoundersOffice.xcodeproj \
+            -scheme FoundersOfficeiOS \
+            -configuration Debug \
+            -destination "generic/platform=iOS Simulator" \
+            -derivedDataPath "${RUNNER_TEMP}/DerivedData-iOS" \
+            CODE_SIGNING_ALLOWED=NO \
+            build
