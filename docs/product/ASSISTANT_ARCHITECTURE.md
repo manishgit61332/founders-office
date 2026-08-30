@@ -25,6 +25,8 @@ execution: not_requested | triaging | draft_ready | awaiting_approval |
 
 AI reaching `review_ready` never marks the customer's Move Done.
 
+Provider-backed execution follows the shared lifecycle in [Agent delegation product contract](AGENT_DELEGATION.md). Codex uses its rich-client app-server surface; Claude uses either a genuine cloud session or a local agent whose review UI remains in Founder's Office. Provider-app handoff is shown only when the provider supplies a supported route.
+
 ## Processing pipeline
 
 ```text
@@ -97,5 +99,7 @@ A separate paid opt-in may store encrypted connector credentials on the backend 
 6. Pilot one official Gmail-to-authorized-Drive-to-Needs-You workflow.
 7. Measure precision, dismissals, accepted suggestions, time saved, and cost per accepted action.
 8. Add other official connectors only after the first workflow is reliable.
+
+Agent execution ships through a separate sequence: provider-neutral review UI, a scoped Developer ID helper, Codex app-server, Claude cloud sessions, and then Claude local execution. Local provider processes remain outside the App Store target.
 
 No communications connector or automatic sending is enabled by this document.

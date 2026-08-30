@@ -10,6 +10,8 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 - A versioned local pre-push gate for private repositories without hosted branch protection.
 - Privacy-safe structured diagnostics using Apple Unified Logging.
 - Durable decision and release records under `docs/`.
+- A provider-neutral, content-free agent-job lifecycle for future Codex and Claude delegation.
+- A documented Agent Workspace contract covering activity, context provenance, approvals, diffs, artifacts, provider handoff, and review actions.
 
 ### Changed
 
