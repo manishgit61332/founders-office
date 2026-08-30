@@ -1,0 +1,9 @@
+#!/bin/bash
+
+set -euo pipefail
+
+repository_root="$(git rev-parse --show-toplevel)"
+cd "$repository_root"
+
+Scripts/check-repository-safety.sh
+Scripts/ci-checks.sh

@@ -7,6 +7,7 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 ### Added
 
 - Private-repository governance, pull-request and issue templates, repository safety checks, and automated CI.
+- A versioned local pre-push gate for private repositories without hosted branch protection.
 - Privacy-safe structured diagnostics using Apple Unified Logging.
 - Durable decision and release records under `docs/`.
 

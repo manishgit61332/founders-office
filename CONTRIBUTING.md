@@ -18,6 +18,14 @@ This is a private product repository. Changes should be small, reviewable, and s
 
 7. Open a pull request and complete every applicable verification field.
 
+Install the local pre-push gate once per clone:
+
+```bash
+Scripts/install-git-hooks.sh
+```
+
+See [docs/GITHUB_WORKFLOW.md](docs/GITHUB_WORKFLOW.md) for the current private-repository rules and hosting-plan limitation.
+
 ## Privacy boundary
 
 Use synthetic fixtures in source and screenshots. Never attach a real workspace, task title, calendar event, account, communication, selected photo, OAuth token, support bundle, or Codex run to an issue or pull request.

@@ -74,6 +74,7 @@ The open panel reloads the JSON file automatically. The legacy filenames remain 
 - [docs/decisions](docs/decisions) records durable decisions.
 - [docs/releases](docs/releases) records distributed-build evidence.
 - [docs/LOGGING.md](docs/LOGGING.md) defines diagnostics, activity history, analytics, and AI-execution boundaries.
+- [docs/GITHUB_WORKFLOW.md](docs/GITHUB_WORKFLOW.md) defines branches, checks, milestones, and the local push gate.
 - [docs/product/ASSISTANT_ARCHITECTURE.md](docs/product/ASSISTANT_ARCHITECTURE.md) defines the safe assistant and connector model.
 - [docs/product/LAUNCH_GATES.md](docs/product/LAUNCH_GATES.md) defines the evidence required before beta and launch.
 
