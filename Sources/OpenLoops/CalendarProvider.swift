@@ -93,16 +93,29 @@ final class CalendarProvider: ObservableObject {
             return
         }
 
-        Task {
-            do {
-                let granted = try await eventStore.requestFullAccessToEvents()
+        // The completion API keeps the non-Sendable EKEventStore on the main
+        // actor. Xcode 16.4's async overlay otherwise transfers it to a
+        // nonisolated executor and correctly fails strict concurrency checks.
+        eventStore.requestFullAccessToEvents { [weak self] granted, error in
+            let failure = error.map {
+                let value = $0 as NSError
+                return (value.domain, value.code)
+            }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
                 authorizationStatus = EKEventStore.authorizationStatus(for: .event)
-                message = granted ? "Calendar live" : "Calendar access denied"
-                if granted { refresh() }
-            } catch {
-                authorizationStatus = EKEventStore.authorizationStatus(for: .event)
-                message = "Couldn’t connect Calendar"
-                AppDiagnostics.failure(.calendarAuthorizationRequest, category: .calendar, error: error)
+                if let failure {
+                    message = "Couldn’t connect Calendar"
+                    AppDiagnostics.failure(
+                        .calendarAuthorizationRequest,
+                        category: .calendar,
+                        domain: failure.0,
+                        code: failure.1
+                    )
+                } else {
+                    message = granted ? "Calendar live" : "Calendar access denied"
+                    if granted { refresh() }
+                }
             }
         }
     }
