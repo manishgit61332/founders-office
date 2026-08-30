@@ -26,8 +26,10 @@ final class CloudSyncBridge {
         )
     }
 
-    isolated deinit {
+    func stop() {
         watcher?.invalidate()
+        watcher = nil
+        cancellables.removeAll()
     }
 
     func start() {

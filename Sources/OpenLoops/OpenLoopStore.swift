@@ -37,8 +37,9 @@ final class OpenLoopStore: ObservableObject {
         startWatching()
     }
 
-    isolated deinit {
+    func stop() {
         watcher?.invalidate()
+        watcher = nil
     }
 
     var activeCount: Int {

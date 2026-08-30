@@ -26,7 +26,6 @@ enum AppDiagnostics {
         case fontResourceLookup = "font.resource.lookup"
         case launchAtLoginRegister = "launch_at_login.register"
         case launchAtLoginUnregister = "launch_at_login.unregister"
-        case metricPayloadReceive = "metric.payload.receive"
         case diagnosticPayloadReceive = "metric.diagnostic.receive"
         case motionCaptureDirectoryCreate = "motion_capture.directory.create"
         case moveStoreLoad = "move_store.load"

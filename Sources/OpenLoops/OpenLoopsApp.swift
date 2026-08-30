@@ -272,7 +272,12 @@ final class FoundersOfficeAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        motionCaptureTimer?.invalidate()
+        motionCaptureTimer = nil
         notchController?.prepareForTermination()
+        cloudSyncBridge?.stop()
+        store?.stop()
+        personalization?.stop()
         runtimeHealth.stop()
     }
 

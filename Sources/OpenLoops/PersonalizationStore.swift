@@ -52,9 +52,11 @@ final class PersonalizationStore: ObservableObject {
         startWatching()
     }
 
-    isolated deinit {
+    func stop() {
         watcher?.invalidate()
+        watcher = nil
         pendingAppearanceSave?.cancel()
+        pendingAppearanceSave = nil
     }
 
     var preferredName: String { document.resolvedPreferredName ?? "" }

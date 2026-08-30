@@ -4,7 +4,7 @@ The product reports failures without collecting the founder's work. It repairs o
 
 ## Health signals
 
-Use Apple Unified Logging and signposts during development. Add MetricKit for real-device crash, hang, launch, CPU, memory, disk, and energy evidence. Keep diagnostics local by default.
+Use Apple Unified Logging and signposts for macOS launch, latency, CPU, memory, disk, and energy investigation. Use the MetricKit diagnostic payloads that macOS supports for real-device crash and hang evidence; do not call the iOS-only metric-payload or extended-launch APIs from the Mac target. Keep diagnostics local by default.
 
 The app records a small local health envelope:
 
@@ -59,4 +59,3 @@ Each release records crash-free sessions, hang rate, launch percentiles, interac
 
 - [MetricKit](https://developer.apple.com/documentation/metrickit)
 - [Logging and evidence policy](../LOGGING.md)
-
