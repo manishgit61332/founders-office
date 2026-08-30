@@ -141,6 +141,7 @@ struct TaskRow: View {
     @EnvironmentObject private var model: AppModel
 
     let loop: OpenLoop
+    var showsStatus = false
 
     private var appearance: AppearancePreferences { model.personalization.resolvedAppearance }
 
@@ -161,7 +162,20 @@ struct TaskRow: View {
                     .lineLimit(2)
             }
 
-            if let dueAt = loop.dueAt {
+            if showsStatus && loop.status != .done {
+                Text(loop.status.title)
+                    .font(appearance.interfaceFont(size: 14, weight: .semibold))
+                    .foregroundStyle(appearance.primaryAccentColor)
+            }
+
+            if loop.status == .done, let completedAt = loop.completedAt {
+                Label(
+                    "Completed \(completedAt.formatted(date: .abbreviated, time: .omitted))",
+                    systemImage: "checkmark.circle"
+                )
+                .font(appearance.interfaceFont(size: 14, weight: .medium))
+                .foregroundStyle(Color(uiColor: UIColor.secondaryLabel))
+            } else if let dueAt = loop.dueAt {
                 Label {
                     Text(dueAt, style: .relative)
                 } icon: {

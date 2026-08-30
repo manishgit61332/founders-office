@@ -3,91 +3,230 @@ import SwiftUI
 
 struct LoopsView: View {
     @EnvironmentObject private var model: AppModel
+    @Environment(\.calendar) private var calendar
     @State private var isPresentingNewTask = false
 
     private var appearance: AppearancePreferences { model.personalization.resolvedAppearance }
 
     var body: some View {
-        List {
-            Section {
-                Button {
-                    isPresentingNewTask = true
-                } label: {
-                    Label("New task", systemImage: "plus.circle.fill")
-                        .font(appearance.interfaceFont(size: 17, weight: .semibold))
-                }
-            }
+        TimelineView(.periodic(from: .now, by: 60)) { context in
+            let currentPresentation = MovePresentation(
+                items: model.visibleLoops,
+                now: context.date,
+                calendar: calendar
+            )
 
-            ForEach(LoopStatus.allCases) { status in
-                let items = model.visibleLoops.filter { $0.status == status }
-                if !items.isEmpty {
-                    Section(status.title) {
-                        ForEach(items) { loop in
-                            TaskRow(loop: loop)
-                                .swipeActions(edge: .leading, allowsFullSwipe: true) {
-                                    Button {
-                                        model.toggleCompletion(loop)
-                                    } label: {
-                                        Label(
-                                            loop.status == .done ? "Reopen" : "Complete",
-                                            systemImage: loop.status == .done
-                                                ? "arrow.uturn.backward"
-                                                : "checkmark"
-                                        )
-                                    }
-                                    .tint(loop.status == .done ? .orange : .green)
-                                }
-                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                                    Button(role: .destructive) {
-                                        model.softDelete(loop)
-                                    } label: {
-                                        Label("Delete", systemImage: "trash")
-                                    }
-                                }
-                                .contextMenu {
-                                    Menu("Move to") {
-                                        ForEach(LoopStatus.allCases) { destination in
-                                            Button(destination.title) {
-                                                model.move(loop, to: destination)
-                                            }
-                                            .disabled(loop.status == destination)
-                                        }
-                                    }
-                                }
-                        }
+            List {
+                Section {
+                    Button {
+                        isPresentingNewTask = true
+                    } label: {
+                        Label("New task", systemImage: "plus.circle.fill")
+                            .font(appearance.interfaceFont(size: 17, weight: .semibold))
                     }
                 }
+
+                ForEach(currentPresentation.activeGroups) { group in
+                    Section {
+                        ForEach(group.items) { loop in
+                            ActionableTaskRow(loop: loop, showsStatus: true)
+                        }
+                    } header: {
+                        Label(group.bucket.title, systemImage: group.bucket.systemImage)
+                            .font(appearance.interfaceFont(size: 17, weight: .bold))
+                            .foregroundStyle(group.bucket.headerColor(using: appearance))
+                            .textCase(nil)
+                    }
+                }
+
+                recentCompletionSections(currentPresentation)
+
+                if !currentPresentation.olderCompleted.isEmpty {
+                    Section {
+                        NavigationLink {
+                            PreviousTasksView()
+                        } label: {
+                            HStack {
+                                Label("Previous tasks", systemImage: "archivebox")
+                                    .font(appearance.interfaceFont(size: 17, weight: .semibold))
+                                Spacer()
+                                Text(currentPresentation.olderCompleted.count, format: .number)
+                                    .font(appearance.interfaceFont(size: 17, weight: .semibold))
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .accessibilityLabel("Previous tasks")
+                        .accessibilityValue("\(currentPresentation.olderCompleted.count) completed")
+                        .accessibilityHint("Shows completed tasks from before yesterday")
+                    }
+                }
+            }
+            .founderSurface(appearance)
+            .overlay {
+                if currentPresentation.activeGroups.isEmpty && currentPresentation.allCompleted.isEmpty {
+                    ContentUnavailableView {
+                        Label("No moves yet", systemImage: "checklist")
+                    } description: {
+                        Text("Capture the one thing you do not want to carry in your head.")
+                    } actions: {
+                        Button("New task") {
+                            isPresentingNewTask = true
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                }
+            }
+            .navigationTitle("Moves")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        isPresentingNewTask = true
+                    } label: {
+                        Label("New task", systemImage: "plus")
+                    }
+                }
+            }
+            .sheet(isPresented: $isPresentingNewTask) {
+                NavigationStack {
+                    NewTaskView()
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func recentCompletionSections(_ presentation: MovePresentation) -> some View {
+        let completedToday = presentation.recentCompleted.filter { loop in
+            loop.completedAt.map(calendar.isDateInToday) ?? false
+        }
+        let completedYesterday = presentation.recentCompleted.filter { loop in
+            loop.completedAt.map(calendar.isDateInYesterday) ?? false
+        }
+
+        if !completedToday.isEmpty {
+            completedSection(title: "Done today", items: completedToday)
+        }
+
+        if !completedYesterday.isEmpty {
+            completedSection(title: "Done yesterday", items: completedYesterday)
+        }
+    }
+
+    private func completedSection(title: String, items: [OpenLoop]) -> some View {
+        Section {
+            ForEach(items) { loop in
+                ActionableTaskRow(loop: loop)
+            }
+        } header: {
+            Label(title, systemImage: "checkmark.circle.fill")
+                .font(appearance.interfaceFont(size: 17, weight: .bold))
+                .foregroundStyle(appearance.primaryAccentColor)
+                .textCase(nil)
+        }
+    }
+}
+
+private struct ActionableTaskRow: View {
+    @EnvironmentObject private var model: AppModel
+
+    let loop: OpenLoop
+    var showsStatus = false
+
+    private var completionActionTitle: String {
+        loop.status == .done ? "Reopen" : "Complete"
+    }
+
+    private var completionActionSymbol: String {
+        loop.status == .done ? "arrow.uturn.backward" : "checkmark"
+    }
+
+    var body: some View {
+        TaskRow(loop: loop, showsStatus: showsStatus)
+            .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                Button {
+                    model.toggleCompletion(loop)
+                } label: {
+                    Label(completionActionTitle, systemImage: completionActionSymbol)
+                }
+                .tint(loop.status == .done ? .orange : .green)
+            }
+            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                Button(role: .destructive) {
+                    model.softDelete(loop)
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+            }
+            .contextMenu {
+                Menu("Move to") {
+                    ForEach(LoopStatus.allCases) { destination in
+                        Button(destination.title) {
+                            model.move(loop, to: destination)
+                        }
+                        .disabled(loop.status == destination)
+                    }
+                }
+            }
+            .accessibilityAction(named: Text(completionActionTitle)) {
+                model.toggleCompletion(loop)
+            }
+            .accessibilityAction(named: Text("Delete")) {
+                model.softDelete(loop)
+            }
+    }
+}
+
+private struct PreviousTasksView: View {
+    @Environment(\.calendar) private var calendar
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var model: AppModel
+
+    private var appearance: AppearancePreferences { model.personalization.resolvedAppearance }
+
+    private var previousTasks: [OpenLoop] {
+        MovePresentation(items: model.visibleLoops, calendar: calendar).olderCompleted
+    }
+
+    var body: some View {
+        List {
+            ForEach(previousTasks) { loop in
+                ActionableTaskRow(loop: loop)
             }
         }
         .founderSurface(appearance)
         .overlay {
-            if model.visibleLoops.isEmpty {
+            if previousTasks.isEmpty {
                 ContentUnavailableView {
-                    Label("No moves yet", systemImage: "checklist")
+                    Label("No previous tasks", systemImage: "archivebox")
                 } description: {
-                    Text("Capture the one thing you do not want to carry in your head.")
+                    Text("Completed tasks from today and yesterday stay on the main Moves screen.")
                 } actions: {
-                    Button("New task") {
-                        isPresentingNewTask = true
+                    Button("Back to Moves") {
+                        dismiss()
                     }
                     .buttonStyle(.borderedProminent)
                 }
             }
         }
-        .navigationTitle("Moves")
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    isPresentingNewTask = true
-                } label: {
-                    Label("New task", systemImage: "plus")
-                }
-            }
+        .navigationTitle("Previous tasks")
+    }
+}
+
+private extension ActiveDeadlineBucket {
+    var systemImage: String {
+        switch self {
+        case .overdue: return "exclamationmark.circle.fill"
+        case .today: return "sun.max.fill"
+        case .upcoming: return "calendar"
+        case .noDeadline: return "tray"
         }
-        .sheet(isPresented: $isPresentingNewTask) {
-            NavigationStack {
-                NewTaskView()
-            }
+    }
+
+    func headerColor(using appearance: AppearancePreferences) -> Color {
+        switch self {
+        case .overdue: return .red
+        case .today: return appearance.primaryAccentColor
+        case .upcoming, .noDeadline: return .primary
         }
     }
 }

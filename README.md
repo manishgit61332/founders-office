@@ -17,6 +17,8 @@ Founder's Office is a native Apple focus surface that turns the MacBook notch in
 - Uses one shared Apple-style visual system across every screen: Instrument Serif page titles, San Francisco UI text, neutral grouped cards, consistent borders, radii, and controls.
 - Keeps the footer hidden unless it has a real transient action such as Undo or a Codex run result.
 - Shows Doing, Next, Blocked, and Done.
+- Groups active Moves by deadline urgency and keeps the default Done view focused on today and yesterday.
+- Preserves older completed work behind Previous tasks instead of filling the daily view with history.
 - Completes and reopens work with one click.
 - Removes a task from every list without erasing it, with one-click Undo.
 - Adds new moves from an action inside the Moves screen, separate from global navigation.
