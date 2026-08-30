@@ -17,7 +17,7 @@ private enum BoardSection: String, CaseIterable, Identifiable {
         }
     }
 
-    var icon: ClayIconName {
+    var icon: AppIconName {
         switch self {
         case .home: return .home
         case .loops: return .loops
@@ -143,24 +143,60 @@ struct NotchBoardView: View {
 
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
-    @State private var selectedSection: BoardSection = ProcessInfo.processInfo.environment["OPENLOOPS_PREVIEW_SECTION"]
-        .flatMap(BoardSection.init(rawValue:)) ?? .home
-    @State private var selectedStatus: LoopStatus = ProcessInfo.processInfo.environment["OPENLOOPS_PREVIEW_SELECTED_STATUS"]
-        .flatMap(LoopStatus.init(rawValue:)) ?? .doing
+    @State private var selectedSection: BoardSection = {
+        #if FOUNDER_OFFICE_DISTRIBUTION
+        .home
+        #else
+        ProcessInfo.processInfo.environment["OPENLOOPS_PREVIEW_SECTION"]
+            .flatMap(BoardSection.init(rawValue:)) ?? .home
+        #endif
+    }()
+    @State private var selectedStatus: LoopStatus = {
+        #if FOUNDER_OFFICE_DISTRIBUTION
+        .doing
+        #else
+        ProcessInfo.processInfo.environment["OPENLOOPS_PREVIEW_SELECTED_STATUS"]
+            .flatMap(LoopStatus.init(rawValue:)) ?? .doing
+        #endif
+    }()
     @State private var selectedCalendarDay = Calendar.current.startOfDay(for: Date())
     @State private var isAdding = false
-    @State private var isShowingPreviousTasks = ProcessInfo.processInfo.environment["OPENLOOPS_PREVIEW_PREVIOUS_TASKS"] == "1"
-    @State private var isSettingsPresented = ProcessInfo.processInfo.environment["OPENLOOPS_PREVIEW_SETTINGS"] == "1"
-    @State private var personalizePage: PersonalizePage = ProcessInfo.processInfo.environment["OPENLOOPS_PREVIEW_PERSONALIZE_PAGE"]
-        .flatMap(PersonalizePage.init(rawValue:)) ?? .profile
+    @State private var isShowingPreviousTasks = {
+        #if FOUNDER_OFFICE_DISTRIBUTION
+        false
+        #else
+        ProcessInfo.processInfo.environment["OPENLOOPS_PREVIEW_PREVIOUS_TASKS"] == "1"
+        #endif
+    }()
+    @State private var isSettingsPresented = {
+        #if FOUNDER_OFFICE_DISTRIBUTION
+        false
+        #else
+        ProcessInfo.processInfo.environment["OPENLOOPS_PREVIEW_SETTINGS"] == "1"
+        #endif
+    }()
+    @State private var personalizePage: PersonalizePage = {
+        #if FOUNDER_OFFICE_DISTRIBUTION
+        .profile
+        #else
+        ProcessInfo.processInfo.environment["OPENLOOPS_PREVIEW_PERSONALIZE_PAGE"]
+            .flatMap(PersonalizePage.init(rawValue:)) ?? .profile
+        #endif
+    }()
     @State private var isFinishDatePickerPresented = false
     @State private var finishDateInteractionLease: UUID?
     @State private var photoInteractionLease: UUID?
     @State private var newTitle = ""
     @State private var newPriority: LoopPriority = .p1
     @State private var newStatus: LoopStatus = .doing
-    @State private var hoveredStatus: LoopStatus? = ProcessInfo.processInfo.environment["OPENLOOPS_PREVIEW_HOVER_STATUS"]
-        .flatMap(LoopStatus.init(rawValue:))
+    @State private var hoveredStatus: LoopStatus? = {
+        #if FOUNDER_OFFICE_DISTRIBUTION
+        nil
+        #else
+        ProcessInfo.processInfo.environment["OPENLOOPS_PREVIEW_HOVER_STATUS"]
+            .flatMap(LoopStatus.init(rawValue:))
+        #endif
+    }()
     @State private var settingsPreferredName = ""
     @State private var settingsWorkspaceName = ""
     @State private var primaryGoalTitle = ""
@@ -646,7 +682,7 @@ struct NotchBoardView: View {
                     choosePhotoWithLease()
                 } label: {
                     VStack(spacing: 8) {
-                        ClayIconView(name: .photo, style: personalization.iconStyle, size: 34)
+                        SystemIconView(name: .photo, size: 34)
                         Text("Add a personal photo")
                             .font(interfaceFont(size: 14, weight: .bold))
                         Text("A dream, a person, a logo")
@@ -927,6 +963,7 @@ struct NotchBoardView: View {
                     onToggle: { store.toggleCompletion(item) },
                     onMove: { status in store.move(item, to: status) },
                     codexAction: codexRunner.action(for: item),
+                    isCodexAvailable: codexRunner.isAvailable,
                     isCodexBusy: codexRunner.isRunning,
                     onRunWithCodex: { codexRunner.run(item) },
                     onDelete: { deleteMove(item) }
@@ -1710,7 +1747,9 @@ struct NotchBoardView: View {
     private var accentAngleBinding: Binding<Double> {
         Binding(
             get: { personalization.appearance.accent.angleDegrees },
-            set: personalization.updateAccentAngle
+            set: { angle in
+                personalization.updateAccentAngle(angle)
+            }
         )
     }
 
@@ -2168,6 +2207,7 @@ private struct LoopRow: View {
     let onToggle: () -> Void
     let onMove: (LoopStatus) -> Void
     let codexAction: CodexTaskAction
+    let isCodexAvailable: Bool
     let isCodexBusy: Bool
     let onRunWithCodex: () -> Void
     let onDelete: () -> Void
@@ -2226,10 +2266,12 @@ private struct LoopRow: View {
             }
 
             Menu {
-                Button(codexAction.label, action: onRunWithCodex)
-                    .disabled(isCodexBusy)
+                if isCodexAvailable {
+                    Button(codexAction.label, action: onRunWithCodex)
+                        .disabled(isCodexBusy)
 
-                Divider()
+                    Divider()
+                }
 
                 ForEach(LoopStatus.allCases) { status in
                     if status != item.status {
@@ -2314,7 +2356,7 @@ private struct CodexRunFooter: View {
 
 private struct AppleNavigationButton: View {
     @Environment(\.founderTheme) private var theme
-    let icon: ClayIconName
+    let icon: AppIconName
     let isSelected: Bool
     let accent: Color
     var secondaryAccent: Color? = nil
@@ -2325,7 +2367,7 @@ private struct AppleNavigationButton: View {
 
     var body: some View {
         Button(action: action) {
-            Image(systemName: icon.systemFallback)
+            Image(systemName: icon.systemName)
                 .symbolRenderingMode(.monochrome)
                 .font(theme.interfaceFont(size: 13, weight: .semibold))
                 .foregroundStyle(Color.white.opacity(isSelected ? 0.98 : (isHovered ? 0.92 : 0.68)))

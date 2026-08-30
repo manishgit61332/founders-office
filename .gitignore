@@ -8,6 +8,7 @@ DerivedData/
 *.xcodeproj/
 *.xcresult/
 *.xcuserstate
+*.profraw
 xcuserdata/
 *.dSYM/
 
@@ -18,6 +19,7 @@ OPEN_LOOPS_CONTEXT.md
 Personalization/
 Codex Runs/
 cloud-sync-state.json
+workspace-identity.json
 support-bundles/
 exports/
 *.log
@@ -32,6 +34,7 @@ exports/
 qa/
 audits/
 design-qa.md
+GeneratedAssets/
 
 # Credentials and signing material
 .env

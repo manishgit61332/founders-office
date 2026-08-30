@@ -419,6 +419,61 @@ func runChecks() async throws {
     try expect(RGB24Color(hex: "#0a84ff")?.hex == "#0A84FF", "Mixed-case RGB24 colour did not normalize")
     try expect(RGB24Color(hex: "#12345") == nil, "Invalid short RGB24 colour was accepted")
 
+    try expect(
+        AssetFileName.validated("vision-00000000-0000-0000-0000-000000000000.jpg") != nil,
+        "Generated vision asset name was rejected"
+    )
+    try expect(AssetFileName.validated("../../Library/secret.jpg") == nil, "Parent traversal asset name was accepted")
+    try expect(AssetFileName.validated("folder/vision.jpg") == nil, "Nested asset path was accepted")
+    try expect(AssetFileName.validated("folder\\vision.jpg") == nil, "Windows-style asset path was accepted")
+    try expect(AssetFileName.validated("vision.exe") == nil, "Unsupported asset extension was accepted")
+
+    let taskRecovery = WorkspaceRecoveryState(affectedComponents: [.openLoops])
+    let personalizationRecovery = WorkspaceRecoveryState(affectedComponents: [.personalization])
+    let combinedRecovery = taskRecovery.merging(personalizationRecovery)
+    try expect(taskRecovery.requiresRecovery, "Task corruption did not require recovery")
+    try expect(taskRecovery.message.hasPrefix("Tasks need recovery"), "Task recovery message was unclear")
+    try expect(
+        personalizationRecovery.message.hasPrefix("Personalization needs recovery"),
+        "Personalization recovery message was ungrammatical"
+    )
+    try expect(
+        combinedRecovery.affectedComponents == [.openLoops, .personalization],
+        "Multiple damaged stores were not combined deterministically"
+    )
+
+    let quarantineRoot = FileManager.default.temporaryDirectory
+        .appendingPathComponent("founder-office-recovery-check-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: quarantineRoot) }
+    try FileManager.default.createDirectory(at: quarantineRoot, withIntermediateDirectories: true)
+    let corruptURL = quarantineRoot.appendingPathComponent("openloops.json")
+    let corruptData = Data("{not-json".utf8)
+    try corruptData.write(to: corruptURL)
+    let preservedURL = try CorruptFileQuarantine.preserve(corruptURL)
+    try expect(
+        FileManager.default.fileExists(atPath: corruptURL.path),
+        "Quarantine removed the canonical fail-safe file"
+    )
+    let preservedData = try Data(contentsOf: preservedURL)
+    try expect(
+        preservedData == corruptData,
+        "Quarantine did not preserve the damaged bytes exactly"
+    )
+    let secondPreservedURL = try CorruptFileQuarantine.preserve(corruptURL)
+    try expect(secondPreservedURL != preservedURL, "Quarantine reused and replaced an existing backup")
+    let corruptSnapshotStore = JSONSnapshotStore(rootURL: quarantineRoot)
+    do {
+        _ = try await corruptSnapshotStore.readSnapshot()
+        throw CheckFailure.failed("Cloud snapshot accepted corrupt canonical tasks")
+    } catch is DecodingError {
+        // Expected: cloud transport must fail closed instead of seeding defaults.
+    }
+    let canonicalAfterCloudRead = try Data(contentsOf: corruptURL)
+    try expect(
+        canonicalAfterCloudRead == corruptData,
+        "Cloud snapshot read replaced corrupt canonical tasks"
+    )
+
     let normalizedAccent = AccentStyle(
         mode: .gradient,
         stops: [

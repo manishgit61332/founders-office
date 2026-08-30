@@ -9,3 +9,4 @@ Each ADR records status, date, context, decision, consequences, privacy/security
 - [0003 — Moves, Blocked, Awaiting reply, and Needs You](0003-product-state-language.md)
 - [0004 — Event-driven, approval-gated assistant connectors](0004-approval-gated-connectors.md)
 - [0006 — Composable, versioned appearance personalization](0006-composable-appearance-personalization.md)
+- [0007 — Separate product identity from connector authorization](0007-primary-auth-and-connector-authorization.md)

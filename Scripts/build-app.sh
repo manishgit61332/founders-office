@@ -2,9 +2,18 @@
 
 set -euo pipefail
 
+# This is intentionally a development-only builder. It uses an ad-hoc
+# signature and embeds the current checkout so the local Codex workflow can
+# find its development workspace. It must never feed the public download.
+if [[ "${FOUNDER_OFFICE_RELEASE:-0}" != "0" ]]; then
+    print -u2 "build-app.sh cannot create a distributable release."
+    print -u2 "Use Scripts/release-macos.sh for Developer ID signing and notarization."
+    exit 64
+fi
+
 project_dir="${0:A:h:h}"
 bundle_name="Founder's Office"
-bundle_dir="${project_dir}/dist/${bundle_name}.app"
+bundle_dir="${project_dir}/dist/development/${bundle_name}.app"
 binary_path="${project_dir}/.build/release/OpenLoops"
 executable_name="FoundersOffice"
 
@@ -17,16 +26,19 @@ fi
 
 mkdir -p "${bundle_dir}/Contents/MacOS"
 mkdir -p "${bundle_dir}/Contents/Resources"
-mkdir -p "${bundle_dir}/Contents/Resources/ClayIcons"
 mkdir -p "${bundle_dir}/Contents/Resources/Fonts"
 cp "${binary_path}" "${bundle_dir}/Contents/MacOS/${executable_name}"
 cp "${project_dir}/Resources/Info.plist" "${bundle_dir}/Contents/Info.plist"
 plutil -replace OpenLoopsWorkspace -string "${project_dir}" "${bundle_dir}/Contents/Info.plist" 2>/dev/null \
     || plutil -insert OpenLoopsWorkspace -string "${project_dir}" "${bundle_dir}/Contents/Info.plist"
-cp "${project_dir}/Resources/ClayIcons/"*.png "${bundle_dir}/Contents/Resources/ClayIcons/"
+plutil -replace FounderOfficeDistributionChannel -string "development" "${bundle_dir}/Contents/Info.plist" 2>/dev/null \
+    || plutil -insert FounderOfficeDistributionChannel -string "development" "${bundle_dir}/Contents/Info.plist"
+plutil -replace FounderOfficeNotarized -bool false "${bundle_dir}/Contents/Info.plist" 2>/dev/null \
+    || plutil -insert FounderOfficeNotarized -bool false "${bundle_dir}/Contents/Info.plist"
 cp "${project_dir}/Resources/Fonts/"* "${bundle_dir}/Contents/Resources/Fonts/"
 cp "${project_dir}/Apps/macOS/PrivacyInfo.xcprivacy" "${bundle_dir}/Contents/Resources/PrivacyInfo.xcprivacy"
 codesign --force --deep --sign - "${bundle_dir}"
+codesign --verify --deep --strict --verbose=2 "${bundle_dir}"
 
 if [[ "${1:-}" == "--install" ]]; then
     if [[ -n "${FOUNDER_OFFICE_INSTALL_ROOT:-}" ]]; then
@@ -62,7 +74,9 @@ if [[ "${1:-}" == "--install" ]]; then
 
     mv "${staging_target}" "${install_target}"
     rmdir "${staging_root}"
-    print "Installed: ${install_target}"
+    print "Installed local development build: ${install_target}"
+    print "Not for distribution: ad-hoc signed, not notarized, and tied to ${project_dir}"
 else
-    print "Built: ${bundle_dir}"
+    print "Built local development app: ${bundle_dir}"
+    print "Not for distribution: ad-hoc signed, not notarized, and tied to ${project_dir}"
 fi

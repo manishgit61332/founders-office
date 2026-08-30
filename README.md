@@ -22,8 +22,8 @@ Founder's Office is a native Apple focus surface that turns the MacBook notch in
 - Completes and reopens work with one click.
 - Removes a task from every list without erasing it, with one-click Undo.
 - Adds new moves from an action inside the Moves screen, separate from global navigation.
-- Runs research, writing, analysis, code, and local file work through Codex.
-- Prepares drafts and support material for tasks that still require a human send, booking, shoot, or publish action.
+- Development builds can run research, writing, analysis, code, and local file work through Codex.
+- Customer Release builds compile external Codex CLI execution out until the scoped-helper and consent launch gates pass.
 - Watches `openloops.json` for external changes.
 - Regenerates `OPEN_LOOPS_CONTEXT.md` after every change.
 - Saves a workspace name, accent colour, chosen local photo, and one measurable primary goal in `personalization.json`.
@@ -34,7 +34,9 @@ Founder's Office is a native Apple focus surface that turns the MacBook notch in
 
 The local JSON file is the canonical runtime state. The generated Markdown file is readable local context for the user and Codex. Both are intentionally excluded from Git.
 
-## Build and install
+Each workspace also has a local `workspace-identity.json`. First-run storage consent is bound to that durable identifier. If a previously known workspace is missing either canonical document, the app enters recovery before it can create defaults or start iCloud sync.
+
+## Local development build
 
 ```bash
 chmod +x Scripts/build-app.sh
@@ -42,7 +44,15 @@ Scripts/build-app.sh --install
 open "$HOME/Applications/Founder's Office.app"
 ```
 
+This command creates an ad-hoc signed development app in `dist/development/`. It embeds the current checkout path and is not notarized. Do not distribute it or connect it to the website download.
+
 Launch at login is opt-in. Right-click the checklist icon to enable or disable it.
+
+## macOS release
+
+Public downloads use a separate fail-closed path. The release script requires a clean tagged commit, final Apple identifiers, a production provisioning profile, Developer ID signing, hardened runtime, notarization, stapling, Gatekeeper acceptance, and immutable checksum metadata.
+
+See [the macOS direct-distribution runbook](docs/product/MAC_DIRECT_DISTRIBUTION.md). The website download must remain disabled until the sealed artifact passes the clean-Mac acceptance test.
 
 ## Command-line updates
 
@@ -60,6 +70,7 @@ The open panel reloads the JSON file automatically. The legacy filenames remain 
 ## Useful files
 
 - `openloops.json`: canonical structured state.
+- `workspace-identity.json`: durable local workspace identity used to bind storage consent and fail closed during partial restores.
 - `OPEN_LOOPS_CONTEXT.md`: generated human-readable state.
 - `Scripts/openloops.py`: safe interface for Codex and terminal updates.
 - `Scripts/validate-notch-geometry.swift`: verifies top-edge attachment and hardware-notch-safe header regions on the current display.
@@ -89,7 +100,7 @@ Scripts/ci-checks.sh
 
 ## Known boundary
 
-The app must be running for notch hover and in-app Codex runs to work. Codex runs are local, review-gated jobs: they can create task artifacts in `Codex Runs`, but they cannot send messages, publish, book calls, purchase, use private credentials, or mark a task done. Codex gets continuity because every run reads the same workspace instructions and open-loop context.
+The app must be running for notch hover to work. In development builds, Codex runs are local, review-gated jobs: they can create task artifacts in `Codex Runs`, but they cannot send messages, publish, book calls, purchase, use private credentials, or mark a task done. External CLI execution is compiled out of customer Release builds until a separately scoped helper, consent review, cancellation, retention, and cost controls are proven.
 
 Local photo selection works now. Google Photos is deliberately not presented as connected until a Google Cloud project and OAuth client are configured; the current Photos Picker requires explicit user sign-in and selection.
 

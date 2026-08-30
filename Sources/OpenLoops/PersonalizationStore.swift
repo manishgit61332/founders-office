@@ -20,6 +20,7 @@ extension AccentPalette {
 final class PersonalizationStore: ObservableObject {
     @Published private(set) var document: PersonalizationDocument
     @Published private(set) var message = "Saved locally"
+    @Published private(set) var recoveryState: WorkspaceRecoveryState = .ready
 
     let rootURL: URL
     let documentURL: URL
@@ -45,13 +46,17 @@ final class PersonalizationStore: ObservableObject {
 
         document = Self.defaultDocument
         load()
+        #if !FOUNDER_OFFICE_DISTRIBUTION
         applyPreviewOverrides()
+        #endif
         startWatching()
     }
 
-    deinit {
+    func stop() {
         watcher?.invalidate()
+        watcher = nil
         pendingAppearanceSave?.cancel()
+        pendingAppearanceSave = nil
     }
 
     var preferredName: String { document.resolvedPreferredName ?? "" }
@@ -76,24 +81,38 @@ final class PersonalizationStore: ObservableObject {
 
     var photoURL: URL? {
         if let previewPhotoURL { return previewPhotoURL }
-        guard let fileName = document.photoFileName else { return nil }
+        guard let fileName = document.photoFileName.flatMap(AssetFileName.validated) else { return nil }
         let url = assetsURL.appendingPathComponent(fileName)
         return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
 
+    /// Fresh workspace bootstrap is the only path allowed to materialize the
+    /// default document. The caller checks this write before committing the
+    /// durable workspace identity or starting onboarding/cloud services.
+    func ensureCanonicalDocumentExists() throws {
+        guard !FileManager.default.fileExists(atPath: documentURL.path) else { return }
+        guard !recoveryState.requiresRecovery else {
+            throw CocoaError(.fileWriteNoPermission)
+        }
+        try writeCanonicalDocument()
+    }
+
     func updatePreferredName(_ value: String) {
+        guard canEdit else { return }
         let cleanValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
         document.preferredName = cleanValue.isEmpty ? nil : cleanValue
         persist()
     }
 
     func updateWorkspaceName(_ value: String) {
+        guard canEdit else { return }
         let cleanValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
         document.workspaceName = cleanValue.isEmpty ? "Founder's Office" : cleanValue
         persist()
     }
 
     func updateAccent(_ accent: AccentPalette) {
+        guard canEdit else { return }
         document.accent = accent
         var updatedAppearance = appearance
         updatedAppearance.presetID = .custom
@@ -108,6 +127,7 @@ final class PersonalizationStore: ObservableObject {
     }
 
     func applyPreset(_ preset: AppearancePresetID) {
+        guard canEdit else { return }
         guard preset != .custom else { return }
         let updatedAppearance = AppearancePreferences.preset(preset)
         document.appearance = updatedAppearance
@@ -116,6 +136,7 @@ final class PersonalizationStore: ObservableObject {
     }
 
     func updateAccentMode(_ mode: AccentMode) {
+        guard canEdit else { return }
         updateAppearance(debounced: true) { appearance in
             var stops = appearance.accent.normalizedStops
             if mode == .gradient, stops.count == 1 {
@@ -135,6 +156,7 @@ final class PersonalizationStore: ObservableObject {
     }
 
     func updateAccentColor(_ color: RGB24Color, stopIndex: Int) {
+        guard canEdit else { return }
         updateAppearance(debounced: true) { appearance in
             var stops = appearance.accent.normalizedStops
             while stops.count <= stopIndex {
@@ -150,24 +172,29 @@ final class PersonalizationStore: ObservableObject {
     }
 
     func updateAccentAngle(_ angle: Double) {
+        guard canEdit else { return }
         updateAppearance(debounced: true) { appearance in
             appearance.accent.angleDegrees = angle
         }
     }
 
     func updateDisplayFont(_ font: FontChoiceID) {
+        guard canEdit else { return }
         updateAppearance { $0.displayFontID = font }
     }
 
     func updateInterfaceFont(_ font: FontChoiceID) {
+        guard canEdit else { return }
         updateAppearance { $0.interfaceFontID = font }
     }
 
     func updateNodeStyle(_ style: NodeStyleID) {
+        guard canEdit else { return }
         updateAppearance { $0.nodeStyleID = style }
     }
 
     func updateSurfaceStyle(_ style: SurfaceStyleID) {
+        guard canEdit else { return }
         updateAppearance { $0.surfaceStyleID = style }
     }
 
@@ -179,6 +206,7 @@ final class PersonalizationStore: ObservableObject {
     }
 
     func updateIconStyle(_ style: IconStyle) {
+        guard canEdit else { return }
         document.iconStyle = style
         persist()
     }
@@ -201,6 +229,7 @@ final class PersonalizationStore: ObservableObject {
     }
 
     func removePhoto() {
+        guard canEdit else { return }
         let previousURL = photoURL
         document.photoFileName = nil
         previewPhotoURL = nil
@@ -211,6 +240,7 @@ final class PersonalizationStore: ObservableObject {
     }
 
     func addMilestone(title: String, dueAt: Date) {
+        guard canEdit else { return }
         let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleanTitle.isEmpty else { return }
         let now = Date()
@@ -221,6 +251,7 @@ final class PersonalizationStore: ObservableObject {
     }
 
     func deleteMilestone(_ milestone: Milestone) {
+        guard canEdit else { return }
         guard let index = document.milestones.firstIndex(where: { $0.id == milestone.id }) else { return }
         let now = Date()
         document.milestones[index].updatedAt = now
@@ -236,6 +267,7 @@ final class PersonalizationStore: ObservableObject {
         unit: GoalValueUnit,
         dueAt: Date
     ) {
+        guard canEdit else { return }
         let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         let cleanMetric = metric.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleanTitle.isEmpty else { return }
@@ -258,6 +290,7 @@ final class PersonalizationStore: ObservableObject {
     }
 
     func clearPrimaryGoal() {
+        guard canEdit else { return }
         guard var goal = document.primaryGoal else { return }
         let now = Date()
         goal.updatedAt = now
@@ -267,6 +300,7 @@ final class PersonalizationStore: ObservableObject {
     }
 
     private func importPhoto(from sourceURL: URL) {
+        guard canEdit else { return }
         guard NSImage(contentsOf: sourceURL) != nil else {
             message = "That file isn’t a readable image"
             return
@@ -294,32 +328,55 @@ final class PersonalizationStore: ObservableObject {
     }
 
     private func load(force: Bool = false) {
-        guard FileManager.default.fileExists(atPath: documentURL.path) else { return }
-        do {
-            let modificationDate = fileModificationDate()
-            if !force, modificationDate == lastKnownModificationDate { return }
-            let data = try Data(contentsOf: documentURL)
-            document = try decoder.decode(PersonalizationDocument.self, from: data)
-            lastKnownModificationDate = modificationDate
-        } catch {
-            message = "Personalization reset"
-            AppDiagnostics.failure(.personalizationLoad, category: .storage, error: error)
+        guard FileManager.default.fileExists(atPath: documentURL.path) else {
+            if recoveryState.requiresRecovery {
+                message = recoveryState.message
+            }
+            return
         }
+
+        let modificationDate = fileModificationDate()
+        if !force, modificationDate == lastKnownModificationDate { return }
+
+        let data: Data
+        do {
+            data = try Data(contentsOf: documentURL)
+        } catch {
+            requireRecovery(preservedCopyName: nil, error: error)
+            return
+        }
+
+        do {
+            document = try decoder.decode(PersonalizationDocument.self, from: data)
+        } catch {
+            let preservedCopyName = (try? CorruptFileQuarantine.preserve(documentURL))?.lastPathComponent
+            requireRecovery(preservedCopyName: preservedCopyName, error: error)
+            return
+        }
+
+        lastKnownModificationDate = modificationDate
+        recoveryState = .ready
+        message = "Saved locally"
     }
 
     private func persist() {
+        guard canEdit else { return }
         do {
-            document.schemaVersion = max(document.schemaVersion, 6)
-            document.updatedAt = Date()
-            try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
-            let data = try encoder.encode(document)
-            try data.write(to: documentURL, options: .atomic)
-            lastKnownModificationDate = fileModificationDate()
-            message = "Saved locally"
+            try writeCanonicalDocument()
         } catch {
             message = "Save failed"
             AppDiagnostics.failure(.personalizationSave, category: .storage, error: error)
         }
+    }
+
+    private func writeCanonicalDocument() throws {
+        document.schemaVersion = max(document.schemaVersion, 6)
+        document.updatedAt = Date()
+        try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        let data = try encoder.encode(document)
+        try data.write(to: documentURL, options: .atomic)
+        lastKnownModificationDate = fileModificationDate()
+        message = "Saved locally"
     }
 
     private func updateAppearance(
@@ -370,6 +427,25 @@ final class PersonalizationStore: ObservableObject {
         return attributes?[.modificationDate] as? Date
     }
 
+    private var canEdit: Bool {
+        guard !recoveryState.requiresRecovery else {
+            message = recoveryState.message
+            return false
+        }
+        return true
+    }
+
+    private func requireRecovery(preservedCopyName: String?, error: Error) {
+        lastKnownModificationDate = fileModificationDate()
+        recoveryState = WorkspaceRecoveryState(
+            affectedComponents: [.personalization],
+            preservedCopyNames: preservedCopyName.map { [$0] } ?? []
+        )
+        message = recoveryState.message
+        AppDiagnostics.failure(.personalizationLoad, category: .storage, error: error)
+    }
+
+    #if !FOUNDER_OFFICE_DISTRIBUTION
     private func applyPreviewOverrides() {
         let environment = ProcessInfo.processInfo.environment
         if let rawPreset = environment["OPENLOOPS_PREVIEW_APPEARANCE_PRESET"] {
@@ -410,6 +486,7 @@ final class PersonalizationStore: ObservableObject {
             )
         }
     }
+    #endif
 
     private static let defaultDocument = PersonalizationDocument(
         schemaVersion: 6,

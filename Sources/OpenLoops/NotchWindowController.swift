@@ -65,11 +65,15 @@ final class NotchWindowController {
     private var menuInteractionLeases: [ObjectIdentifier: UUID] = [:]
     private var popoverInteractionLeases: [ObjectIdentifier: UUID] = [:]
 
-    init(store: OpenLoopStore) {
+    init(
+        store: OpenLoopStore,
+        personalization: PersonalizationStore? = nil,
+        calendarMode: CalendarProvider.Mode = .live
+    ) {
         self.store = store
-        codexRunner = CodexRunner(founderOfficeURL: store.rootURL.deletingLastPathComponent())
-        personalization = PersonalizationStore(rootURL: store.rootURL)
-        calendarProvider = CalendarProvider()
+        codexRunner = CodexRunner(founderOfficeURL: store.rootURL)
+        self.personalization = personalization ?? PersonalizationStore(rootURL: store.rootURL)
+        calendarProvider = CalendarProvider(mode: calendarMode)
         panel = NotchPanel(
             contentRect: NSRect(x: 0, y: 0, width: 720, height: 350),
             styleMask: [.borderless, .fullSizeContentView],
@@ -92,7 +96,7 @@ final class NotchWindowController {
             rootView: NotchBoardView(
                 store: store,
                 codexRunner: codexRunner,
-                personalization: personalization,
+                personalization: self.personalization,
                 calendarProvider: calendarProvider,
                 presentation: presentation
             ) { [weak self] in self?.hide(force: true) }
@@ -105,6 +109,7 @@ final class NotchWindowController {
     var isVisible: Bool { state != .hidden }
 
     func prepareForTermination() {
+        codexRunner.prepareForTermination()
         personalization.flushPendingChanges()
         presentation.clearInteractions()
     }
@@ -253,9 +258,9 @@ final class NotchWindowController {
                 queue: .main
             ) { [weak self] notification in
                 guard let menu = notification.object as? NSMenu else { return }
+                let key = ObjectIdentifier(menu)
                 Task { @MainActor in
                     guard let self else { return }
-                    let key = ObjectIdentifier(menu)
                     if self.menuInteractionLeases[key] == nil {
                         self.menuInteractionLeases[key] = self.presentation.beginInteraction("menu")
                     }
@@ -269,9 +274,10 @@ final class NotchWindowController {
                 queue: .main
             ) { [weak self] notification in
                 guard let menu = notification.object as? NSMenu else { return }
+                let key = ObjectIdentifier(menu)
                 Task { @MainActor in
                     guard let self,
-                          let lease = self.menuInteractionLeases.removeValue(forKey: ObjectIdentifier(menu)) else { return }
+                          let lease = self.menuInteractionLeases.removeValue(forKey: key) else { return }
                     self.presentation.endInteraction(lease)
                 }
             }
@@ -283,9 +289,9 @@ final class NotchWindowController {
                 queue: .main
             ) { [weak self] notification in
                 guard let popover = notification.object as? NSPopover else { return }
+                let key = ObjectIdentifier(popover)
                 Task { @MainActor in
                     guard let self else { return }
-                    let key = ObjectIdentifier(popover)
                     if self.popoverInteractionLeases[key] == nil {
                         self.popoverInteractionLeases[key] = self.presentation.beginInteraction("popover")
                     }
@@ -299,9 +305,10 @@ final class NotchWindowController {
                 queue: .main
             ) { [weak self] notification in
                 guard let popover = notification.object as? NSPopover else { return }
+                let key = ObjectIdentifier(popover)
                 Task { @MainActor in
                     guard let self,
-                          let lease = self.popoverInteractionLeases.removeValue(forKey: ObjectIdentifier(popover)) else { return }
+                          let lease = self.popoverInteractionLeases.removeValue(forKey: key) else { return }
                     self.presentation.endInteraction(lease)
                 }
             }

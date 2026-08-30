@@ -18,6 +18,12 @@
     <string>0.1.0</string>
     <key>CFBundleVersion</key>
     <string>1</string>
+    <key>FounderOfficeCloudEnabled</key>
+    <true/>
+    <!-- Provisional development value; App Store release configuration must
+         replace it with the entitlement-matched production container. -->
+    <key>FounderOfficeCloudContainerIdentifier</key>
+    <string>iCloud.com.manish.foundersoffice</string>
     <key>LSRequiresIPhoneOS</key>
     <true/>
     <key>NSCalendarsFullAccessUsageDescription</key>

@@ -34,6 +34,11 @@ struct CalendarSignal: Identifiable, Hashable {
 
 @MainActor
 final class CalendarProvider: ObservableObject {
+    enum Mode {
+        case live
+        case syntheticPreview
+    }
+
     @Published private(set) var authorizationStatus: EKAuthorizationStatus
     @Published private(set) var events: [CalendarSignal] = []
     @Published private(set) var accounts: [CalendarAccountSignal] = []
@@ -41,15 +46,26 @@ final class CalendarProvider: ObservableObject {
     @Published private(set) var lastSyncedAt: Date?
 
     private let eventStore = EKEventStore()
+    private let mode: Mode
     private var cancellables = Set<AnyCancellable>()
 
-    init() {
+    init(mode requestedMode: Mode = .live) {
+        #if FOUNDER_OFFICE_DISTRIBUTION
+        mode = requestedMode
+        #else
+        mode = ProcessInfo.processInfo.environment["OPENLOOPS_PREVIEW_CALENDAR"] == "1"
+            ? .syntheticPreview
+            : requestedMode
+        #endif
         authorizationStatus = EKEventStore.authorizationStatus(for: .event)
-        startLiveSync()
 
-        if ProcessInfo.processInfo.environment["OPENLOOPS_PREVIEW_CALENDAR"] == "1" {
+        if mode == .syntheticPreview {
             seedPreviewEvents()
-        } else if isAuthorized {
+        } else {
+            startLiveSync()
+        }
+
+        if mode == .live, isAuthorized {
             refresh()
         }
     }
@@ -77,22 +93,35 @@ final class CalendarProvider: ObservableObject {
             return
         }
 
-        Task {
-            do {
-                let granted = try await eventStore.requestFullAccessToEvents()
+        // The completion API keeps the non-Sendable EKEventStore on the main
+        // actor. Xcode 16.4's async overlay otherwise transfers it to a
+        // nonisolated executor and correctly fails strict concurrency checks.
+        eventStore.requestFullAccessToEvents { [weak self] granted, error in
+            let failure = error.map {
+                let value = $0 as NSError
+                return (value.domain, value.code)
+            }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
                 authorizationStatus = EKEventStore.authorizationStatus(for: .event)
-                message = granted ? "Calendar live" : "Calendar access denied"
-                if granted { refresh() }
-            } catch {
-                authorizationStatus = EKEventStore.authorizationStatus(for: .event)
-                message = "Couldn’t connect Calendar"
-                AppDiagnostics.failure(.calendarAuthorizationRequest, category: .calendar, error: error)
+                if let failure {
+                    message = "Couldn’t connect Calendar"
+                    AppDiagnostics.failure(
+                        .calendarAuthorizationRequest,
+                        category: .calendar,
+                        domain: failure.0,
+                        code: failure.1
+                    )
+                } else {
+                    message = granted ? "Calendar live" : "Calendar access denied"
+                    if granted { refresh() }
+                }
             }
         }
     }
 
     func syncOnOpen() {
-        guard ProcessInfo.processInfo.environment["OPENLOOPS_PREVIEW_CALENDAR"] != "1" else { return }
+        guard mode == .live else { return }
         refresh()
     }
 
