@@ -6,6 +6,8 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Added
 
+- Mix-and-match appearance controls for full-spectrum 8-bit RGB accents, two-colour gradients, display and interface fonts, move-card styles, and glass, frosted, or solid-black surfaces.
+- A versioned appearance model shared by macOS and iOS, with forward-compatible identifiers and legacy personalization fallback.
 - Private-repository governance, pull-request and issue templates, repository safety checks, and automated CI.
 - A versioned local pre-push gate for private repositories without hosted branch protection.
 - Privacy-safe structured diagnostics using Apple Unified Logging.
@@ -15,6 +17,11 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 - Customer-facing “Open Loops” language is now **Moves**.
 - The ambiguous “Waiting” state is now **Blocked** in the current interface.
+
+### Fixed
+
+- Personalize now stays open while a calendar picker, colour panel, menu, or photo chooser is active, then resumes normal notch hover dismissal when the interaction ends.
+- The finish-line calendar now applies a date only when **Done** is pressed; **Cancel** preserves the previous date.
 
 ### Security
 

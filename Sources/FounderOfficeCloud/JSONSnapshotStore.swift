@@ -86,7 +86,7 @@ public actor JSONSnapshotStore {
     private func readPersonalization() throws -> PersonalizationDocument {
         guard FileManager.default.fileExists(atPath: personalizationURL.path) else {
             return PersonalizationDocument(
-                schemaVersion: 5,
+                schemaVersion: 6,
                 displayName: "Founder's Office",
                 accent: .blue,
                 iconStyle: .system,
@@ -95,7 +95,8 @@ public actor JSONSnapshotStore {
                 milestones: [],
                 updatedAt: Date(),
                 preferredName: nil,
-                workspaceName: "Founder's Office"
+                workspaceName: "Founder's Office",
+                appearance: .manish()
             )
         }
         return try decoder.decode(PersonalizationDocument.self, from: Data(contentsOf: personalizationURL))

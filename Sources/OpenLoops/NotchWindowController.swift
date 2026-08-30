@@ -1,4 +1,5 @@
 import AppKit
+import FounderOfficeCore
 import SwiftUI
 
 final class NotchPanel: NSPanel {
@@ -12,6 +13,26 @@ final class NotchPresentationModel: ObservableObject {
     @Published var horizontalPull: CGFloat = 0
     @Published var notchWidth: CGFloat = 185
     @Published var notchHeight: CGFloat = 32
+    @Published private(set) var preventsAutoDismiss = false
+
+    private var interactionLeases = InteractionLeaseRegistry()
+
+    @discardableResult
+    func beginInteraction(_ reason: String) -> UUID {
+        let lease = interactionLeases.begin(reason)
+        preventsAutoDismiss = interactionLeases.isActive
+        return lease
+    }
+
+    func endInteraction(_ lease: UUID) {
+        interactionLeases.end(lease)
+        preventsAutoDismiss = interactionLeases.isActive
+    }
+
+    func clearInteractions() {
+        interactionLeases.clear()
+        preventsAutoDismiss = false
+    }
 }
 
 @MainActor
@@ -41,6 +62,8 @@ final class NotchWindowController {
     private var awaitingManualEntry = false
     private var suppressHoverRevealUntilHidden = false
     private var systemObservers: [NSObjectProtocol] = []
+    private var menuInteractionLeases: [ObjectIdentifier: UUID] = [:]
+    private var popoverInteractionLeases: [ObjectIdentifier: UUID] = [:]
 
     init(store: OpenLoopStore) {
         self.store = store
@@ -80,6 +103,11 @@ final class NotchWindowController {
     }
 
     var isVisible: Bool { state != .hidden }
+
+    func prepareForTermination() {
+        personalization.flushPendingChanges()
+        presentation.clearInteractions()
+    }
 
     func show(preview: Bool = false, manual: Bool = false) {
         previewMode = preview
@@ -135,9 +163,13 @@ final class NotchWindowController {
     func hide(force: Bool = false) {
         guard state != .hidden, state != .closing else { return }
         guard force || !previewMode else { return }
+        guard force || (!presentation.preventsAutoDismiss && !hasVisibleTransientWindow) else { return }
         previewMode = false
         awaitingManualEntry = false
         if force {
+            presentation.clearInteractions()
+            menuInteractionLeases.removeAll()
+            popoverInteractionLeases.removeAll()
             suppressHoverRevealUntilHidden = true
         }
         exitStartedAt = nil
@@ -215,6 +247,66 @@ final class NotchWindowController {
             }
         )
         systemObservers.append(
+            center.addObserver(
+                forName: NSMenu.didBeginTrackingNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] notification in
+                guard let menu = notification.object as? NSMenu else { return }
+                Task { @MainActor in
+                    guard let self else { return }
+                    let key = ObjectIdentifier(menu)
+                    if self.menuInteractionLeases[key] == nil {
+                        self.menuInteractionLeases[key] = self.presentation.beginInteraction("menu")
+                    }
+                }
+            }
+        )
+        systemObservers.append(
+            center.addObserver(
+                forName: NSMenu.didEndTrackingNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] notification in
+                guard let menu = notification.object as? NSMenu else { return }
+                Task { @MainActor in
+                    guard let self,
+                          let lease = self.menuInteractionLeases.removeValue(forKey: ObjectIdentifier(menu)) else { return }
+                    self.presentation.endInteraction(lease)
+                }
+            }
+        )
+        systemObservers.append(
+            center.addObserver(
+                forName: NSPopover.willShowNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] notification in
+                guard let popover = notification.object as? NSPopover else { return }
+                Task { @MainActor in
+                    guard let self else { return }
+                    let key = ObjectIdentifier(popover)
+                    if self.popoverInteractionLeases[key] == nil {
+                        self.popoverInteractionLeases[key] = self.presentation.beginInteraction("popover")
+                    }
+                }
+            }
+        )
+        systemObservers.append(
+            center.addObserver(
+                forName: NSPopover.didCloseNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] notification in
+                guard let popover = notification.object as? NSPopover else { return }
+                Task { @MainActor in
+                    guard let self,
+                          let lease = self.popoverInteractionLeases.removeValue(forKey: ObjectIdentifier(popover)) else { return }
+                    self.presentation.endInteraction(lease)
+                }
+            }
+        )
+        systemObservers.append(
             NSWorkspace.shared.notificationCenter.addObserver(
                 forName: NSWorkspace.didWakeNotification,
                 object: nil,
@@ -238,6 +330,11 @@ final class NotchWindowController {
         let hotZone = revealZone(on: screen)
         let interactionZone = visibleShellFrame().insetBy(dx: -12, dy: -12)
         let isInside = hotZone.contains(pointer) || (state != .hidden && interactionZone.contains(pointer))
+
+        if presentation.preventsAutoDismiss || hasVisibleTransientWindow {
+            exitStartedAt = nil
+            return
+        }
 
         if suppressHoverRevealUntilHidden {
             if state != .hidden || hotZone.contains(pointer) {
@@ -272,6 +369,19 @@ final class NotchWindowController {
 
         if Date().timeIntervalSince(exitStartedAt!) >= 0.24 {
             hide()
+        }
+    }
+
+    private var hasVisibleTransientWindow: Bool {
+        if NSApp.modalWindow != nil { return true }
+
+        return NSApp.windows.contains { window in
+            guard window !== panel, window.isVisible else { return false }
+            return (window is NSColorPanel && window.isKeyWindow)
+                || window is NSOpenPanel
+                || window is NSSavePanel
+                || window.sheetParent === panel
+                || window.parent === panel
         }
     }
 

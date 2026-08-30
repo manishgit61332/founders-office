@@ -12,7 +12,13 @@ struct FoundersOfficeiOSApp: App {
                 .environmentObject(model)
                 .environmentObject(calendar)
                 .environmentObject(cloudAccount)
-                .tint(model.personalization.accent.swiftUIColor)
+                .tint(model.personalization.resolvedAppearance.primaryAccentColor)
+                .font(model.personalization.resolvedAppearance.interfaceFont(size: 17))
+                .preferredColorScheme(
+                    model.personalization.resolvedAppearance.surfaceStyleID == .solidBlack
+                        ? .dark
+                        : nil
+                )
         }
     }
 }

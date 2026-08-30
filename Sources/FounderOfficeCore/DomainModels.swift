@@ -233,6 +233,7 @@ public struct PersonalizationDocument: Codable, Sendable {
     public var primaryGoal: PrimaryGoal?
     public var milestones: [Milestone]
     public var updatedAt: Date?
+    public var appearance: AppearancePreferences?
 
     public init(
         schemaVersion: Int,
@@ -244,7 +245,8 @@ public struct PersonalizationDocument: Codable, Sendable {
         milestones: [Milestone],
         updatedAt: Date? = nil,
         preferredName: String? = nil,
-        workspaceName: String? = nil
+        workspaceName: String? = nil,
+        appearance: AppearancePreferences? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.displayName = displayName
@@ -256,6 +258,7 @@ public struct PersonalizationDocument: Codable, Sendable {
         self.primaryGoal = primaryGoal
         self.milestones = milestones
         self.updatedAt = updatedAt
+        self.appearance = appearance
     }
 
     public var resolvedPreferredName: String? {
@@ -272,6 +275,10 @@ public struct PersonalizationDocument: Codable, Sendable {
         }
 
         return "Founder's Office"
+    }
+
+    public var resolvedAppearance: AppearancePreferences {
+        appearance ?? .manish(accent: accent.rgb24)
     }
 
     private static func clean(_ value: String?) -> String? {
