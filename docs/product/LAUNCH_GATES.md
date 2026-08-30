@@ -12,7 +12,7 @@ The product advances by evidence, not by a calendar date.
 6. Make photo asset conflicts and deletion explicit and recoverable.
 7. Build first-run onboarding, local-only mode, sync review, calendar privacy, and launch-at-login consent.
 8. Complete edit, reopen, delete, global Undo, and Recently Deleted on both platforms.
-9. Keep external Codex execution out of the App Store target until a separately scoped helper is proven.
+9. Keep local Codex, Claude, and other external-agent execution out of the App Store target until a separately scoped helper is proven.
 10. Finish sandboxing, icons, licenses, privacy manifests, export/erase, StoreKit recovery, signed CI, and production CloudKit tests.
 11. Use synthetic preview data and privacy-safe diagnostics only.
 

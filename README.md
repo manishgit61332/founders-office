@@ -15,12 +15,13 @@ Founder's Office is a native Apple focus surface that turns the MacBook notch in
 - Keeps Home, the full Moves board, and Calendar inside the same 720-by-350-point panel.
 - Keeps the Home, Moves, Calendar, and Settings navigation in one fixed position on every screen.
 - Uses one shared Apple-style visual system across every screen: Instrument Serif page titles, San Francisco UI text, neutral grouped cards, consistent borders, radii, and controls.
-- Keeps the footer hidden unless it has a real transient action such as Undo or a Codex run result.
+- Keeps the footer hidden unless it has a real transient action such as Undo or an agent result ready for review.
 - Shows Doing, Next, Blocked, and Done.
 - Completes and reopens work with one click.
 - Removes a task from every list without erasing it, with one-click Undo.
 - Adds new moves from an action inside the Moves screen, separate from global navigation.
-- Runs research, writing, analysis, code, and local file work through Codex.
+- Prototypes bounded research, writing, analysis, code, and local file work through Codex while the production provider bridge is built.
+- Defines a provider-neutral Agent Workspace for Codex and Claude with activity, context provenance, approvals, diffs, artifacts, and usable review actions.
 - Prepares drafts and support material for tasks that still require a human send, booking, shoot, or publish action.
 - Watches `openloops.json` for external changes.
 - Regenerates `OPEN_LOOPS_CONTEXT.md` after every change.
@@ -76,6 +77,7 @@ The open panel reloads the JSON file automatically. The legacy filenames remain 
 - [docs/LOGGING.md](docs/LOGGING.md) defines diagnostics, activity history, analytics, and AI-execution boundaries.
 - [docs/GITHUB_WORKFLOW.md](docs/GITHUB_WORKFLOW.md) defines branches, checks, milestones, and the local push gate.
 - [docs/product/ASSISTANT_ARCHITECTURE.md](docs/product/ASSISTANT_ARCHITECTURE.md) defines the safe assistant and connector model.
+- [docs/product/AGENT_DELEGATION.md](docs/product/AGENT_DELEGATION.md) defines how real Codex and Claude jobs start, appear, and become reviewable work.
 - [docs/product/LAUNCH_GATES.md](docs/product/LAUNCH_GATES.md) defines the evidence required before beta and launch.
 
 Before a commit or pull request:
@@ -87,7 +89,7 @@ Scripts/ci-checks.sh
 
 ## Known boundary
 
-The app must be running for notch hover and in-app Codex runs to work. Codex runs are local, review-gated jobs: they can create task artifacts in `Codex Runs`, but they cannot send messages, publish, book calls, purchase, use private credentials, or mark a task done. Codex gets continuity because every run reads the same workspace instructions and open-loop context.
+The current in-app `codex exec` runner is a development prototype, not the shipping integration: it is ephemeral and does not create the provider-visible, resumable Agent Workspace experience. The production path uses a separate scoped helper and Codex app-server; Claude cloud jobs use genuine Claude session links, while local Claude Agent SDK jobs remain visibly hosted in Founder's Office. Neither agent may send messages, publish, book calls, purchase, use private credentials, or mark a Move done without an explicit separately gated action.
 
 Local photo selection works now. Google Photos is deliberately not presented as connected until a Google Cloud project and OAuth client are configured; the current Photos Picker requires explicit user sign-in and selection.
 

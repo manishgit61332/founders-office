@@ -220,6 +220,33 @@ func runChecks() async throws {
     )
     let mergedSnapshot = try await fileStore.mergeAndPersist(remoteSnapshot)
     try expect(mergedSnapshot.openLoops.items.first?.title == "Newer", "Cloud snapshot did not merge into local JSON")
+
+    var agentJob = AgentJobEnvelope(
+        moveID: id,
+        provider: .codex,
+        surface: .codexAppServer,
+        origin: .explicitUserCommand,
+        createdAt: date(100)
+    )
+    try agentJob.transition(to: .triaging, at: date(101))
+    try agentJob.transition(to: .draftReady, at: date(102))
+    try agentJob.transition(to: .queued, at: date(103))
+    try agentJob.transition(to: .running, at: date(104))
+    try expect(agentJob.startedAt == date(104), "Agent job did not record its first running timestamp")
+    try agentJob.transition(to: .awaitingApproval, at: date(105))
+    try agentJob.transition(to: .running, at: date(106))
+    try agentJob.transition(to: .reviewReady, at: date(107))
+    try expect(agentJob.state.requiresUser, "Review-ready work was not surfaced as requiring the user")
+    try expect(agentJob.finishedAt == nil, "Review-ready work was treated as terminal")
+    try agentJob.transition(to: .succeeded, at: date(108))
+    try expect(agentJob.finishedAt == date(108), "Succeeded agent job did not record its finish time")
+
+    do {
+        try agentJob.transition(to: .running, at: date(109))
+        throw CheckFailure.failed("Terminal agent job restarted instead of requiring a new attempt")
+    } catch AgentJobTransitionError.invalid(from: .succeeded, to: .running) {
+        // Expected: retries and continued work use a new attempt.
+    }
 }
 
 Task {
