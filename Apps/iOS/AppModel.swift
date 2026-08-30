@@ -15,13 +15,12 @@ final class AppModel: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
 
     init(storage: WorkspaceStorage = WorkspaceStorage()) {
-        self.storage = storage
-        self.openLoops = storage.loadOpenLoops() ?? OpenLoopsDocument(
+        let initialOpenLoops = storage.loadOpenLoops() ?? OpenLoopsDocument(
             schemaVersion: 2,
             updatedAt: .now,
             items: []
         )
-        self.personalization = storage.loadPersonalization() ?? PersonalizationDocument(
+        let initialPersonalization = storage.loadPersonalization() ?? PersonalizationDocument(
             schemaVersion: 5,
             displayName: "Founder's Office",
             accent: .blue,
@@ -33,10 +32,14 @@ final class AppModel: ObservableObject {
             workspaceName: "Founder's Office"
         )
 
+        self.storage = storage
+        self.openLoops = initialOpenLoops
+        self.personalization = initialPersonalization
+
         // Bootstrap the offline mirror before CKSyncEngine starts. This avoids
         // a first launch ever uploading an empty workspace over existing data.
-        storage.save(openLoops)
-        storage.save(personalization)
+        storage.save(initialOpenLoops)
+        storage.save(initialPersonalization)
 
         let snapshotStore = JSONSnapshotStore(rootURL: storage.storageDirectory)
         cloudSync = FounderOfficeCloudSync(
