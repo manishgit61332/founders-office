@@ -68,6 +68,10 @@ targets:
         CODE_SIGN_STYLE: Automatic
         SWIFT_VERSION: "5.10"
         TARGETED_DEVICE_FAMILY: "1,2"
+        # The approved production icon is tracked by the distribution P0.
+        # Keep this empty so development and CI builds do not reference a
+        # nonexistent AppIcon catalog.
+        ASSETCATALOG_COMPILER_APPICON_NAME: ""
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
     scheme:
       gatherCoverageData: true
