@@ -214,7 +214,10 @@ struct WorkspaceSessionIntegrationTests {
                 entityKind: "move",
                 entityID: unrelatedMoves.items[0].id.uuidString.lowercased(),
                 changedFields: ["details", "updatedAt"],
-                fieldClocks: ["details": unrelatedMoves.updatedAt],
+                fieldClocks: [
+                    "details": unrelatedMoves.updatedAt,
+                    "updatedAt": unrelatedMoves.updatedAt,
+                ],
                 patch: .openLoops(unrelatedMoves),
                 createdAt: unrelatedMoves.updatedAt
             )
@@ -240,7 +243,10 @@ struct WorkspaceSessionIntegrationTests {
                 entityKind: "appearance",
                 entityID: "appearance",
                 changedFields: ["appearance", "updatedAt"],
-                fieldClocks: ["appearance": remoteAppearance.updatedAt ?? Date()],
+                fieldClocks: [
+                    "appearance": remoteAppearance.updatedAt ?? Date(),
+                    "updatedAt": remoteAppearance.updatedAt ?? Date(),
+                ],
                 patch: .personalization(remote),
                 createdAt: remoteAppearance.updatedAt ?? Date()
             )

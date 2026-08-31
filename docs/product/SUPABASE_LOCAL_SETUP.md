@@ -94,6 +94,29 @@ Auth deletion removes the account link from the erasure receipt but deliberately
 retains the opaque workspace-ID tombstone, so another account cannot claim a
 stale erased UUID. Do not expose direct `profiles` deletion as an account API.
 
+## Client live-sync engine status
+
+The repository includes a schema-3 SQLite sync-state boundary, an exhaustive
+v2-local-to-v1-wire adapter for supported entities, a bounded HTTPS RPC
+transport, and an event-driven coordinator. These components are exercised only
+by tests. The customer Mac binary does not construct the transport or enable a
+cloud-sync UI, so their presence is not a claim that production sync is live.
+
+Runtime enablement requires an explicit local workspace claim, matching restored
+product session, approved production endpoint and publishable key, deployed and
+integration-tested RPC contract, RLS evidence, revocation decision, migration
+plan, monitoring, and incident response. Without all of these, the repository
+reports local-only or blocks at the adapter/contract boundary.
+
+This branch base predates the canonical exact `GoalDecimal` model, so primary
+goals remain blocked here without conversion. Integration already contains that
+model; after merging this engine, it must map `GoalDecimal.decimalValue`
+losslessly to `SyncJSONValue.number` and pass exact round-trip tests before
+primary-goal sync is enabled. Reviewed names are bootstrap-only; ordinary
+profile operations are not silently discarded. Asset upload/download/replacement
+remains disabled until private-object export and erasure proof, including
+replacement tombstones, passes its release gate.
+
 ## Identity and connector separation
 
 `AuthSession` contains opaque Founder account, workspace, and device IDs plus the
