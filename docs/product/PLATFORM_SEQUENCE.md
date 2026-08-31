@@ -16,7 +16,11 @@ Build a WidgetKit extension that reads a small App Group projection. It shows th
 
 ## 4. Cross-platform account and sync authority
 
-Introduce product authentication, workspace tenancy, revisioned sync, encrypted transport, deletion, audit, and connector mappings. Migrate Apple workspaces once. Do not run CloudKit and the new backend as permanent competing writers.
+Use Supabase Auth with Google and Apple product identities plus the versioned
+Supabase Postgres sync contract for workspace tenancy, encrypted transport,
+revisioned changes, deletion, activity history, and connector mappings. Migrate
+Apple workspaces once. Do not run CloudKit and Supabase as permanent competing
+writers.
 
 ## 5. Windows app
 
@@ -38,4 +42,3 @@ Every platform must pass:
 - signed release provenance and rollback.
 
 References: [WidgetKit](https://developer.apple.com/documentation/widgetkit), [Windows App SDK](https://learn.microsoft.com/en-us/windows/apps/windows-app-sdk/), and [Jetpack Glance](https://developer.android.com/develop/ui/compose/glance).
-

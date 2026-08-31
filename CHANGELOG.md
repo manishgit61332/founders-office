@@ -16,6 +16,9 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 - A serialized, transactional local workspace repository foundation with durable revisions, device-writer identity, idempotent mutation receipts, a sync operation outbox, fail-closed legacy import, and immutable JSON/Markdown exports.
 - Transactional Appearance editing with live preview, explicit Save Changes and Discard actions, conflict choices, retryable save errors, and an unsaved-quit guard.
 - A centralized transient-presentation lifecycle that collapses the expanded notch for native panels, menus, and popovers, keeps overlapping interactions balanced, and restores the notch and keyboard focus after the final popup closes.
+- A credential-free Supabase Auth and Postgres contract foundation for Google and Apple product identities, single-owner cross-platform sync, deterministic offline field merging, export, and erasure.
+- Durable immutable-operation receipts, pull-only device cursors, exact-decimal goals, and fail-closed private-asset export/erasure manifests for the sync contract.
+- First-class synced milestone/countdown records so personalization dates survive bootstrap, pull, and export.
 - A gated Founder’s Office download website whose Mac download remains unavailable until a signed and notarized release URL is configured.
 - A versioned, local-first Mac onboarding flow for the user’s reviewed name, optional Calendar access, optional launch at login, the first Move, and notch interaction rehearsal.
 - Fail-closed recovery for malformed workspace and personalization data, including a preserved recovery copy and blocked writes while recovery is required.
@@ -81,6 +84,10 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 - Release archives now reject extra payloads, links, special files, duplicate paths, unsafe expansion, incomplete metadata, and runtime CloudKit mismatches.
 - Website HTML responses now receive the reviewed security-header policy at the Worker boundary instead of relying on static-asset configuration.
 - The website download gate now derives from canonical sealed release metadata and rejects mutable aliases, query strings, mismatched origins, and noncanonical artifact names.
+- Reusing a sync operation ID with different content now fails instead of silently treating the mutation as a duplicate.
+- Workspace erasure now returns one durable idempotent receipt, blocks stale-ID resurrection, and refuses to orphan unverified private asset bytes.
+- Bootstrap and push no longer advance a device cursor past changes the device has not pulled.
+- Pull and conflict records now prove a server field clock for every field they claim changed or conflicted, and all wire DTOs are immutable after validation.
 
 ### Security
 
@@ -91,6 +98,8 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 - Production identity configuration accepts only HTTPS endpoints and Supabase publishable/legacy-anon keys; secret and service-role credentials are rejected before the client is created.
 - Founder runtime data, photos, Codex runs, exports, support bundles, visual QA, credentials, and signing files are excluded from source control.
 - Direct releases accept only a tracked production entitlement file and reject debug, temporary-exception, or unsafe code-signing entitlements.
+- Activity metadata is an exact empty allow-list, product owners are limited to one workspace, and all canonical responses reject unknown contract versions.
+- Immediate access-token revocation and the private Storage adapter remain explicit unpassed production gates; neither is represented as tested on this host.
 
 ## [0.10.0] - 2026-08-30
 
