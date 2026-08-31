@@ -1144,17 +1144,20 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
         let current = try loadSnapshot()
         let remoteWorkspaceID = bootstrap.session.workspaceID
         var expectedCursor = bootstrap.startingCursor
+        var observedLatestCursor = bootstrap.latestCursor
         var allChanges: [SyncChange] = []
         var operationIDs = Set<UUID>()
 
         for (index, page) in pages.enumerated() {
             guard page.workspaceID == remoteWorkspaceID,
                   page.fromCursor == expectedCursor,
+                  page.latestCursor >= observedLatestCursor,
                   page.changes.allSatisfy({ operationIDs.insert($0.operationID.rawValue).inserted }) else {
                 throw WorkspaceSyncRepositoryError.invalidProvisioningFeed
             }
             allChanges.append(contentsOf: page.changes)
             expectedCursor = page.nextCursor
+            observedLatestCursor = page.latestCursor
             if page.hasMore {
                 guard index < pages.index(before: pages.endIndex) else {
                     throw WorkspaceSyncRepositoryError.invalidProvisioningFeed
@@ -1168,7 +1171,7 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
         }
         guard let finalPage = pages.last,
               !finalPage.hasMore,
-              finalPage.nextCursor >= bootstrap.latestCursor else {
+              finalPage.nextCursor == observedLatestCursor else {
             throw WorkspaceSyncRepositoryError.invalidProvisioningFeed
         }
 
@@ -1179,6 +1182,29 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
             throw WorkspaceSyncRepositoryError.invalidProvisioningFeed
         }
         let baselineDate = try WorkspaceV2SyncAdapter.parseTimestamp(workspaceUpdatedAt)
+        struct RemoteKey: Hashable {
+            let type: SyncEntityType
+            let id: UUID
+        }
+        var feedRevisions: [RemoteKey: Int64] = [:]
+        for change in allChanges {
+            let key = RemoteKey(type: change.entityType, id: change.entityID)
+            // `bootstrap_workspace` creates workspace revision 1 without a
+            // change-log row. Every subsequent workspace mutation, and every
+            // revision of every other entity, is append-only and advances by
+            // exactly one. A cursor-zero attachment must not silently accept a
+            // feed that omitted history even though each page is well formed.
+            let initialRevision: Int64 = change.entityType == .workspace ? 1 : 0
+            let expectedRevision = (feedRevisions[key] ?? initialRevision) + 1
+            guard change.revision == expectedRevision else {
+                throw WorkspaceSyncRepositoryError.invalidProvisioningFeed
+            }
+            feedRevisions[key] = change.revision
+        }
+        let workspaceFeedKey = RemoteKey(type: .workspace, id: remoteWorkspaceID.rawValue)
+        guard (feedRevisions[workspaceFeedKey] ?? 1) >= workspaceRevision else {
+            throw WorkspaceSyncRepositoryError.invalidProvisioningFeed
+        }
         var replacement = FounderOfficeSnapshot(
             openLoops: OpenLoopsDocument(
                 schemaVersion: Self.supportedOpenLoopsSchemaVersion,
@@ -1213,10 +1239,6 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
             to: replacement
         )
 
-        struct RemoteKey: Hashable {
-            let type: SyncEntityType
-            let id: UUID
-        }
         var revisions: [RemoteKey: PreparedRemoteEntityRevision] = [:]
         let workspaceClocks = try remoteFieldClocks(bootstrap.workspace)
         let workspaceKey = RemoteKey(type: .workspace, id: remoteWorkspaceID.rawValue)
@@ -1230,14 +1252,16 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
             let key = RemoteKey(type: change.entityType, id: change.entityID)
             let clocks = try remoteFieldClocks(change.record)
             if let existing = revisions[key] {
-                if change.revision < existing.revision {
-                    guard change.entityType == .workspace else {
+                if change.entityType == .workspace,
+                   existing.revision == workspaceRevision,
+                   change.revision <= workspaceRevision {
+                    if change.revision == workspaceRevision,
+                       clocks != existing.fieldClocks {
                         throw WorkspaceSyncRepositoryError.invalidProvisioningFeed
                     }
                     continue
                 }
-                guard change.revision > existing.revision
-                        || clocks == existing.fieldClocks else {
+                guard change.revision > existing.revision else {
                     throw WorkspaceSyncRepositoryError.invalidProvisioningFeed
                 }
             }
@@ -1296,6 +1320,7 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
             try execute("DELETE FROM sync_operation_acknowledgements", operation: "replace_workspace")
             try execute("DELETE FROM sync_applied_operations", operation: "replace_workspace")
             try execute("DELETE FROM sync_bootstrap_receipts", operation: "replace_workspace")
+            try execute("DELETE FROM sync_bootstrap_attempt", operation: "replace_workspace")
             try execute("DELETE FROM sync_entity_revisions", operation: "replace_workspace")
             try execute("DELETE FROM sync_quarantined_operations", operation: "replace_workspace")
             try updateState(
