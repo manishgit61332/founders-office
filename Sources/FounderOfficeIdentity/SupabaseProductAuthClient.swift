@@ -4,18 +4,24 @@ import Supabase
 
 public actor SupabaseProductAuthClient: ProductAuthServing {
     private let client: SupabaseClient
+    private let durableStorage: VerifiedProductAuthStorage
     private var state: ProductAuthState = .localOnly
     private var continuations: [UUID: AsyncStream<ProductAuthState>.Continuation] = [:]
     private var authObservationTask: Task<Void, Never>?
     private var ephemeralProviderSuggestion: OnboardingDisplayNameSuggestion?
 
     public init(configuration: ProductAuthConfiguration) {
+        let durableStorage = VerifiedProductAuthStorage(
+            storage: KeychainLocalStorage(service: configuration.keychainService),
+            sessionKey: "founders-office-session"
+        )
+        self.durableStorage = durableStorage
         client = SupabaseClient(
             supabaseURL: configuration.endpoint,
             supabaseKey: configuration.publishableKey,
             options: .init(
                 auth: .init(
-                    storage: KeychainLocalStorage(service: configuration.keychainService),
+                    storage: durableStorage,
                     redirectToURL: configuration.callbackURL,
                     storageKey: "founders-office-session",
                     flowType: .pkce,
@@ -45,6 +51,7 @@ public actor SupabaseProductAuthClient: ProductAuthServing {
         publish(.restoring)
         do {
             let session = try await client.auth.session
+            try durableStorage.verifyDurableSession(session)
             publish(.signedIn(Self.summary(session)))
         } catch AuthError.sessionMissing {
             publish(.localOnly)
@@ -59,6 +66,7 @@ public actor SupabaseProductAuthClient: ProductAuthServing {
         publish(.signingIn(.google))
         do {
             let session = try await client.auth.signInWithOAuth(provider: .google)
+            try durableStorage.verifyDurableSession(session)
             publish(.signedIn(Self.summary(session, preferredProvider: .google)))
         } catch {
             publish(.failed(Self.failure(from: error)))
@@ -79,6 +87,7 @@ public actor SupabaseProductAuthClient: ProductAuthServing {
             )
 
             let refreshed = client.auth.currentSession ?? session
+            try durableStorage.verifyDurableSession(refreshed)
             publish(
                 .signedIn(
                     Self.summary(
@@ -100,17 +109,21 @@ public actor SupabaseProductAuthClient: ProductAuthServing {
         )
         ephemeralProviderSuggestion = nil
         let session = try await client.auth.session
+        try durableStorage.verifyDurableSession(session)
         publish(.signedIn(Self.summary(session)))
     }
 
     public func accessToken() async throws -> String {
-        try await client.auth.session.accessToken
+        let session = try await client.auth.session
+        try durableStorage.verifyDurableSession(session)
+        return session.accessToken
     }
 
     public func signOut() async {
         ephemeralProviderSuggestion = nil
         do {
             try await client.auth.signOut(scope: .local)
+            try durableStorage.verifySessionRemoved()
             publish(.localOnly)
         } catch {
             publish(.failed(Self.failure(from: error)))
@@ -141,14 +154,19 @@ public actor SupabaseProductAuthClient: ProductAuthServing {
 
     private func receiveAuthSession(_ session: Session?) {
         if let session {
-            publish(
-                .signedIn(
-                    Self.summary(
-                        session,
-                        preferredSuggestion: ephemeralProviderSuggestion
+            do {
+                try durableStorage.verifyDurableSession(session)
+                publish(
+                    .signedIn(
+                        Self.summary(
+                            session,
+                            preferredSuggestion: ephemeralProviderSuggestion
+                        )
                     )
                 )
-            )
+            } catch {
+                publish(.failed(Self.failure(from: error)))
+            }
         } else {
             ephemeralProviderSuggestion = nil
             publish(.localOnly)
@@ -170,7 +188,9 @@ public actor SupabaseProductAuthClient: ProductAuthServing {
             ?? metadataProvider
             ?? .unknown
 
-        let metadataSuggestions = ["display_name", "full_name", "name"]
+        let reviewedDisplayName = session.user.userMetadata["display_name"]?.stringValue
+            .flatMap { try? ReviewedDisplayName(reviewedInput: $0) }
+        let metadataSuggestions = ["full_name", "name"]
             .compactMap { session.user.userMetadata[$0]?.stringValue }
             .compactMap(OnboardingDisplayNameSuggestion.init(providerValue:))
         let onboardingSuggestion = preferredSuggestion ?? metadataSuggestions.first
@@ -178,12 +198,19 @@ public actor SupabaseProductAuthClient: ProductAuthServing {
         return ProductAccountSession(
             accountID: session.user.id,
             provider: provider,
+            reviewedDisplayName: reviewedDisplayName,
             onboardingDisplayNameSuggestion: onboardingSuggestion,
             expiresAt: Date(timeIntervalSince1970: session.expiresAt)
         )
     }
 
     private static func failure(from error: Error) -> ProductAuthFailure {
+        if error is ProductAuthSecureStorageError {
+            return ProductAuthFailure(
+                code: .secureStorage,
+                recoveryMessage: "Secure session storage is unavailable. Your workspace stays on this Mac."
+            )
+        }
         if let authenticationError = error as? ASWebAuthenticationSessionError,
            authenticationError.code == .canceledLogin {
             return ProductAuthFailure(
@@ -208,4 +235,99 @@ public actor SupabaseProductAuthClient: ProductAuthServing {
             recoveryMessage: "Sign-in could not be completed. Your local workspace was not changed."
         )
     }
+}
+
+/// Supabase Swift intentionally treats local-storage failures as recoverable
+/// implementation details. Product identity cannot: publishing a signed-in
+/// state before the session survives a Keychain read-back makes a restart look
+/// authenticated when it is not. This wrapper records storage failures and
+/// exposes a token-free durability check to the auth client.
+final class VerifiedProductAuthStorage: AuthLocalStorage, @unchecked Sendable {
+    private let storage: any AuthLocalStorage
+    private let sessionKey: String
+    private let lock = NSLock()
+    private var latestStorageFailure: ProductAuthSecureStorageError?
+
+    init(storage: any AuthLocalStorage, sessionKey: String) {
+        self.storage = storage
+        self.sessionKey = sessionKey
+    }
+
+    func store(key: String, value: Data) throws {
+        do {
+            try storage.store(key: key, value: value)
+            lock.withLock { latestStorageFailure = nil }
+        } catch {
+            lock.withLock { latestStorageFailure = .writeFailed }
+            throw error
+        }
+    }
+
+    func retrieve(key: String) throws -> Data? {
+        do {
+            let value = try storage.retrieve(key: key)
+            lock.withLock { latestStorageFailure = nil }
+            return value
+        } catch {
+            lock.withLock { latestStorageFailure = .readFailed }
+            throw error
+        }
+    }
+
+    func remove(key: String) throws {
+        do {
+            try storage.remove(key: key)
+            lock.withLock { latestStorageFailure = nil }
+        } catch {
+            lock.withLock { latestStorageFailure = .deleteFailed }
+            throw error
+        }
+    }
+
+    func verifyDurableSession(_ expected: Session) throws {
+        if let failure = lock.withLock({ latestStorageFailure }) {
+            throw failure
+        }
+        let data: Data
+        do {
+            guard let stored = try storage.retrieve(key: sessionKey) else {
+                throw ProductAuthSecureStorageError.missingReadBack
+            }
+            data = stored
+        } catch let error as ProductAuthSecureStorageError {
+            throw error
+        } catch {
+            throw ProductAuthSecureStorageError.readFailed
+        }
+
+        guard let persisted = try? JSONDecoder().decode(Session.self, from: data),
+              persisted.user.id == expected.user.id,
+              persisted.accessToken == expected.accessToken,
+              persisted.refreshToken == expected.refreshToken else {
+            throw ProductAuthSecureStorageError.mismatchedReadBack
+        }
+    }
+
+    func verifySessionRemoved() throws {
+        if let failure = lock.withLock({ latestStorageFailure }) {
+            throw failure
+        }
+        do {
+            guard try storage.retrieve(key: sessionKey) == nil else {
+                throw ProductAuthSecureStorageError.deleteFailed
+            }
+        } catch let error as ProductAuthSecureStorageError {
+            throw error
+        } catch {
+            throw ProductAuthSecureStorageError.readFailed
+        }
+    }
+}
+
+enum ProductAuthSecureStorageError: Error, Equatable, Sendable {
+    case writeFailed
+    case readFailed
+    case deleteFailed
+    case missingReadBack
+    case mismatchedReadBack
 }

@@ -15,6 +15,7 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 - A preview-first redacted support report that shows every allow-listed field before saving and excludes Moves, events, names, paths, prompts, credentials, and log payloads by construction.
 - An XcodeGen macOS UI-test target with deterministic scenarios for transactional Appearance, Move planning, Calendar creation, popup restoration, and support-report preview.
 - A configuration-gated Supabase product-identity client for Google OAuth and native Sign in with Apple, with PKCE, Keychain session storage, token-free UI state, and an explicit local-workspace claim decision before sync can begin.
+- A local-first **Account & Sync** page inside Personalize, with reviewed display-name confirmation, explicit existing-workspace choices, native Google and Apple sign-in, and honest Health status while the transport remains unavailable.
 - A serialized, transactional local workspace repository foundation with durable revisions, device-writer identity, idempotent mutation receipts, a sync operation outbox, fail-closed legacy import, and immutable JSON/Markdown exports.
 - Transactional Appearance editing with live preview, explicit Save Changes and Discard actions, conflict choices, retryable save errors, and an unsaved-quit guard.
 - A centralized transient-presentation lifecycle that collapses the expanded notch for native panels, menus, and popovers, keeps overlapping interactions balanced, and restores the notch and keyboard focus after the final popup closes.
@@ -51,6 +52,7 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 - The Mac app now uses one transactional SQLite workspace for Moves, personalization, goals, Appearance, tombstones, revisions, idempotency receipts, and sync outbox operations. Legacy JSON and Recovery files remain byte-for-byte migration inputs; JSON and Markdown are generated as immutable revision projections.
 - The legacy polling-based Mac CloudKit JSON bridge has been removed so it cannot compete with the canonical workspace. Cross-device sync remains unavailable until the new authenticated sync contract passes its release gate.
 - Provider-supplied account names are now non-authoritative onboarding suggestions; only an explicitly reviewed, NFC-normalized display-name value can cross a durable identity update boundary.
+- Product identity now publishes a signed-in state only after its secure session can be read back durably, and Mac OAuth accepts only the reviewed custom callback schemes supported by the current native browser session.
 - First-run setup no longer offers the retired CloudKit writer. It starts locally and explains that Google or Apple sign-in is a later, explicit Account & Sync choice; existing local data is never uploaded from onboarding.
 
 - App-owned Mac and iPhone typography now uses one three-role hierarchy: a 28-point primary title, a secondary size divided by 1.62, and a tertiary size divided again by 1.6.

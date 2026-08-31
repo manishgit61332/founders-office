@@ -10,23 +10,27 @@ final class FounderOfficeHealthModel: ObservableObject {
     private let personalization: PersonalizationStore
     private let calendar: CalendarProvider
     private let assistant: CodexRunner
+    private let accountSync: any AccountSyncStatusSignaling
     private var cancellables = Set<AnyCancellable>()
 
     init(
         store: OpenLoopStore,
         personalization: PersonalizationStore,
         calendar: CalendarProvider,
-        assistant: CodexRunner
+        assistant: CodexRunner,
+        accountSync: any AccountSyncStatusSignaling
     ) {
         self.store = store
         self.personalization = personalization
         self.calendar = calendar
         self.assistant = assistant
+        self.accountSync = accountSync
 
         observe(store.objectWillChange)
         observe(personalization.objectWillChange)
         observe(calendar.objectWillChange)
         observe(assistant.objectWillChange)
+        observe(accountSync.objectWillChange)
     }
 
     var snapshot: HealthSnapshot {
@@ -108,11 +112,7 @@ final class FounderOfficeHealthModel: ObservableObject {
     }
 
     private var syncStatus: HealthComponentStatus {
-        return HealthComponentStatus(
-            component: .sync,
-            condition: .off,
-            detail: "Stored on this Mac"
-        )
+        accountSync.accountSyncHealthStatus
     }
 
     private var calendarStatus: HealthComponentStatus {

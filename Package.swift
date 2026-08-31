@@ -88,6 +88,7 @@ let package = Package(
             name: "FounderOfficeIdentityTests",
             dependencies: [
                 "FounderOfficeIdentity",
+                .product(name: "Supabase", package: "supabase-swift"),
                 .product(name: "Testing", package: "swift-testing")
             ],
             path: "Tests/FounderOfficeIdentityTests"

@@ -75,12 +75,11 @@ public struct ProductAuthConfiguration: Equatable, Sendable {
         case "founders-office", "founders-office-dev":
             return callbackURL.host?.lowercased() == "auth"
                 && callbackURL.path == "/callback"
-        case "https":
-            return callbackURL.host?.isEmpty == false
-                && callbackURL.path == "/auth/callback"
         default:
-            // Includes javascript, file, data, http, and unreviewed custom
-            // schemes. New callback forms require an explicit contract change.
+            // Supabase Swift's ASWebAuthenticationSession convenience API
+            // completes by callback scheme. Universal links require a
+            // separately reviewed associated-domain flow and must not be
+            // accepted as if this client supported them.
             return false
         }
     }
@@ -173,7 +172,7 @@ extension ProductAuthConfigurationError: LocalizedError {
         case .invalidPublishableKey:
             return "The public sync key is missing or unsafe."
         case .invalidCallbackURL:
-            return "The sign-in callback is invalid."
+            return "This build does not have a reviewed sign-in callback. Your workspace stays on this Mac."
         case .invalidKeychainService:
             return "The secure session namespace is invalid."
         }

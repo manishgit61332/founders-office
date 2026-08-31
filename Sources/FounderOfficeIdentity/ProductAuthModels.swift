@@ -123,17 +123,24 @@ public struct ReviewedDisplayName: Equatable, Sendable {
 public struct ProductAccountSession: Equatable, Sendable {
     public let accountID: UUID
     public let provider: ProductIdentityProvider
+    /// A profile value previously accepted through the reviewed-name API.
+    /// This is distinct from provider metadata and may be trusted as reviewed,
+    /// but applying it to a local workspace still requires the workspace
+    /// disposition gate.
+    public let reviewedDisplayName: ReviewedDisplayName?
     public let onboardingDisplayNameSuggestion: OnboardingDisplayNameSuggestion?
     public let expiresAt: Date
 
     public init(
         accountID: UUID,
         provider: ProductIdentityProvider,
+        reviewedDisplayName: ReviewedDisplayName? = nil,
         onboardingDisplayNameSuggestion: OnboardingDisplayNameSuggestion?,
         expiresAt: Date
     ) {
         self.accountID = accountID
         self.provider = provider
+        self.reviewedDisplayName = reviewedDisplayName
         self.onboardingDisplayNameSuggestion = onboardingDisplayNameSuggestion
         self.expiresAt = expiresAt
     }

@@ -235,6 +235,23 @@ final class FoundersOfficeMacUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["No Moves, events, names, paths, prompts, or credentials."].exists)
     }
 
+    func testAccountAndSyncFailsClosedWithoutConfiguration() {
+        let app = launch(
+            root: makeTemporaryRoot(),
+            environment: [
+                "OPENLOOPS_PREVIEW_SETTINGS": "1",
+                "OPENLOOPS_PREVIEW_PERSONALIZE_PAGE": "account"
+            ]
+        )
+
+        XCTAssertTrue(app.descendants(matching: .any)["account.page"].waitForExistence(timeout: 4))
+        XCTAssertTrue(app.staticTexts["Stored on this Mac"].exists)
+        XCTAssertTrue(app.descendants(matching: .any)["account.localOnlyExplanation"].exists)
+        XCTAssertFalse(app.buttons["account.signIn.google"].exists)
+        XCTAssertFalse(app.buttons["account.signIn.apple"].exists)
+        XCTAssertFalse(app.staticTexts["Sync is live"].exists)
+    }
+
     private var appearanceEnvironment: [String: String] {
         [
             "OPENLOOPS_PREVIEW_SETTINGS": "1",

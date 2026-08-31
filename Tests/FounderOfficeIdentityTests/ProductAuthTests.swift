@@ -1,6 +1,7 @@
 import Foundation
-import FounderOfficeIdentity
+import Supabase
 import Testing
+@testable import FounderOfficeIdentity
 
 @Suite("Product identity")
 struct ProductAuthTests {
@@ -52,13 +53,12 @@ struct ProductAuthTests {
         }
     }
 
-    @Test("Callbacks use an explicit custom-scheme or universal-link allowlist")
+    @Test("Callbacks use only the reviewed custom-scheme allowlist")
     func validatesCallbackAllowlist() throws {
         let endpoint = try #require(URL(string: "https://project.supabase.co"))
         for callback in [
             "founders-office://auth/callback",
-            "founders-office-dev://auth/callback",
-            "https://accounts.example.test/auth/callback"
+            "founders-office-dev://auth/callback"
         ] {
             _ = try ProductAuthConfiguration(
                 endpoint: endpoint,
@@ -72,6 +72,7 @@ struct ProductAuthTests {
             "file://auth/callback",
             "data://auth/callback",
             "http://accounts.example.test/auth/callback",
+            "https://accounts.example.test/auth/callback",
             "founders-office://attacker/callback",
             "founders-office://auth/other",
             "founders-office://auth/callback?code=unexpected",
@@ -87,6 +88,56 @@ struct ProductAuthTests {
                     callbackURL: #require(URL(string: callback))
                 )
             }
+        }
+    }
+
+    @Test("A signed-in state requires a durable Keychain-equivalent read-back")
+    func requiresDurableSessionReadBack() throws {
+        let session = makeSession()
+        let storage = TestAuthStorage()
+        let verified = VerifiedProductAuthStorage(
+            storage: storage,
+            sessionKey: "session"
+        )
+
+        try verified.store(key: "session", value: JSONEncoder().encode(session))
+        try verified.verifyDurableSession(session)
+
+        storage.failWrites = true
+        #expect(throws: TestStorageError.write) {
+            try verified.store(key: "session", value: Data("replacement".utf8))
+        }
+        #expect(throws: ProductAuthSecureStorageError.writeFailed) {
+            try verified.verifyDurableSession(session)
+        }
+    }
+
+    @Test("A missing, mismatched, or undeletable persisted session fails closed")
+    func rejectsUnsafePersistenceOutcomes() throws {
+        let session = makeSession()
+        let storage = TestAuthStorage()
+        let verified = VerifiedProductAuthStorage(
+            storage: storage,
+            sessionKey: "session"
+        )
+
+        #expect(throws: ProductAuthSecureStorageError.missingReadBack) {
+            try verified.verifyDurableSession(session)
+        }
+
+        let other = makeSession(accountID: UUID())
+        try verified.store(key: "session", value: JSONEncoder().encode(other))
+        #expect(throws: ProductAuthSecureStorageError.mismatchedReadBack) {
+            try verified.verifyDurableSession(session)
+        }
+
+        try verified.store(key: "session", value: JSONEncoder().encode(session))
+        storage.failDeletes = true
+        #expect(throws: TestStorageError.delete) {
+            try verified.remove(key: "session")
+        }
+        #expect(throws: ProductAuthSecureStorageError.deleteFailed) {
+            try verified.verifySessionRemoved()
         }
     }
 
@@ -187,5 +238,59 @@ struct ProductAuthTests {
                 )
             ) == .bootstrapRemoteWorkspace
         )
+    }
+
+    private func makeSession(accountID: UUID = UUID()) -> Session {
+        let now = Date()
+        return Session(
+            accessToken: "access-token",
+            tokenType: "bearer",
+            expiresIn: 3_600,
+            expiresAt: now.addingTimeInterval(3_600).timeIntervalSince1970,
+            refreshToken: "refresh-token",
+            user: User(
+                id: accountID,
+                appMetadata: [:],
+                userMetadata: [:],
+                aud: "authenticated",
+                createdAt: now,
+                updatedAt: now
+            )
+        )
+    }
+}
+
+private enum TestStorageError: Error {
+    case write
+    case read
+    case delete
+}
+
+private final class TestAuthStorage: AuthLocalStorage, @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [String: Data] = [:]
+    var failWrites = false
+    var failReads = false
+    var failDeletes = false
+
+    func store(key: String, value: Data) throws {
+        try lock.withLock {
+            guard !failWrites else { throw TestStorageError.write }
+            values[key] = value
+        }
+    }
+
+    func retrieve(key: String) throws -> Data? {
+        try lock.withLock {
+            guard !failReads else { throw TestStorageError.read }
+            return values[key]
+        }
+    }
+
+    func remove(key: String) throws {
+        try lock.withLock {
+            guard !failDeletes else { throw TestStorageError.delete }
+            values.removeValue(forKey: key)
+        }
     }
 }

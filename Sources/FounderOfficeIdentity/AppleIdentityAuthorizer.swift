@@ -4,7 +4,12 @@ import Foundation
 import Security
 
 @MainActor
-public final class AppleIdentityAuthorizer: NSObject {
+public protocol AppleIdentityAuthorizing: AnyObject {
+    func authorize() async throws -> AppleIdentityAuthorization
+}
+
+@MainActor
+public final class AppleIdentityAuthorizer: NSObject, AppleIdentityAuthorizing {
     private let presentationAnchor: () -> ASPresentationAnchor
     private var continuation: CheckedContinuation<AppleIdentityAuthorization, Error>?
     private var rawNonce: String?
