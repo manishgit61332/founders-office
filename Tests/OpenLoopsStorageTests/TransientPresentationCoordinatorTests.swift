@@ -151,6 +151,7 @@ struct TransientPresentationCoordinatorTests {
             defer: false
         )
         let colour = NSColorPanel()
+        let originalColourAccessibilityIdentifier = colour.accessibilityIdentifier()
         defer {
             colour.close()
             unrelated.close()
@@ -176,7 +177,14 @@ struct TransientPresentationCoordinatorTests {
         coordinator.present(colour, reason: "keyboard-colour-panel")
         #expect(coordinator.preventsAutoDismiss)
         #expect(coordinator.isTracking(colour))
+        #expect(colour.identifier == TransientPresentationCoordinator.nativeColorPanelIdentifier)
+        #expect(
+            colour.accessibilityIdentifier()
+                == TransientPresentationCoordinator.nativeColorPanelIdentifier.rawValue
+        )
         coordinator.endScoped(to: colour)
         #expect(!coordinator.preventsAutoDismiss)
+        #expect(colour.identifier == nil)
+        #expect(colour.accessibilityIdentifier() == originalColourAccessibilityIdentifier)
     }
 }

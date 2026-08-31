@@ -125,11 +125,8 @@ final class FoundersOfficeMacUITests: XCTestCase {
 
         let colourWell = app.descendants(matching: .any)["appearance.colour.0"]
         colourWell.click()
-        let colours = app.windows["Colors"]
-        guard colours.waitForExistence(timeout: 2) else {
-            throw XCTSkip("The SDK did not expose NSColorPanel as an accessibility window.")
-        }
-        colours.typeKey(XCUIKeyboardKey.escape, modifierFlags: [])
+        let colours = try requireNativeColourPanel(in: app)
+        app.typeKey(XCUIKeyboardKey.escape, modifierFlags: [])
         XCTAssertTrue(colours.waitForNonExistence(timeout: 2))
 
         let save = app.buttons["appearance.save"]
@@ -197,11 +194,8 @@ final class FoundersOfficeMacUITests: XCTestCase {
         XCTAssertTrue(colourWell.waitForExistence(timeout: 4))
         colourWell.click()
 
-        let colours = app.windows["Colors"]
-        guard colours.waitForExistence(timeout: 2) else {
-            throw XCTSkip("The SDK did not expose NSColorPanel as an accessibility window.")
-        }
-        colours.typeKey("w", modifierFlags: .command)
+        let colours = try requireNativeColourPanel(in: app)
+        app.typeKey("w", modifierFlags: .command)
         XCTAssertTrue(colours.waitForNonExistence(timeout: 2))
 
         let save = app.buttons["appearance.save"]
@@ -269,6 +263,14 @@ final class FoundersOfficeMacUITests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.windows["Founder's Office"].waitForExistence(timeout: 5))
         return app
+    }
+
+    private func requireNativeColourPanel(in app: XCUIApplication) throws -> XCUIElement {
+        let panel = app.windows["foundersOffice.native-color-panel"]
+        return try XCTUnwrap(
+            panel.waitForExistence(timeout: 3) ? panel : nil,
+            "The required native colour panel was not exposed to UI automation."
+        )
     }
 
     private func makeTemporaryRoot() -> URL {
