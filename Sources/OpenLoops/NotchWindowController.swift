@@ -217,7 +217,6 @@ final class NotchWindowController {
         guard await resolveAppearanceDraftForExit(
             title: "Save your appearance before quitting?",
             detail: "The current preview has not been saved to this Mac.",
-            reason: "quit-confirmation",
             cancelsRestorationOnAccept: false
         ) else { return false }
         let canTerminate = await finishPendingWritesBeforeTermination()
@@ -230,7 +229,6 @@ final class NotchWindowController {
     private func resolveAppearanceDraftForExit(
         title: String,
         detail: String,
-        reason: String,
         cancelsRestorationOnAccept: Bool = true
     ) async -> Bool {
         guard personalization.hasUnsavedAppearanceChanges else { return true }
@@ -246,7 +244,13 @@ final class NotchWindowController {
         alert.addButton(withTitle: "Discard")
         alert.addButton(withTitle: "Cancel")
 
-        presentation.transients.present(alert.window, reason: reason)
+        presentation.transients.present(
+            alert.window,
+            request: TransientPresentationRequest(
+                kind: .systemAlert,
+                hostDisposition: .suspendExpandedHost
+            )
+        )
         let response = alert.runModal()
         let choice: AppearanceTerminationChoice
         switch response {
@@ -298,7 +302,7 @@ final class NotchWindowController {
             alert.messageText = "Founder’s Office is still saving"
             alert.informativeText = "A workspace change could not be safely committed. Review the save message and try again before quitting."
             alert.addButton(withTitle: "Keep Editing")
-            _ = runSystemAlert(alert, reason: "pending-write-warning")
+            _ = runSystemAlert(alert)
             return false
         }
         return true
@@ -317,11 +321,14 @@ final class NotchWindowController {
         }
     }
 
-    func runSystemAlert(
-        _ alert: NSAlert,
-        reason: String
-    ) -> NSApplication.ModalResponse {
-        presentation.transients.present(alert.window, reason: reason)
+    func runSystemAlert(_ alert: NSAlert) -> NSApplication.ModalResponse {
+        presentation.transients.present(
+            alert.window,
+            request: TransientPresentationRequest(
+                kind: .systemAlert,
+                hostDisposition: .suspendExpandedHost
+            )
+        )
         defer { presentation.transients.endScoped(to: alert.window) }
         return alert.runModal()
     }
@@ -436,8 +443,7 @@ final class NotchWindowController {
             guard let self else { return }
             let shouldClose = await self.resolveAppearanceDraftForExit(
                 title: "Save your appearance before closing?",
-                detail: "The preview will stay available if you keep editing.",
-                reason: "close-confirmation"
+                detail: "The preview will stay available if you keep editing."
             )
             guard shouldClose else { return }
             self.hide(force: true)
@@ -529,7 +535,13 @@ final class NotchWindowController {
                           self.presentation.transients.shouldTrackMenuOrigin(
                             isStatusMenuTree: isStatusMenuTree
                           ) else { return }
-                    self.presentation.transients.beginScoped(key: menuID, reason: "menu")
+                    self.presentation.transients.present(
+                        request: TransientPresentationRequest(
+                            kind: .menu,
+                            hostDisposition: .suspendExpandedHost
+                        ),
+                        scopedTo: menuID
+                    )
                 }
             }
         )
@@ -556,7 +568,13 @@ final class NotchWindowController {
                 MainActor.assumeIsolated {
                     guard let self,
                           self.presentation.transients.shouldTrack(popover) else { return }
-                    self.presentation.transients.beginScoped(to: popover, reason: "popover")
+                    self.presentation.transients.present(
+                        request: TransientPresentationRequest(
+                            kind: .popover,
+                            hostDisposition: .suspendExpandedHost
+                        ),
+                        scopedTo: popover
+                    )
                     DispatchQueue.main.async { [weak self, weak popover] in
                         guard let self, let popover,
                               let window = popover.contentViewController?.view.window else { return }
@@ -600,7 +618,16 @@ final class NotchWindowController {
                 MainActor.assumeIsolated {
                     guard let self,
                           self.presentation.transients.shouldTrack(window) else { return }
-                    self.presentation.transients.present(window, reason: "native-panel")
+                    let kind: TransientPresentationKind = window is NSColorPanel
+                        ? .colorPanel
+                        : .fileChooser
+                    self.presentation.transients.present(
+                        window,
+                        request: TransientPresentationRequest(
+                            kind: kind,
+                            hostDisposition: .suspendExpandedHost
+                        )
+                    )
                 }
             }
         )

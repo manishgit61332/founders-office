@@ -6,6 +6,9 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Added
 
+- Draft public client seams for transactional Appearance commits and strict,
+  platform-neutral transient-presentation requests, without enabling remote
+  sync or starting cross-platform client worktrees.
 - An explicit, fail-closed provisioning seam that distinguishes claiming a local workspace from attaching an existing account workspace, including fresh-device and immutable export-and-replace authorization.
 - A fail-closed clean-Mac acceptance record that binds restart, upgrade, export, erase, recovery, and staged-update checks to the exact sealed Mac artifact before the website can expose it.
 - A fail-closed schema-4 live-sync core with durable binding, server revisions, pull cursor, exact bootstrap and acknowledgement receipts, conflict evidence, inbound deduplication, and quarantine for malformed historical clock masks.
@@ -78,6 +81,8 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Fixed
 
+- **Use Latest** now adopts the exact durable Appearance returned by a save
+  conflict instead of depending on a second store read that could be stale.
 - Existing-workspace attachment now rejects regressing feed horizons and skipped or duplicate entity revisions, and it removes stale schema-4 bootstrap journals inside the atomic authority-replacement transaction.
 - A second device can now retain its local database identity while atomically binding a different existing remote workspace UUID; account, provider, device, feed, cursor, and remote revisions must all verify before canonical replacement.
 - Account restore can no longer race a second sign-in, delayed transient auth events cannot replace a terminal result, and an identity change during name review cannot apply the prior account’s name to the local workspace.
