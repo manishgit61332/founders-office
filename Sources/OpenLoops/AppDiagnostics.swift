@@ -41,6 +41,7 @@ enum AppDiagnostics {
         case personalizationSave = "personalization.save"
         case reversalCaptureDirectoryCreate = "reversal_capture.directory.create"
         case safeModeEnter = "safe_mode.enter"
+        case safeModeDiagnosticSave = "safe_mode.diagnostic.save"
         case safeModeRetry = "safe_mode.retry"
         case snapshotCapture = "snapshot.capture"
         case supportReportSave = "support_report.save"

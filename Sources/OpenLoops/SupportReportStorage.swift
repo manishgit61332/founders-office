@@ -9,4 +9,9 @@ actor SupportReportStorage {
         let payload = try report.encodedJSON()
         try payload.write(to: destination, options: .atomic)
     }
+
+    func save(_ report: RedactedCrashStateReport, to destination: URL) throws {
+        let payload = try report.encodedJSON()
+        try payload.write(to: destination, options: .atomic)
+    }
 }

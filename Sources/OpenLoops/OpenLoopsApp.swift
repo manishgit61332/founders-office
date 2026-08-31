@@ -3,6 +3,7 @@ import CoreText
 import FounderOfficeCore
 import ServiceManagement
 import SwiftUI
+import UniformTypeIdentifiers
 
 @main
 struct FoundersOfficeApp: App {
@@ -35,6 +36,7 @@ final class FoundersOfficeAppDelegate: NSObject, NSApplicationDelegate {
     private var recoveryState: WorkspaceRecoveryState?
     private var workspaceRootURL: URL?
     private var didMarkRuntimeReady = false
+    private let supportReportStorage = SupportReportStorage()
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         #if !FOUNDER_OFFICE_DISTRIBUTION
@@ -594,6 +596,14 @@ final class FoundersOfficeAppDelegate: NSObject, NSApplicationDelegate {
                 )
                 incidentItem.target = self
                 menu.addItem(incidentItem)
+
+                let diagnosticItem = NSMenuItem(
+                    title: "Save Redacted Crash Diagnostic…",
+                    action: #selector(saveSafeModeDiagnostic),
+                    keyEquivalent: ""
+                )
+                diagnosticItem.target = self
+                menu.addItem(diagnosticItem)
             }
 
             let retryItem = NSMenuItem(
@@ -730,6 +740,53 @@ final class FoundersOfficeAppDelegate: NSObject, NSApplicationDelegate {
         NSPasteboard.general.setString(incidentID.uuidString.lowercased(), forType: .string)
     }
 
+    @objc private func saveSafeModeDiagnostic() {
+        guard isSafeMode, let incidentID = safeModeIncidentID else { return }
+        let version = ProcessInfo.processInfo.operatingSystemVersion
+        let report = RedactedCrashStateReport(
+            incidentID: incidentID,
+            capturedAt: Date(),
+            consecutivePreReadyFailures: runtimeHealth.disposition.consecutivePreReadyFailures,
+            metadata: SupportReportMetadata(
+                appVersion: Bundle.main.object(
+                    forInfoDictionaryKey: "CFBundleShortVersionString"
+                ) as? String ?? "development",
+                buildNumber: Bundle.main.object(
+                    forInfoDictionaryKey: "CFBundleVersion"
+                ) as? String ?? "development",
+                operatingSystemMajor: version.majorVersion,
+                operatingSystemMinor: version.minorVersion,
+                operatingSystemPatch: version.patchVersion,
+                architecture: Self.supportArchitecture
+            )
+        )
+
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = "founders-office-crash-state.json"
+        panel.message = "Saves ten allow-listed crash-state fields. The workspace stays closed."
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await supportReportStorage.save(report, to: destination)
+            } catch {
+                AppDiagnostics.failure(
+                    .safeModeDiagnosticSave,
+                    category: .storage,
+                    error: error
+                )
+                let alert = NSAlert()
+                alert.alertStyle = .warning
+                alert.messageText = "Couldn’t save the crash diagnostic"
+                alert.informativeText = "Choose another location and try again."
+                alert.runModal()
+            }
+        }
+    }
+
     @objc private func retryNormalMode() {
         let alert = NSAlert()
         alert.messageText = "Retry normal mode?"
@@ -813,5 +870,15 @@ final class FoundersOfficeAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
+    }
+
+    private static var supportArchitecture: SupportArchitecture {
+        #if arch(arm64)
+        .arm64
+        #elseif arch(x86_64)
+        .x86_64
+        #else
+        .unknown
+        #endif
     }
 }

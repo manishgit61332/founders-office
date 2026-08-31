@@ -375,6 +375,87 @@ struct WorkspaceRepositoryTests {
     }
 
     @Test
+    func boundedProjectionRepairReplacesOnlyDerivedBytesAndPreservesCanonicalRevision() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.remove() }
+        let repository = try await fixture.open(initial: fixture.snapshot(title: "Canonical"))
+        let before = try await repository.snapshot()
+        let outboxBefore = try await repository.pendingOperations()
+        let projectionsURL = fixture.rootURL.appendingPathComponent("Generated", isDirectory: true)
+        let projectionURL = try await repository.ensureProjection(
+            in: projectionsURL,
+            generatedAt: fixture.date(60),
+            calendar: fixture.calendar
+        )
+        try Data("damaged derived bytes".utf8).write(
+            to: projectionURL.appendingPathComponent("openloops.json"),
+            options: [.atomic]
+        )
+
+        #expect(await repository.currentProjectionURLIfHealthy(in: projectionsURL) == nil)
+        let validationError = await capturedRepositoryError {
+            try await repository.ensureProjection(in: projectionsURL)
+        }
+        #expect(validationError == .exportFailed(operation: "validate_generated_projection"))
+
+        let repairedURL = try await repository.repairCurrentProjection(
+            in: projectionsURL,
+            generatedAt: fixture.date(61),
+            calendar: fixture.calendar
+        )
+
+        #expect(repairedURL == projectionURL)
+        #expect(await repository.currentProjectionURLIfHealthy(in: projectionsURL) == projectionURL)
+        let projectedData = try Data(
+            contentsOf: projectionURL.appendingPathComponent("openloops.json")
+        )
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let projected = try decoder.decode(OpenLoopsDocument.self, from: projectedData)
+        #expect(projected.items.first?.title == "Canonical")
+        let after = try await repository.snapshot()
+        #expect(after.revision == before.revision)
+        #expect(
+            try fixture.prettyEncoder.encode(after.content)
+                == fixture.prettyEncoder.encode(before.content)
+        )
+        #expect(outboxBefore.isEmpty)
+        #expect(try await repository.pendingOperations().isEmpty)
+    }
+
+    @Test
+    func boundedProjectionRepairRefusesSymlinkAndLeavesItsTargetUntouched() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.remove() }
+        let repository = try await fixture.open(initial: fixture.snapshot(title: "Canonical"))
+        let projectionsURL = fixture.rootURL.appendingPathComponent("Generated", isDirectory: true)
+        try FileManager.default.createDirectory(at: projectionsURL, withIntermediateDirectories: true)
+        let projectionURL = projectionsURL.appendingPathComponent(
+            "revision-000000000000",
+            isDirectory: true
+        )
+        let targetURL = fixture.rootURL.appendingPathComponent("unrelated", isDirectory: true)
+        let markerURL = targetURL.appendingPathComponent("marker.txt")
+        try FileManager.default.createDirectory(at: targetURL, withIntermediateDirectories: true)
+        let marker = Data("must remain".utf8)
+        try marker.write(to: markerURL)
+        try FileManager.default.createSymbolicLink(
+            at: projectionURL,
+            withDestinationURL: targetURL
+        )
+
+        let error = await capturedRepositoryError {
+            try await repository.repairCurrentProjection(in: projectionsURL)
+        }
+
+        #expect(error == .exportFailed(operation: "refuse_linked_projection"))
+        #expect(try Data(contentsOf: markerURL) == marker)
+        let values = try projectionURL.resourceValues(forKeys: [.isSymbolicLinkKey])
+        #expect(values.isSymbolicLink == true)
+        #expect((try await repository.snapshot()).revision == .initial)
+    }
+
+    @Test
     func incompleteLegacyImportFailsClosedWithoutChangingSource() async throws {
         let fixture = try RepositoryFixture()
         defer { fixture.remove() }
