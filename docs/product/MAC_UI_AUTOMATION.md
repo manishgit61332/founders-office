@@ -12,6 +12,8 @@
 - Calendar event creation in the top-layer editor;
 - native colour-panel close or Escape → notch restoration, including with
   Reduce Motion and Reduce Transparency enabled; and
+- Account & Sync remaining local-only, with no sign-in action or live-sync
+  claim, when reviewed product configuration is absent; and
 - preview of every redacted support-report field before Save.
 
 The non-distribution `--ui-testing` launch hook uses a caller-provided temporary workspace, bypasses onboarding and cloud transport, activates a deterministic synthetic Calendar, and opens the notch as an interactive window. `OPENLOOPS_UI_TEST_FIXTURE=1` creates one synthetic Move only inside that temporary workspace. The reduced-effects scenarios use `OPENLOOPS_UI_TEST_REDUCE_MOTION` and `OPENLOOPS_UI_TEST_REDUCE_TRANSPARENCY`; `FOUNDER_OFFICE_DISTRIBUTION` compiles all of these environment overrides out of the customer build.

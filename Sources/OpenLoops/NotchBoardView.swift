@@ -1,5 +1,6 @@
 import AppKit
 import FounderOfficeCore
+import FounderOfficeIdentity
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -29,6 +30,7 @@ private enum BoardSection: String, CaseIterable, Identifiable {
 
 private enum PersonalizePage: String, CaseIterable, Identifiable {
     case profile
+    case account
     case appearance
     case finishLine
     case calendar
@@ -39,6 +41,7 @@ private enum PersonalizePage: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .profile: return "Profile"
+        case .account: return "Account & Sync"
         case .appearance: return "Appearance"
         case .finishLine: return "Finish line"
         case .calendar: return "Calendar"
@@ -49,6 +52,7 @@ private enum PersonalizePage: String, CaseIterable, Identifiable {
     var systemImage: String {
         switch self {
         case .profile: return "person.crop.circle"
+        case .account: return "person.badge.key"
         case .appearance: return "paintpalette"
         case .finishLine: return "scope"
         case .calendar: return "calendar"
@@ -163,6 +167,7 @@ struct NotchBoardView: View {
     @ObservedObject var codexRunner: CodexRunner
     @ObservedObject var personalization: PersonalizationStore
     @ObservedObject var calendarProvider: CalendarProvider
+    @ObservedObject var account: FounderOfficeAccountController
     @ObservedObject var health: FounderOfficeHealthModel
     @ObservedObject var presentation: NotchPresentationModel
     let onClose: () -> Void
@@ -410,7 +415,9 @@ struct NotchBoardView: View {
             #endif
         }
         .onExitCommand {
-            if supportReportPreview != nil {
+            if account.requiresSetupOverlay {
+                account.cancelAccountSetup()
+            } else if supportReportPreview != nil {
                 closeSupportReportPreview()
             } else if isCreatingCalendarEvent {
                 closeCalendarEventEditor()
@@ -623,12 +630,43 @@ struct NotchBoardView: View {
                 .transition(.scale(scale: 0.96).combined(with: .opacity))
                 .zIndex(4)
             }
+
+            if account.requiresSetupOverlay {
+                Color.black.opacity(0.54)
+                    .contentShape(Rectangle())
+                    .accessibilityHidden(true)
+                    .transition(.opacity)
+
+                AccountSetupEditor(account: account, accent: accent)
+                    .padding(17)
+                    .background {
+                        let editorShape = RoundedRectangle(
+                            cornerRadius: max(16, contentRadius),
+                            style: .continuous
+                        )
+                        ZStack {
+                            editorShape.fill(.regularMaterial)
+                            editorShape.fill(
+                                Color(red: 0.018, green: 0.020, blue: 0.026)
+                                    .opacity(effectiveReduceTransparency ? 0.98 : 0.88)
+                            )
+                        }
+                    }
+                    .overlay(
+                        RoundedRectangle(cornerRadius: max(16, contentRadius), style: .continuous)
+                            .stroke(contentBorder, lineWidth: 1)
+                    )
+                    .shadow(color: Color.black.opacity(0.42), radius: 28, y: 12)
+                    .transition(.scale(scale: 0.96).combined(with: .opacity))
+                    .zIndex(5)
+            }
         }
         .frame(width: 720, height: 350)
         .animation(effectiveReduceMotion ? nil : .spring(response: 0.27, dampingFraction: 0.84), value: planningItemID)
         .animation(effectiveReduceMotion ? nil : .spring(response: 0.27, dampingFraction: 0.84), value: isCreatingCalendarEvent)
         .animation(effectiveReduceMotion ? nil : .spring(response: 0.27, dampingFraction: 0.84), value: pendingAppearanceExit)
         .animation(effectiveReduceMotion ? nil : .spring(response: 0.27, dampingFraction: 0.84), value: supportReportPreview)
+        .animation(effectiveReduceMotion ? nil : .spring(response: 0.27, dampingFraction: 0.84), value: account.setupStage)
     }
 
     private var isModalEditorPresented: Bool {
@@ -636,6 +674,7 @@ struct NotchBoardView: View {
             || isCreatingCalendarEvent
             || pendingAppearanceExit != nil
             || supportReportPreview != nil
+            || account.requiresSetupOverlay
     }
 
     private var panelSurface: some View {
@@ -1841,6 +1880,7 @@ struct NotchBoardView: View {
             Group {
                 switch personalizePage {
                 case .profile: profileSettingsPage
+                case .account: accountSettingsPage
                 case .appearance: appearanceSettingsPage
                 case .finishLine: finishLineSettingsPage
                 case .calendar: calendarSettingsPage
@@ -1944,6 +1984,119 @@ struct NotchBoardView: View {
                     }
                 }
             }
+        }
+    }
+
+    private var accountSettingsPage: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            settingsPageHeading(
+                "Account & Sync",
+                detail: "Local-first. Sign-in never uploads or replaces this workspace by itself."
+            )
+
+            HStack(spacing: 10) {
+                Image(systemName: accountStatusSymbol)
+                    .font(symbolFont(size: 15, weight: .semibold))
+                    .foregroundStyle(accountStatusColor)
+                    .frame(width: 32, height: 32)
+                    .background(accountStatusColor.opacity(0.12), in: Circle())
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(account.statusTitle)
+                        .font(interfaceFont(.secondary, weight: .bold))
+                        .foregroundStyle(primaryText)
+                    Text(account.statusDetail)
+                        .font(interfaceFont(.tertiary, weight: .semibold))
+                        .foregroundStyle(secondaryText)
+                        .lineLimit(2)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                if account.isBusy {
+                    ProgressView()
+                        .controlSize(.small)
+                        .accessibilityLabel("Account action in progress")
+                }
+            }
+            .padding(10)
+            .background(groupedBackground, in: RoundedRectangle(cornerRadius: contentRadius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: contentRadius, style: .continuous)
+                    .stroke(Color.white.opacity(0.08), lineWidth: 1)
+            )
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("account.status")
+
+            if account.isAuthenticationAvailable {
+                switch account.authState {
+                case .localOnly, .failed:
+                    HStack(spacing: 8) {
+                        Button(action: account.signInWithGoogle) {
+                            Label("Continue with Google", systemImage: "g.circle")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(HeaderActionButtonStyle(isEmphasized: true))
+                        .disabled(account.isBusy)
+                        .accessibilityIdentifier("account.signIn.google")
+
+                        Button(action: account.signInWithApple) {
+                            Label("Sign in with Apple", systemImage: "apple.logo")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(HeaderActionButtonStyle())
+                        .disabled(account.isBusy)
+                        .accessibilityIdentifier("account.signIn.apple")
+                    }
+
+                    Text("Your account identifies you. Calendar, Gmail, Notion, and other connections stay separate and are added only when you ask.")
+                        .font(interfaceFont(.tertiary, weight: .medium))
+                        .foregroundStyle(secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                case .restoring, .signingIn:
+                    Text("Finish the secure provider window. Founder’s Office will return here without changing local data.")
+                        .font(interfaceFont(.secondary, weight: .semibold))
+                        .foregroundStyle(primaryText)
+
+                case .signedIn:
+                    HStack(spacing: 8) {
+                        Text("Authentication is connected. Workspace sync is still off until a reviewed transport binds it.")
+                            .font(interfaceFont(.tertiary, weight: .semibold))
+                            .foregroundStyle(secondaryText)
+                        Spacer(minLength: 6)
+                        Button("Sign Out", action: account.signOut)
+                            .buttonStyle(HeaderActionButtonStyle())
+                            .disabled(account.isBusy)
+                            .accessibilityIdentifier("account.signOut")
+                    }
+                }
+            } else {
+                Text("You can keep using every local feature. Sign-in appears only in a build with reviewed secure account settings.")
+                    .font(interfaceFont(.secondary, weight: .semibold))
+                    .foregroundStyle(primaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("account.localOnlyExplanation")
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("account.page")
+    }
+
+    private var accountStatusSymbol: String {
+        switch account.authState {
+        case .signedIn: return "person.crop.circle.badge.checkmark"
+        case .restoring, .signingIn: return "arrow.triangle.2.circlepath"
+        case .failed: return "exclamationmark.triangle"
+        case .localOnly: return "internaldrive"
+        }
+    }
+
+    private var accountStatusColor: Color {
+        switch account.authState {
+        case .signedIn: return accent
+        case .restoring, .signingIn: return accent
+        case .failed: return Color(nsColor: .systemOrange)
+        case .localOnly: return Color.white.opacity(0.72)
         }
     }
 
@@ -3928,6 +4081,169 @@ private struct MovePlanningEditor: View {
         }
     }
 
+}
+
+private struct AccountSetupEditor: View {
+    @Environment(\.founderTheme) private var theme
+    @ObservedObject var account: FounderOfficeAccountController
+    let accent: Color
+
+    private var nameBinding: Binding<String> {
+        Binding(
+            get: { account.reviewedDisplayNameDraft },
+            set: { account.reviewedDisplayNameDraft = $0 }
+        )
+    }
+
+    var body: some View {
+        Group {
+            switch account.setupStage {
+            case .reviewDisplayName:
+                reviewName
+            case .chooseWorkspace:
+                chooseWorkspace
+            case .none:
+                EmptyView()
+            }
+        }
+        .frame(width: 570)
+        .preferredColorScheme(.dark)
+        .accessibilityElement(children: .contain)
+        .accessibilityAddTraits(.isModal)
+        .accessibilityIdentifier("account.setup")
+    }
+
+    private var reviewName: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("What should Founder’s Office call you?")
+                .font(theme.displayFont(.secondary))
+                .foregroundStyle(Color.white.opacity(0.97))
+            Text("Google or Apple may suggest a name. Review it here before it becomes your greeting or account profile.")
+                .font(theme.interfaceFont(.secondary, weight: .medium))
+                .foregroundStyle(Color.white.opacity(0.76))
+
+            TextField("Your name", text: nameBinding)
+                .textFieldStyle(.plain)
+                .font(theme.interfaceFont(.secondary, weight: .semibold))
+                .foregroundStyle(Color.white.opacity(0.96))
+                .padding(.horizontal, 11)
+                .frame(height: 38)
+                .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(Color.white.opacity(0.12), lineWidth: 1)
+                )
+                .onSubmit(account.confirmReviewedDisplayName)
+                .accessibilityIdentifier("account.reviewedName")
+
+            if let error = account.displayNameError {
+                Text(error)
+                    .font(theme.interfaceFont(.tertiary, weight: .semibold))
+                    .foregroundStyle(Color(nsColor: .systemRed))
+                    .accessibilityIdentifier("account.reviewedName.error")
+            }
+
+            HStack(spacing: 8) {
+                Button("Cancel", action: account.cancelAccountSetup)
+                    .buttonStyle(HeaderActionButtonStyle())
+                    .keyboardShortcut(.cancelAction)
+                    .accessibilityIdentifier("account.setup.cancel")
+                Spacer()
+                Button("Continue", action: account.confirmReviewedDisplayName)
+                    .buttonStyle(HeaderActionButtonStyle(isEmphasized: true))
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(account.isSavingReviewedName)
+                    .accessibilityIdentifier("account.reviewedName.confirm")
+            }
+        }
+    }
+
+    private var chooseWorkspace: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("What happens to this Mac’s workspace?")
+                .font(theme.displayFont(.secondary))
+                .foregroundStyle(Color.white.opacity(0.97))
+            Text("Signing in did not upload, replace, or merge anything.")
+                .font(theme.interfaceFont(.secondary, weight: .medium))
+                .foregroundStyle(Color.white.opacity(0.78))
+
+            VStack(spacing: 5) {
+                ForEach(LocalWorkspaceAccountChoice.allCases, id: \.rawValue) { choice in
+                    workspaceChoiceRow(choice)
+                }
+            }
+
+            if let message = account.operationMessage {
+                Text(message)
+                    .font(theme.interfaceFont(.tertiary, weight: .semibold))
+                    .foregroundStyle(Color.white.opacity(0.74))
+                    .accessibilityIdentifier("account.workspaceChoice.message")
+            }
+
+            HStack {
+                Text("Other choices unlock only after export and sync safety are verified.")
+                    .font(theme.interfaceFont(.tertiary, weight: .semibold))
+                    .foregroundStyle(Color.white.opacity(0.68))
+                Spacer(minLength: 6)
+                Button("Cancel Sign-in", action: account.cancelAccountSetup)
+                    .buttonStyle(HeaderActionButtonStyle())
+                    .keyboardShortcut(.cancelAction)
+                    .accessibilityIdentifier("account.setup.cancel")
+            }
+        }
+    }
+
+    private func workspaceChoiceRow(_ choice: LocalWorkspaceAccountChoice) -> some View {
+        let enabled = account.isWorkspaceChoiceEnabled(choice)
+        return Button {
+            account.chooseWorkspaceDisposition(choice)
+        } label: {
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(workspaceChoiceTitle(choice))
+                        .font(theme.interfaceFont(.secondary, weight: .bold))
+                        .foregroundStyle(Color.white.opacity(enabled ? 0.96 : 0.55))
+                    Text(workspaceChoiceDetail(choice))
+                        .font(theme.interfaceFont(.tertiary, weight: .medium))
+                        .foregroundStyle(Color.white.opacity(enabled ? 0.72 : 0.45))
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 4)
+                Text(enabled ? "Choose" : "Not yet")
+                    .font(theme.interfaceFont(.tertiary, weight: .bold))
+                    .foregroundStyle(enabled ? accent : Color.white.opacity(0.45))
+            }
+            .padding(.horizontal, 10)
+            .frame(maxWidth: .infinity, minHeight: 39)
+            .background(Color.white.opacity(enabled ? 0.065 : 0.025), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .stroke(enabled ? accent.opacity(0.36) : Color.white.opacity(0.05), lineWidth: 1)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(StatusTabButtonStyle())
+        .disabled(!enabled)
+        .accessibilityIdentifier("account.workspaceChoice.\(choice.rawValue)")
+    }
+
+    private func workspaceChoiceTitle(_ choice: LocalWorkspaceAccountChoice) -> String {
+        switch choice {
+        case .keepLocalOnly: return "Keep this workspace local-only"
+        case .claimAsNewWorkspace: return "Claim it as a new synced workspace"
+        case .switchWorkspace: return "Switch to the account workspace"
+        case .exportAndReplace: return "Export, then replace this workspace"
+        }
+    }
+
+    private func workspaceChoiceDetail(_ choice: LocalWorkspaceAccountChoice) -> String {
+        switch choice {
+        case .keepLocalOnly: return "Stay signed in without sending this Mac’s data."
+        case .claimAsNewWorkspace: return "Requires the reviewed upload and conflict engine."
+        case .switchWorkspace: return "Requires a safe local export and remote download."
+        case .exportAndReplace: return "Requires verified export, erase, and recovery paths."
+        }
+    }
 }
 
 private struct SupportReportPreview: View {

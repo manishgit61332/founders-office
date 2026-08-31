@@ -18,8 +18,8 @@ final class NotchPresentationModel: ObservableObject {
     var preventsAutoDismiss: Bool { transients.preventsAutoDismiss }
 
     @discardableResult
-    func beginInteraction(_ reason: String) -> UUID {
-        transients.begin(reason)
+    func beginInteraction(_ reason: String, suspendsHost: Bool = false) -> UUID {
+        transients.begin(reason, suspendsHost: suspendsHost)
     }
 
     func endInteraction(_ lease: UUID) {
@@ -49,6 +49,7 @@ final class NotchWindowController {
     private let codexRunner: CodexRunner
     private let personalization: PersonalizationStore
     private let calendarProvider: CalendarProvider
+    private let account: FounderOfficeAccountController
     private let health: FounderOfficeHealthModel
     private let presentation = NotchPresentationModel()
     private let panel: NotchPanel
@@ -80,12 +81,6 @@ final class NotchWindowController {
         codexRunner = runner
         self.personalization = personalizationStore
         calendarProvider = calendar
-        health = FounderOfficeHealthModel(
-            store: store,
-            personalization: personalizationStore,
-            calendar: calendar,
-            assistant: runner
-        )
         panel = NotchPanel(
             contentRect: NSRect(x: 0, y: 0, width: 720, height: 350),
             styleMask: [.borderless, .fullSizeContentView],
@@ -106,12 +101,46 @@ final class NotchWindowController {
         panel.animationBehavior = .none
         panel.isReleasedWhenClosed = false
         panel.ignoresMouseEvents = true
+        account = FounderOfficeAccountController.live(
+            infoDictionary: Bundle.main.infoDictionary ?? [:],
+            hostWindow: panel,
+            presentation: presentation,
+            localContext: { [weak store, weak personalizationStore] in
+                guard let store, let personalizationStore else {
+                    return FounderOfficeLocalAccountContext(
+                        hasCustomerData: false,
+                        boundAccountID: nil
+                    )
+                }
+                let hasMoves = store.items.contains { $0.deletedAt == nil }
+                let hasPersonalization = !personalizationStore.preferredName.isEmpty
+                    || personalizationStore.workspaceName != "Founder's Office"
+                    || personalizationStore.photoURL != nil
+                    || personalizationStore.primaryGoal != nil
+                    || !personalizationStore.milestones.isEmpty
+                return FounderOfficeLocalAccountContext(
+                    hasCustomerData: hasMoves || hasPersonalization,
+                    boundAccountID: nil
+                )
+            },
+            applyReviewedDisplayName: { [weak personalizationStore] name in
+                personalizationStore?.updatePreferredName(name)
+            }
+        )
+        health = FounderOfficeHealthModel(
+            store: store,
+            personalization: personalizationStore,
+            calendar: calendar,
+            assistant: runner,
+            accountSync: account
+        )
         panel.contentViewController = NSHostingController(
             rootView: NotchBoardView(
                 store: store,
                 codexRunner: codexRunner,
                 personalization: self.personalization,
                 calendarProvider: calendarProvider,
+                account: account,
                 health: health,
                 presentation: presentation
             ) { [weak self] in self?.requestExplicitClose() }
@@ -133,6 +162,7 @@ final class NotchWindowController {
         startHoverMonitor()
         startSystemObservers()
         startEscapeMonitor()
+        account.start()
     }
 
     var isVisible: Bool { state != .hidden }
@@ -248,6 +278,7 @@ final class NotchWindowController {
 
     func prepareForTermination() {
         codexRunner.prepareForTermination()
+        account.stop()
         personalization.discardAppearanceChanges()
         presentation.clearInteractions()
         if let escapeMonitor {
