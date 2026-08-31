@@ -84,6 +84,31 @@ public struct ProductAuthConfiguration: Equatable, Sendable {
         }
     }
 
+    /// Confirms that the URL which ended an authentication session returned to
+    /// the exact callback endpoint configured in the signed application. An
+    /// `ASWebAuthenticationSession` callback scheme alone is not an origin
+    /// check: any URL using that scheme can end the session. Query and fragment
+    /// values are intentionally left to Supabase's PKCE parser, but the base
+    /// endpoint cannot change.
+    public func acceptsCallbackResponse(_ responseURL: URL) -> Bool {
+        guard let expected = URLComponents(
+            url: callbackURL,
+            resolvingAgainstBaseURL: false
+        ), let response = URLComponents(
+            url: responseURL,
+            resolvingAgainstBaseURL: false
+        ) else {
+            return false
+        }
+
+        return response.scheme?.lowercased() == expected.scheme?.lowercased()
+            && response.host?.lowercased() == expected.host?.lowercased()
+            && response.port == expected.port
+            && response.user == nil
+            && response.password == nil
+            && response.percentEncodedPath == expected.percentEncodedPath
+    }
+
     private static func isPublishableClientKey(_ key: String) -> Bool {
         guard !key.localizedCaseInsensitiveContains("placeholder"),
               !key.contains("$("),

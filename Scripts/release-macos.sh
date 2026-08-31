@@ -190,6 +190,7 @@ with open(path, "rb") as handle:
 errors = []
 allowed_keys = {
     "aps-environment",
+    "com.apple.developer.applesignin",
     "com.apple.developer.icloud-container-environment",
     "com.apple.developer.icloud-container-identifiers",
     "com.apple.developer.icloud-services",
@@ -222,6 +223,8 @@ if entitlements.get("com.apple.security.files.user-selected.read-only") is not T
     errors.append("read-only access to user-selected files must be explicitly entitled")
 if entitlements.get("aps-environment") != "production":
     errors.append("aps-environment must be production")
+if entitlements.get("com.apple.developer.applesignin") != ["Default"]:
+    errors.append("Sign in with Apple must be enabled for the primary app")
 if entitlements.get("com.apple.developer.icloud-container-environment") != "Production":
     errors.append("the iCloud container environment must be Production")
 if "CloudKit" not in entitlements.get("com.apple.developer.icloud-services", []):
@@ -473,6 +476,8 @@ if entitlements.get("com.apple.application-identifier") not in (None, f"{team_id
     errors.append("application identifier does not match")
 if entitlements.get("aps-environment") != "production":
     errors.append("effective push environment is not production")
+if entitlements.get("com.apple.developer.applesignin") != ["Default"]:
+    errors.append("effective Sign in with Apple entitlement is missing or invalid")
 if entitlements.get("com.apple.developer.icloud-container-environment") != "Production":
     errors.append("effective iCloud environment is not Production")
 if entitlements.get("com.apple.developer.icloud-container-identifiers") != [expected_container]:

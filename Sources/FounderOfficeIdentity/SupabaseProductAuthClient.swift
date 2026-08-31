@@ -4,18 +4,25 @@ import Supabase
 
 public actor SupabaseProductAuthClient: ProductAuthServing {
     private let client: SupabaseClient
+    private let configuration: ProductAuthConfiguration
+    private let oauthPresentationAnchor: @MainActor @Sendable () -> ASPresentationAnchor?
     private let durableStorage: VerifiedProductAuthStorage
     private var state: ProductAuthState = .localOnly
     private var continuations: [UUID: AsyncStream<ProductAuthState>.Continuation] = [:]
     private var authObservationTask: Task<Void, Never>?
     private var ephemeralProviderSuggestion: OnboardingDisplayNameSuggestion?
 
-    public init(configuration: ProductAuthConfiguration) {
+    public init(
+        configuration: ProductAuthConfiguration,
+        presentationAnchor: @escaping @MainActor @Sendable () -> ASPresentationAnchor? = { nil }
+    ) {
         let durableStorage = VerifiedProductAuthStorage(
             storage: KeychainLocalStorage(service: configuration.keychainService),
             sessionKey: "founders-office-session"
         )
         self.durableStorage = durableStorage
+        self.configuration = configuration
+        oauthPresentationAnchor = presentationAnchor
         client = SupabaseClient(
             supabaseURL: configuration.endpoint,
             supabaseKey: configuration.publishableKey,
@@ -54,7 +61,12 @@ public actor SupabaseProductAuthClient: ProductAuthServing {
             try durableStorage.verifyDurableSession(session)
             publish(.signedIn(Self.summary(session)))
         } catch AuthError.sessionMissing {
-            publish(.localOnly)
+            do {
+                try durableStorage.verifyNoRecordedFailure()
+                publish(.localOnly)
+            } catch {
+                publish(.failed(Self.failure(from: error)))
+            }
         } catch {
             publish(.failed(Self.failure(from: error)))
         }
@@ -63,11 +75,24 @@ public actor SupabaseProductAuthClient: ProductAuthServing {
     public func signInWithGoogle() async {
         startAuthStateObservationIfNeeded()
         ephemeralProviderSuggestion = nil
+        let stateBeforeSignIn = state
         publish(.signingIn(.google))
         do {
-            let session = try await client.auth.signInWithOAuth(provider: .google)
+            let callbackConfiguration = configuration
+            let presentationAnchor = oauthPresentationAnchor
+            let session = try await client.auth.signInWithOAuth(
+                provider: .google
+            ) { authorizationURL in
+                try await Self.launchOAuthSession(
+                    authorizationURL: authorizationURL,
+                    configuration: callbackConfiguration,
+                    presentationAnchor: presentationAnchor
+                )
+            }
             try durableStorage.verifyDurableSession(session)
             publish(.signedIn(Self.summary(session, preferredProvider: .google)))
+        } catch is CancellationError {
+            publish(stateBeforeSignIn)
         } catch {
             publish(.failed(Self.failure(from: error)))
         }
@@ -76,6 +101,7 @@ public actor SupabaseProductAuthClient: ProductAuthServing {
     public func signInWithApple(_ authorization: AppleIdentityAuthorization) async {
         startAuthStateObservationIfNeeded()
         ephemeralProviderSuggestion = authorization.onboardingDisplayNameSuggestion
+        let stateBeforeSignIn = state
         publish(.signingIn(.apple))
         do {
             let session = try await client.auth.signInWithIdToken(
@@ -97,6 +123,9 @@ public actor SupabaseProductAuthClient: ProductAuthServing {
                     )
                 )
             )
+        } catch is CancellationError {
+            ephemeralProviderSuggestion = nil
+            publish(stateBeforeSignIn)
         } catch {
             ephemeralProviderSuggestion = nil
             publish(.failed(Self.failure(from: error)))
@@ -169,7 +198,15 @@ public actor SupabaseProductAuthClient: ProductAuthServing {
             }
         } else {
             ephemeralProviderSuggestion = nil
-            publish(.localOnly)
+            do {
+                // SDK events are advisory. A nil event can arrive before a
+                // failed Keychain deletion, so signed-out UI requires proof
+                // that the durable session is actually absent.
+                try durableStorage.verifySessionRemoved()
+                publish(.localOnly)
+            } catch {
+                publish(.failed(Self.failure(from: error)))
+            }
         }
     }
 
@@ -218,6 +255,20 @@ public actor SupabaseProductAuthClient: ProductAuthServing {
                 recoveryMessage: "Sign-in was cancelled. Your local workspace was not changed."
             )
         }
+        if let callbackError = error as? ProductAuthCallbackError {
+            switch callbackError {
+            case .unexpectedResponse:
+                return ProductAuthFailure(
+                    code: .rejected,
+                    recoveryMessage: "The sign-in callback was rejected. Your local workspace was not changed."
+                )
+            case .invalidConfiguration, .missingPresentationAnchor, .couldNotStart:
+                return ProductAuthFailure(
+                    code: .configuration,
+                    recoveryMessage: "The secure sign-in window could not open. Your local workspace was not changed."
+                )
+            }
+        }
         if error is URLError {
             return ProductAuthFailure(
                 code: .network,
@@ -235,6 +286,108 @@ public actor SupabaseProductAuthClient: ProductAuthServing {
             recoveryMessage: "Sign-in could not be completed. Your local workspace was not changed."
         )
     }
+
+    @MainActor
+    private static func launchOAuthSession(
+        authorizationURL: URL,
+        configuration: ProductAuthConfiguration,
+        presentationAnchor: @escaping @MainActor @Sendable () -> ASPresentationAnchor?
+    ) async throws -> URL {
+        guard let callbackScheme = configuration.callbackURL.scheme else {
+            throw ProductAuthCallbackError.invalidConfiguration
+        }
+        guard let anchor = presentationAnchor() else {
+            throw ProductAuthCallbackError.missingPresentationAnchor
+        }
+
+        let runner = OAuthWebAuthenticationSessionRunner(
+            anchor: anchor,
+            configuration: configuration
+        )
+        return try await runner.run(
+            authorizationURL: authorizationURL,
+            callbackScheme: callbackScheme
+        )
+    }
+}
+
+@MainActor
+private final class OAuthWebAuthenticationSessionRunner: NSObject,
+    ASWebAuthenticationPresentationContextProviding
+{
+    private let anchor: ASPresentationAnchor
+    private let configuration: ProductAuthConfiguration
+    private var session: ASWebAuthenticationSession?
+    private var continuation: CheckedContinuation<URL, Error>?
+
+    init(anchor: ASPresentationAnchor, configuration: ProductAuthConfiguration) {
+        self.anchor = anchor
+        self.configuration = configuration
+    }
+
+    func run(authorizationURL: URL, callbackScheme: String) async throws -> URL {
+        try Task.checkCancellation()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                guard !Task.isCancelled else {
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
+                self.continuation = continuation
+                let session = ASWebAuthenticationSession(
+                    url: authorizationURL,
+                    callbackURLScheme: callbackScheme
+                ) { [weak self] responseURL, error in
+                    guard let self else { return }
+                    if let error {
+                        finish(with: .failure(error))
+                        return
+                    }
+                    guard let responseURL,
+                          configuration.acceptsCallbackResponse(responseURL) else {
+                        finish(with: .failure(ProductAuthCallbackError.unexpectedResponse))
+                        return
+                    }
+                    finish(with: .success(responseURL))
+                }
+                self.session = session
+                session.presentationContextProvider = self
+                guard session.start() else {
+                    finish(with: .failure(ProductAuthCallbackError.couldNotStart))
+                    return
+                }
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in
+                self?.cancel()
+            }
+        }
+    }
+
+    private func finish(with result: Result<URL, Error>) {
+        guard let continuation else { return }
+        self.continuation = nil
+        session?.presentationContextProvider = nil
+        session = nil
+        continuation.resume(with: result)
+    }
+
+    private func cancel() {
+        session?.cancel()
+        finish(with: .failure(CancellationError()))
+    }
+
+    func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
+        _ = session
+        return anchor
+    }
+}
+
+enum ProductAuthCallbackError: Error, Equatable, Sendable {
+    case invalidConfiguration
+    case missingPresentationAnchor
+    case unexpectedResponse
+    case couldNotStart
 }
 
 /// Supabase Swift intentionally treats local-storage failures as recoverable
@@ -256,9 +409,13 @@ final class VerifiedProductAuthStorage: AuthLocalStorage, @unchecked Sendable {
     func store(key: String, value: Data) throws {
         do {
             try storage.store(key: key, value: value)
-            lock.withLock { latestStorageFailure = nil }
+            if key == sessionKey {
+                lock.withLock { latestStorageFailure = nil }
+            }
         } catch {
-            lock.withLock { latestStorageFailure = .writeFailed }
+            if key == sessionKey {
+                lock.withLock { latestStorageFailure = .writeFailed }
+            }
             throw error
         }
     }
@@ -266,10 +423,14 @@ final class VerifiedProductAuthStorage: AuthLocalStorage, @unchecked Sendable {
     func retrieve(key: String) throws -> Data? {
         do {
             let value = try storage.retrieve(key: key)
-            lock.withLock { latestStorageFailure = nil }
+            if key == sessionKey {
+                lock.withLock { latestStorageFailure = nil }
+            }
             return value
         } catch {
-            lock.withLock { latestStorageFailure = .readFailed }
+            if key == sessionKey {
+                lock.withLock { latestStorageFailure = .readFailed }
+            }
             throw error
         }
     }
@@ -277,10 +438,20 @@ final class VerifiedProductAuthStorage: AuthLocalStorage, @unchecked Sendable {
     func remove(key: String) throws {
         do {
             try storage.remove(key: key)
-            lock.withLock { latestStorageFailure = nil }
+            if key == sessionKey {
+                lock.withLock { latestStorageFailure = nil }
+            }
         } catch {
-            lock.withLock { latestStorageFailure = .deleteFailed }
+            if key == sessionKey {
+                lock.withLock { latestStorageFailure = .deleteFailed }
+            }
             throw error
+        }
+    }
+
+    func verifyNoRecordedFailure() throws {
+        if let failure = lock.withLock({ latestStorageFailure }) {
+            throw failure
         }
     }
 
@@ -301,9 +472,7 @@ final class VerifiedProductAuthStorage: AuthLocalStorage, @unchecked Sendable {
         }
 
         guard let persisted = try? JSONDecoder().decode(Session.self, from: data),
-              persisted.user.id == expected.user.id,
-              persisted.accessToken == expected.accessToken,
-              persisted.refreshToken == expected.refreshToken else {
+              persisted == expected else {
             throw ProductAuthSecureStorageError.mismatchedReadBack
         }
     }

@@ -530,6 +530,8 @@ if entitlements.get("com.apple.application-identifier") not in (None, f"{team_id
     errors.append("application identifier does not match")
 if entitlements.get("aps-environment") != "production":
     errors.append("push environment is not production")
+if entitlements.get("com.apple.developer.applesignin") != ["Default"]:
+    errors.append("Sign in with Apple entitlement is missing or invalid")
 if entitlements.get("com.apple.developer.icloud-container-environment") != "Production":
     errors.append("iCloud environment is not Production")
 if entitlements.get("com.apple.developer.icloud-container-identifiers") != [expected_container]:

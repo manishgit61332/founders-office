@@ -11,7 +11,7 @@ A website build is publishable only when all of these statements are true:
 3. Apple product identifiers belong to the production organization and will not change after launch.
 4. Xcode signs the app with a `Developer ID Application` certificate and the production provisioning profile.
 5. Every required architecture has the expected signature, hardened runtime, and trusted timestamp.
-6. Every required architecture's effective entitlements name the production iCloud container, production push environment, Calendar access, and user-selected read-only file access.
+6. Every required architecture's effective entitlements name the production iCloud container, production push environment, Sign in with Apple capability, Calendar access, and user-selected read-only file access.
 7. The app's runtime CloudKit container is explicit in `Info.plist` and exactly matches its entitlement.
 8. Apple accepts the notarization submission.
 9. The notarization ticket is stapled to the app.
@@ -31,10 +31,11 @@ Complete these steps before the first external beta:
 2. Install XcodeGen 2.46.0, the same version pinned in CI. The release script rejects another version and generates the Xcode project from the committed `project.yml`.
 3. Freeze the organization Team ID, macOS bundle ID, App Group, and iCloud container. The release script explicitly rejects the known provisional bundle and iCloud identifiers in the repository.
 4. Create a `Developer ID Application` certificate for that team and install its private key in the release keychain.
-5. Create a Developer ID provisioning profile for the final macOS bundle ID. It must authorize the production CloudKit and push entitlements.
+5. Create a Developer ID provisioning profile for the final macOS bundle ID. It must authorize the production CloudKit, push, and Sign in with Apple entitlements.
 6. Create and commit `Config/Release/FoundersOfficeMac.entitlements` after the identifiers are frozen. The release script accepts no external or untracked entitlement file. It must contain:
    - `com.apple.security.app-sandbox` set to `true`;
    - `aps-environment` set to `production`;
+   - `com.apple.developer.applesignin` set to an array containing only `Default`;
    - `com.apple.developer.icloud-container-environment` set to `Production`;
    - the final iCloud container in `com.apple.developer.icloud-container-identifiers`;
    - `CloudKit` in `com.apple.developer.icloud-services`;
@@ -96,7 +97,7 @@ The script performs an Xcode archive and Developer ID export, then:
 - rejects a developer workspace path in the app;
 - rejects customer binaries containing external Codex execution, workspace override, or preview/capture hooks;
 - verifies the timestamped Developer ID signature and hardened runtime for every required architecture;
-- verifies the tracked source entitlements and each architecture's effective production entitlements, including Calendar and user-selected read-only file access;
+- verifies the tracked source entitlements and each architecture's effective production entitlements, including Sign in with Apple, Calendar, and user-selected read-only file access;
 - submits a ZIP to Apple and requires an `Accepted` result;
 - staples and validates the ticket;
 - requires a passing Gatekeeper assessment;
