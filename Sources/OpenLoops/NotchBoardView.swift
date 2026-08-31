@@ -53,6 +53,13 @@ private enum PersonalizePage: String, CaseIterable, Identifiable {
     }
 }
 
+private enum AppearanceExitAction: Equatable {
+    case page(PersonalizePage)
+    case dismissSettings
+    case section(BoardSection)
+    case closeNotch
+}
+
 private struct DeadlineSignal: Identifiable {
     var id: String
     var title: String
@@ -230,6 +237,7 @@ struct NotchBoardView: View {
     @State private var finishDateInteractionLease: UUID?
     @State private var photoInteractionLease: UUID?
     @State private var accentSliderInteractionLease: UUID?
+    @State private var pendingAppearanceExit: AppearanceExitAction?
     @State private var planningItemID: UUID?
     @State private var planningTitle = ""
     @State private var planningPriority: LoopPriority = .p1
@@ -357,6 +365,9 @@ struct NotchBoardView: View {
         .onAppear {
             loadIdentityEditor()
             loadPrimaryGoalEditor()
+            if isSettingsPresented, personalizePage == .appearance {
+                personalization.beginAppearanceEditing()
+            }
             #if !FOUNDER_OFFICE_DISTRIBUTION
             if ProcessInfo.processInfo.environment["OPENLOOPS_PREVIEW_PLANNING_EDITOR"] == "1",
                let previewItem = store.items(in: selectedStatus).first {
@@ -376,9 +387,9 @@ struct NotchBoardView: View {
             } else if isFinishDatePickerPresented {
                 closeFinishDatePicker()
             } else if isSettingsPresented {
-                dismissSettings()
+                requestAppearanceExit(.dismissSettings)
             } else {
-                onClose()
+                requestAppearanceExit(.closeNotch)
             }
         }
         .onChange(of: store.items) { _, updatedItems in
@@ -515,14 +526,47 @@ struct NotchBoardView: View {
                 .transition(.scale(scale: 0.96).combined(with: .opacity))
                 .zIndex(2)
             }
+
+            if pendingAppearanceExit != nil {
+                Color.black.opacity(0.52)
+                    .contentShape(Rectangle())
+                    .accessibilityHidden(true)
+                    .transition(.opacity)
+
+                UnsavedAppearanceEditor(
+                    accent: accent,
+                    onKeepEditing: { pendingAppearanceExit = nil },
+                    onDiscard: discardAppearanceAndContinue,
+                    onSave: saveAppearanceAndContinue
+                )
+                .padding(17)
+                .background {
+                    let editorShape = RoundedRectangle(cornerRadius: max(16, contentRadius), style: .continuous)
+                    ZStack {
+                        editorShape.fill(.regularMaterial)
+                        editorShape.fill(
+                            Color(red: 0.018, green: 0.020, blue: 0.026)
+                                .opacity(reduceTransparency ? 0.98 : 0.88)
+                        )
+                    }
+                }
+                .overlay(
+                    RoundedRectangle(cornerRadius: max(16, contentRadius), style: .continuous)
+                        .stroke(contentBorder, lineWidth: 1)
+                )
+                .shadow(color: Color.black.opacity(0.42), radius: 28, y: 12)
+                .transition(.scale(scale: 0.96).combined(with: .opacity))
+                .zIndex(3)
+            }
         }
         .frame(width: 720, height: 350)
         .animation(.spring(response: 0.27, dampingFraction: 0.84), value: planningItemID)
         .animation(.spring(response: 0.27, dampingFraction: 0.84), value: isCreatingCalendarEvent)
+        .animation(.spring(response: 0.27, dampingFraction: 0.84), value: pendingAppearanceExit)
     }
 
     private var isModalEditorPresented: Bool {
-        planningItemID != nil || isCreatingCalendarEvent
+        planningItemID != nil || isCreatingCalendarEvent || pendingAppearanceExit != nil
     }
 
     private var panelSurface: some View {
@@ -588,7 +632,7 @@ struct NotchBoardView: View {
                 action: presentSettings
             )
 
-            Button(action: onClose) {
+            Button(action: { requestAppearanceExit(.closeNotch) }) {
                 Image(systemName: "xmark")
             }
             .buttonStyle(CloseButtonStyle())
@@ -1749,8 +1793,7 @@ struct NotchBoardView: View {
     private func personalizePageButton(_ page: PersonalizePage) -> some View {
         let isSelected = personalizePage == page
         return Button {
-            if page != .finishLine { closeFinishDatePicker() }
-            withAnimation(.easeOut(duration: 0.16)) { personalizePage = page }
+            requestAppearanceExit(.page(page))
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: page.systemImage)
@@ -1879,6 +1922,52 @@ struct NotchBoardView: View {
                     title: { $0.title },
                     action: personalization.updateSurfaceStyle
                 )
+
+                Spacer(minLength: 3)
+
+                if personalization.hasAppearanceConflict {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("Appearance changed elsewhere")
+                            .font(interfaceFont(.tertiary, weight: .semibold))
+                            .foregroundStyle(primaryText)
+                        HStack(spacing: 6) {
+                            Button("Use Latest") {
+                                presentation.closeNativeColorPanels()
+                                personalization.useLatestAppearance()
+                            }
+                            .buttonStyle(HeaderActionButtonStyle())
+                            Button("Keep Mine") {
+                                presentation.closeNativeColorPanels()
+                                _ = personalization.keepMineAppearance()
+                            }
+                            .buttonStyle(HeaderActionButtonStyle(isEmphasized: true))
+                        }
+                    }
+                    .accessibilityElement(children: .contain)
+                } else {
+                    if let saveError = personalization.appearanceSaveError {
+                        Text(saveError)
+                            .font(interfaceFont(.tertiary, weight: .semibold))
+                            .foregroundStyle(Color(nsColor: .systemRed))
+                            .lineLimit(1)
+                            .accessibilityIdentifier("appearance.saveError")
+                    }
+
+                    HStack(spacing: 7) {
+                        Spacer()
+                        Button("Discard", action: discardAppearanceDraft)
+                            .buttonStyle(HeaderActionButtonStyle())
+                            .fixedSize(horizontal: true, vertical: false)
+                            .disabled(!personalization.hasUnsavedAppearanceChanges)
+                            .accessibilityIdentifier("appearance.discard")
+                        Button("Save Changes", action: saveAppearanceDraft)
+                            .buttonStyle(HeaderActionButtonStyle(isEmphasized: true))
+                            .fixedSize(horizontal: true, vertical: false)
+                            .disabled(!personalization.hasUnsavedAppearanceChanges)
+                            .keyboardShortcut(.defaultAction)
+                            .accessibilityIdentifier("appearance.save")
+                    }
+                }
             }
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
@@ -2249,7 +2338,7 @@ struct NotchBoardView: View {
             .accessibilityValue(title(selected))
         }
         .padding(.horizontal, 10)
-        .frame(maxWidth: .infinity, minHeight: 37)
+        .frame(maxWidth: .infinity, minHeight: 34)
         .background(
             groupedBackground,
             in: RoundedRectangle(cornerRadius: max(6, contentRadius - 4), style: .continuous)
@@ -2298,7 +2387,6 @@ struct NotchBoardView: View {
             return
         }
 
-        personalization.flushPendingChanges()
         guard let lease = accentSliderInteractionLease else { return }
         presentation.endInteraction(lease)
         accentSliderInteractionLease = nil
@@ -2655,6 +2743,9 @@ struct NotchBoardView: View {
         loadIdentityEditor()
         loadPrimaryGoalEditor()
         calendarProvider.syncOnOpen()
+        if personalizePage == .appearance {
+            personalization.beginAppearanceEditing()
+        }
         withAnimation(.spring(response: 0.30, dampingFraction: 0.84)) {
             isSettingsPresented = true
             isAdding = false
@@ -2662,16 +2753,54 @@ struct NotchBoardView: View {
     }
 
     private func dismissSettings() {
-        closePlanningEditor()
-        closeFinishDatePicker()
-        saveIdentity()
-        withAnimation(.spring(response: 0.30, dampingFraction: 0.84)) {
-            isSettingsPresented = false
-        }
+        requestAppearanceExit(.dismissSettings)
     }
 
     private func select(_ section: BoardSection) {
         guard section != selectedSection || isSettingsPresented else { return }
+        requestAppearanceExit(.section(section))
+    }
+
+    private func requestAppearanceExit(_ action: AppearanceExitAction) {
+        if case .page(.appearance) = action {
+            personalization.beginAppearanceEditing()
+            if personalizePage != .appearance {
+                closeFinishDatePicker()
+                withAnimation(.easeOut(duration: 0.16)) { personalizePage = .appearance }
+            }
+            return
+        }
+
+        presentation.closeNativeColorPanels()
+        if personalizePage == .appearance,
+           isSettingsPresented,
+           personalization.hasUnsavedAppearanceChanges {
+            pendingAppearanceExit = action
+            return
+        }
+        performAppearanceExit(action)
+    }
+
+    private func performAppearanceExit(_ action: AppearanceExitAction) {
+        switch action {
+        case let .page(page):
+            if page != .finishLine { closeFinishDatePicker() }
+            withAnimation(.easeOut(duration: 0.16)) { personalizePage = page }
+        case .dismissSettings:
+            closePlanningEditor()
+            closeFinishDatePicker()
+            saveIdentity()
+            withAnimation(.spring(response: 0.30, dampingFraction: 0.84)) {
+                isSettingsPresented = false
+            }
+        case let .section(section):
+            selectWithoutAppearancePrompt(section)
+        case .closeNotch:
+            onClose()
+        }
+    }
+
+    private func selectWithoutAppearancePrompt(_ section: BoardSection) {
         closeCalendarEventEditor()
         closePlanningEditor()
         if isSettingsPresented {
@@ -2686,6 +2815,40 @@ struct NotchBoardView: View {
             selectedSection = section
             isSettingsPresented = false
             isAdding = false
+        }
+    }
+
+    private func saveAppearanceDraft() {
+        presentation.closeNativeColorPanels()
+        switch personalization.saveAppearanceChanges() {
+        case .saved:
+            NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+        case .unchanged, .conflict, .failed:
+            break
+        }
+    }
+
+    private func discardAppearanceDraft() {
+        presentation.closeNativeColorPanels()
+        personalization.discardAppearanceChanges()
+        personalization.beginAppearanceEditing()
+    }
+
+    private func discardAppearanceAndContinue() {
+        guard let action = pendingAppearanceExit else { return }
+        pendingAppearanceExit = nil
+        personalization.discardAppearanceChanges()
+        performAppearanceExit(action)
+    }
+
+    private func saveAppearanceAndContinue() {
+        guard let action = pendingAppearanceExit else { return }
+        switch personalization.saveAppearanceChanges() {
+        case .saved, .unchanged:
+            pendingAppearanceExit = nil
+            performAppearanceExit(action)
+        case .conflict, .failed:
+            pendingAppearanceExit = nil
         }
     }
 
@@ -3481,6 +3644,47 @@ private struct MovePlanningEditor: View {
         }
     }
 
+}
+
+private struct UnsavedAppearanceEditor: View {
+    @Environment(\.founderTheme) private var theme
+    let accent: Color
+    let onKeepEditing: () -> Void
+    let onDiscard: () -> Void
+    let onSave: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Image(systemName: "paintpalette.fill")
+                .font(theme.symbolFont(size: 19, weight: .semibold))
+                .foregroundStyle(accent)
+
+            Text("Save your appearance?")
+                .font(theme.displayFont(.secondary))
+                .foregroundStyle(Color.white.opacity(0.96))
+
+            Text("Your preview is only on this Mac until you save it.")
+                .font(theme.interfaceFont(.tertiary, weight: .medium))
+                .foregroundStyle(Color.white.opacity(0.74))
+
+            HStack(spacing: 8) {
+                Button("Keep Editing", action: onKeepEditing)
+                    .buttonStyle(HeaderActionButtonStyle())
+                    .keyboardShortcut(.cancelAction)
+                Spacer()
+                Button("Discard", action: onDiscard)
+                    .buttonStyle(HeaderActionButtonStyle())
+                Button("Save Changes", action: onSave)
+                    .buttonStyle(HeaderActionButtonStyle(isEmphasized: true))
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .frame(width: 360)
+        .preferredColorScheme(.dark)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Unsaved appearance changes")
+        .accessibilityAddTraits(.isModal)
+    }
 }
 
 private struct CodexRunFooter: View {

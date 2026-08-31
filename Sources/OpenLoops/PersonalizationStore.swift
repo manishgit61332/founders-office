@@ -19,6 +19,7 @@ extension AccentPalette {
 @MainActor
 final class PersonalizationStore: ObservableObject {
     @Published private(set) var document: PersonalizationDocument
+    @Published private(set) var appearanceDraftSession: AppearanceDraftSession?
     @Published private(set) var message = "Saved locally"
     @Published private(set) var recoveryState: WorkspaceRecoveryState = .ready
 
@@ -28,7 +29,6 @@ final class PersonalizationStore: ObservableObject {
 
     private var previewPhotoURL: URL?
     private var watcher: Timer?
-    private var pendingAppearanceSave: Task<Void, Never>?
     private var lastKnownModificationDate: Date?
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
@@ -45,6 +45,7 @@ final class PersonalizationStore: ObservableObject {
         decoder.dateDecodingStrategy = .iso8601
 
         document = Self.defaultDocument
+        appearanceDraftSession = nil
         load()
         #if !FOUNDER_OFFICE_DISTRIBUTION
         applyPreviewOverrides()
@@ -55,14 +56,18 @@ final class PersonalizationStore: ObservableObject {
     func stop() {
         watcher?.invalidate()
         watcher = nil
-        pendingAppearanceSave?.cancel()
-        pendingAppearanceSave = nil
+        appearanceDraftSession = nil
     }
 
     var preferredName: String { document.resolvedPreferredName ?? "" }
     var workspaceName: String { document.resolvedWorkspaceName }
     var accent: AccentPalette { document.accent }
-    var appearance: AppearancePreferences { document.resolvedAppearance }
+    var appearance: AppearancePreferences {
+        appearanceDraftSession?.draft ?? document.resolvedAppearance
+    }
+    var hasUnsavedAppearanceChanges: Bool { appearanceDraftSession?.isDirty == true }
+    var hasAppearanceConflict: Bool { appearanceDraftSession?.hasConflict == true }
+    var appearanceSaveError: String? { appearanceDraftSession?.saveError }
     var accentColor: Color { appearance.accent.primaryColor.swiftUIColor }
     var secondaryAccentColor: Color { appearance.accent.secondaryColor.swiftUIColor }
     var accentHex: String { appearance.accent.primaryColor.hex }
@@ -113,31 +118,31 @@ final class PersonalizationStore: ObservableObject {
 
     func updateAccent(_ accent: AccentPalette) {
         guard canEdit else { return }
-        document.accent = accent
-        var updatedAppearance = appearance
-        updatedAppearance.presetID = .custom
-        updatedAppearance.accent = AccentStyle(
-            mode: .solid,
-            stops: [AccentStop(color: accent.rgb24, location: 0)],
-            angleDegrees: updatedAppearance.accent.angleDegrees
-        )
-        updatedAppearance.updatedAt = .now
-        document.appearance = updatedAppearance
-        persist()
+        updateAppearance { appearance in
+            appearance.accent = AccentStyle(
+                mode: .solid,
+                stops: [AccentStop(color: accent.rgb24, location: 0)],
+                angleDegrees: appearance.accent.angleDegrees
+            )
+        }
     }
 
     func applyPreset(_ preset: AppearancePresetID) {
         guard canEdit else { return }
         guard preset != .custom else { return }
-        let updatedAppearance = AppearancePreferences.preset(preset)
-        document.appearance = updatedAppearance
-        document.accent = Self.nearestLegacyAccent(to: updatedAppearance.accent.primaryColor)
-        persist()
+        ensureAppearanceDraftSession()
+        guard var session = appearanceDraftSession else { return }
+        session.update { appearance in
+            let revision = appearance.updatedAt
+            appearance = AppearancePreferences.preset(preset)
+            appearance.updatedAt = revision
+        }
+        appearanceDraftSession = session
     }
 
     func updateAccentMode(_ mode: AccentMode) {
         guard canEdit else { return }
-        updateAppearance(debounced: true) { appearance in
+        updateAppearance { appearance in
             var stops = appearance.accent.normalizedStops
             if mode == .gradient, stops.count == 1 {
                 stops.append(
@@ -157,7 +162,7 @@ final class PersonalizationStore: ObservableObject {
 
     func updateAccentColor(_ color: RGB24Color, stopIndex: Int) {
         guard canEdit else { return }
-        updateAppearance(debounced: true) { appearance in
+        updateAppearance { appearance in
             var stops = appearance.accent.normalizedStops
             while stops.count <= stopIndex {
                 stops.append(AccentStop(color: color, location: stops.isEmpty ? 0 : 1))
@@ -173,7 +178,7 @@ final class PersonalizationStore: ObservableObject {
 
     func updateAccentAngle(_ angle: Double) {
         guard canEdit else { return }
-        updateAppearance(debounced: true) { appearance in
+        updateAppearance { appearance in
             appearance.accent.angleDegrees = angle
         }
     }
@@ -198,11 +203,69 @@ final class PersonalizationStore: ObservableObject {
         updateAppearance { $0.surfaceStyleID = style }
     }
 
-    func flushPendingChanges() {
-        guard pendingAppearanceSave != nil else { return }
-        pendingAppearanceSave?.cancel()
-        pendingAppearanceSave = nil
-        persist()
+    func beginAppearanceEditing() {
+        ensureAppearanceDraftSession()
+    }
+
+    func discardAppearanceChanges() {
+        appearanceDraftSession = nil
+    }
+
+    func useLatestAppearance() {
+        guard var session = appearanceDraftSession else { return }
+        session.useLatest(document.resolvedAppearance)
+        appearanceDraftSession = session
+    }
+
+    @discardableResult
+    func keepMineAppearance() -> AppearanceSaveResult {
+        saveAppearanceChanges(overwritingConflict: true)
+    }
+
+    @discardableResult
+    func saveAppearanceChanges(overwritingConflict: Bool = false) -> AppearanceSaveResult {
+        guard var session = appearanceDraftSession, session.isDirty else {
+            return .unchanged
+        }
+        guard canEdit else {
+            let failure = recoveryState.message
+            session.markFailed(failure)
+            appearanceDraftSession = session
+            return .failed(failure)
+        }
+        guard overwritingConflict || !session.hasConflict else {
+            return .conflict
+        }
+        if overwritingConflict {
+            session.resolveConflictKeepingDraft()
+        }
+
+        let now = Date()
+        var committedAppearance = session.draft
+        committedAppearance.updatedAt = now
+
+        var candidate = document
+        candidate.schemaVersion = max(candidate.schemaVersion, 6)
+        candidate.appearance = committedAppearance
+        candidate.accent = Self.nearestLegacyAccent(to: committedAppearance.accent.primaryColor)
+        candidate.updatedAt = now
+
+        do {
+            try write(candidate)
+            document = candidate
+            lastKnownModificationDate = fileModificationDate()
+            session.markSaved(committedAppearance)
+            appearanceDraftSession = session
+            message = "Saved locally"
+            return .saved
+        } catch {
+            let failure = "Couldn’t save changes"
+            session.markFailed(failure)
+            appearanceDraftSession = session
+            message = "Save failed"
+            AppDiagnostics.failure(.personalizationSave, category: .storage, error: error)
+            return .failed(failure)
+        }
     }
 
     func updateIconStyle(_ style: IconStyle) {
@@ -347,7 +410,12 @@ final class PersonalizationStore: ObservableObject {
         }
 
         do {
-            document = try decoder.decode(PersonalizationDocument.self, from: data)
+            let loadedDocument = try decoder.decode(PersonalizationDocument.self, from: data)
+            document = loadedDocument
+            if var session = appearanceDraftSession {
+                session.observeCommitted(loadedDocument.resolvedAppearance)
+                appearanceDraftSession = session
+            }
         } catch {
             let preservedCopyName = (try? CorruptFileQuarantine.preserve(documentURL))?.lastPathComponent
             requireRecovery(preservedCopyName: preservedCopyName, error: error)
@@ -372,43 +440,30 @@ final class PersonalizationStore: ObservableObject {
     private func writeCanonicalDocument() throws {
         document.schemaVersion = max(document.schemaVersion, 6)
         document.updatedAt = Date()
-        try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
-        let data = try encoder.encode(document)
-        try data.write(to: documentURL, options: .atomic)
+        try write(document)
         lastKnownModificationDate = fileModificationDate()
         message = "Saved locally"
     }
 
-    private func updateAppearance(
-        debounced: Bool = false,
-        _ update: (inout AppearancePreferences) -> Void
-    ) {
-        var updatedAppearance = appearance
-        update(&updatedAppearance)
-        updatedAppearance.presetID = .custom
-        updatedAppearance.updatedAt = .now
-        document.appearance = updatedAppearance
-        document.accent = Self.nearestLegacyAccent(to: updatedAppearance.accent.primaryColor)
-
-        if debounced {
-            persistAppearanceAfterDelay()
-        } else {
-            pendingAppearanceSave?.cancel()
-            pendingAppearanceSave = nil
-            persist()
-        }
+    private func write(_ candidate: PersonalizationDocument) throws {
+        try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        let data = try encoder.encode(candidate)
+        try data.write(to: documentURL, options: .atomic)
     }
 
-    private func persistAppearanceAfterDelay() {
-        pendingAppearanceSave?.cancel()
-        pendingAppearanceSave = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(180))
-            guard !Task.isCancelled else { return }
-            await MainActor.run {
-                self?.persist()
-                self?.pendingAppearanceSave = nil
-            }
+    private func updateAppearance(_ update: (inout AppearancePreferences) -> Void) {
+        ensureAppearanceDraftSession()
+        guard var session = appearanceDraftSession else { return }
+        session.update { appearance in
+            update(&appearance)
+            appearance.presetID = .custom
         }
+        appearanceDraftSession = session
+    }
+
+    private func ensureAppearanceDraftSession() {
+        guard appearanceDraftSession == nil else { return }
+        appearanceDraftSession = AppearanceDraftSession(committed: document.resolvedAppearance)
     }
 
     private func startWatching() {

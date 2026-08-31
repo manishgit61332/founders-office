@@ -12,3 +12,4 @@ Each ADR records status, date, context, decision, consequences, privacy/security
 - [0007 — Separate product identity from connector authorization](0007-primary-auth-and-connector-authorization.md)
 - [0008 — Accessible accent fills and a three-role type hierarchy](0008-accessible-accent-and-type-hierarchy.md)
 - [0009 — Priority recategorization and a unified calendar agenda](0009-priority-recategorization-and-calendar-agenda.md)
+- [0010 — Transactional appearance drafts and owned transient presentation](0010-transactional-appearance-and-transients.md)
