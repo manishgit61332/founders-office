@@ -139,6 +139,7 @@ private struct PrimaryGoalCard: View {
 
 struct TaskRow: View {
     @EnvironmentObject private var model: AppModel
+    @Environment(\.calendar) private var calendar
 
     let loop: OpenLoop
     var showsStatus = false
@@ -177,13 +178,13 @@ struct TaskRow: View {
                 .foregroundStyle(Color(uiColor: UIColor.secondaryLabel))
             } else if let dueAt = loop.dueAt {
                 Label {
-                    Text(dueAt, style: .relative)
+                    Text(deadlineLabel(for: dueAt))
                 } icon: {
                     Image(systemName: "calendar")
                 }
                 .font(appearance.interfaceFont(size: 14, weight: .medium))
                 .foregroundStyle(
-                    dueAt < .now && loop.status != .done
+                    isOverdue(dueAt) && loop.status != .done
                         ? Color.red
                         : Color(uiColor: UIColor.secondaryLabel)
                 )
@@ -201,5 +202,19 @@ struct TaskRow: View {
         .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
         .listRowBackground(Color.clear)
         .listRowSeparator(.hidden)
+    }
+
+    private func deadlineLabel(for storedDate: Date) -> String {
+        let dueDay = PlanningDate.day(fromStored: storedDate)
+        if dueDay == PlanningDate.day(fromLocal: Date(), calendar: calendar) {
+            return "Due today"
+        }
+        let localDate = PlanningDate.localDate(fromStored: storedDate, calendar: calendar)
+        return "Due \(localDate.formatted(date: .abbreviated, time: .omitted))"
+    }
+
+    private func isOverdue(_ storedDate: Date) -> Bool {
+        PlanningDate.day(fromStored: storedDate)
+            < PlanningDate.day(fromLocal: Date(), calendar: calendar)
     }
 }

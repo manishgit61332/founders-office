@@ -51,6 +51,7 @@ public struct MovePresentation: Hashable, Sendable {
         let activeItems = visibleItems.filter { $0.status != .done }
         let completedItems = visibleItems.filter { $0.status == .done }
         let boundaries = Self.calendarBoundaries(now: now, calendar: calendar)
+        let currentPlanningDay = PlanningDate.day(fromLocal: now, calendar: calendar)
 
         var groupedActive = Dictionary(
             uniqueKeysWithValues: ActiveDeadlineBucket.allCases.map { ($0, [OpenLoop]()) }
@@ -59,8 +60,7 @@ public struct MovePresentation: Hashable, Sendable {
         for item in activeItems {
             let bucket = Self.deadlineBucket(
                 for: item.dueAt,
-                startOfToday: boundaries.startOfToday,
-                startOfTomorrow: boundaries.startOfTomorrow
+                currentPlanningDay: currentPlanningDay
             )
             groupedActive[bucket, default: []].append(item)
         }
@@ -97,7 +97,6 @@ public struct MovePresentation: Hashable, Sendable {
 
     private struct CalendarBoundaries {
         var startOfYesterday: Date
-        var startOfToday: Date
         var startOfTomorrow: Date
     }
 
@@ -109,19 +108,18 @@ public struct MovePresentation: Hashable, Sendable {
             ?? startOfToday.addingTimeInterval(86_400)
         return CalendarBoundaries(
             startOfYesterday: startOfYesterday,
-            startOfToday: startOfToday,
             startOfTomorrow: startOfTomorrow
         )
     }
 
     private static func deadlineBucket(
         for dueAt: Date?,
-        startOfToday: Date,
-        startOfTomorrow: Date
+        currentPlanningDay: PlanningDay
     ) -> ActiveDeadlineBucket {
         guard let dueAt else { return .noDeadline }
-        if dueAt < startOfToday { return .overdue }
-        if dueAt < startOfTomorrow { return .today }
+        let dueDay = PlanningDate.day(fromStored: dueAt)
+        if dueDay < currentPlanningDay { return .overdue }
+        if dueDay == currentPlanningDay { return .today }
         return .upcoming
     }
 

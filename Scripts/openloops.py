@@ -32,7 +32,18 @@ def now_iso() -> str:
 
 def load_document() -> dict:
     with JSON_PATH.open(encoding="utf-8") as handle:
-        return json.load(handle)
+        document = json.load(handle)
+    upgrade_planning_schema(document)
+    return document
+
+
+def upgrade_planning_schema(document: dict) -> None:
+    if document.get("schemaVersion", 1) >= 3:
+        return
+    for item in document.get("items", []):
+        item.setdefault("priorityUpdatedAt", item["updatedAt"])
+        item.setdefault("dueAtUpdatedAt", item["updatedAt"])
+    document["schemaVersion"] = 3
 
 
 def find_item(document: dict, query: str, *, include_deleted: bool = False) -> dict:
@@ -55,7 +66,8 @@ def find_item(document: dict, query: str, *, include_deleted: bool = False) -> d
 
 
 def save_document(document: dict) -> None:
-    document["schemaVersion"] = max(document.get("schemaVersion", 1), 2)
+    upgrade_planning_schema(document)
+    document["schemaVersion"] = max(document.get("schemaVersion", 1), 3)
     document["updatedAt"] = now_iso()
     JSON_PATH.parent.mkdir(parents=True, exist_ok=True)
     file_descriptor, temporary_name = tempfile.mkstemp(prefix="openloops-", suffix=".json", dir=JSON_PATH.parent)
@@ -154,10 +166,12 @@ def command_add(document: dict, args: argparse.Namespace) -> None:
             "id": str(uuid.uuid4()).upper(),
             "previousStatus": None,
             "priority": args.priority,
+            "priorityUpdatedAt": timestamp,
             "source": "codex-cli",
             "status": args.status,
             "title": args.title.strip(),
             "updatedAt": timestamp,
+            "dueAtUpdatedAt": timestamp,
         }
     )
     save_document(document)
@@ -188,6 +202,35 @@ def command_move(document: dict, args: argparse.Namespace) -> None:
         item["completedAt"] = None
     save_document(document)
     print(f"Moved to {STATUS_TITLES[args.status]}: {item['title']}")
+
+
+def command_edit(document: dict, args: argparse.Namespace) -> None:
+    item = find_item(document, args.query)
+    if args.priority is None and args.due is None and not args.clear_due:
+        raise SystemExit("Choose --priority, --due, or --clear-due.")
+
+    next_priority = args.priority or item["priority"]
+    if args.clear_due:
+        next_due = None
+    elif args.due is not None:
+        next_due = parse_due(args.due)
+    else:
+        next_due = item.get("dueAt")
+
+    if next_priority == item["priority"] and next_due == item.get("dueAt"):
+        print(f"No planning changes: {item['title']}")
+        return
+
+    timestamp = now_iso()
+    if next_priority != item["priority"]:
+        item["priority"] = next_priority
+        item["priorityUpdatedAt"] = timestamp
+    if next_due != item.get("dueAt"):
+        item["dueAt"] = next_due
+        item["dueAtUpdatedAt"] = timestamp
+    item["updatedAt"] = timestamp
+    save_document(document)
+    print(f"Updated planning: {item['title']}")
 
 
 def command_delete(document: dict, args: argparse.Namespace) -> None:
@@ -236,6 +279,14 @@ def build_parser() -> argparse.ArgumentParser:
     move_parser.add_argument("query")
     move_parser.add_argument("status", choices=STATUSES)
     move_parser.set_defaults(handler=command_move)
+
+    edit_parser = subparsers.add_parser("edit", help="Edit a move's priority or deadline")
+    edit_parser.add_argument("query")
+    edit_parser.add_argument("--priority", choices=PRIORITIES)
+    due_group = edit_parser.add_mutually_exclusive_group()
+    due_group.add_argument("--due", help="Due date in YYYY-MM-DD")
+    due_group.add_argument("--clear-due", action="store_true", help="Remove the deadline")
+    edit_parser.set_defaults(handler=command_edit)
 
     delete_parser = subparsers.add_parser("delete", help="Remove a loop from the board without erasing its history")
     delete_parser.add_argument("query")

@@ -2,6 +2,23 @@ import AppKit
 import Foundation
 import FounderOfficeCore
 
+enum PlanningPriorityChange {
+    case unchanged
+    case set(LoopPriority)
+}
+
+enum PlanningDeadlineChange {
+    case unchanged
+    case set(Date)
+    case clear
+}
+
+enum PlanningUpdateResult {
+    case saved
+    case unchanged
+    case failed(String)
+}
+
 @MainActor
 final class OpenLoopStore: ObservableObject {
     @Published private(set) var items: [OpenLoop] = []
@@ -70,6 +87,65 @@ final class OpenLoopStore: ObservableObject {
         persist()
     }
 
+    func updatePlanning(
+        id: UUID,
+        priorityChange: PlanningPriorityChange,
+        deadlineChange: PlanningDeadlineChange
+    ) -> PlanningUpdateResult {
+        // Pull in a CLI or cloud write that may have landed since the watcher
+        // last fired, then apply only the fields this editor actually changed.
+        loadFromDisk(force: true)
+        guard canEdit else {
+            return .failed(recoveryState.message)
+        }
+        guard let index = items.firstIndex(where: { $0.id == id && $0.deletedAt == nil }) else {
+            return .failed("This task is no longer available.")
+        }
+
+        let current = items[index]
+        let resolvedPriority: LoopPriority
+        switch priorityChange {
+        case .unchanged:
+            resolvedPriority = current.priority
+        case let .set(priority):
+            resolvedPriority = priority
+        }
+
+        let currentPlanningDay = current.dueAt.map(PlanningDate.day(fromStored:))
+        let resolvedDueAt: Date?
+        switch deadlineChange {
+        case .unchanged:
+            resolvedDueAt = current.dueAt
+        case let .set(date):
+            let selectedDay = PlanningDate.day(fromLocal: date)
+            // Preserve a legacy time component when the calendar day did not change.
+            // Deadlines are all-day values, so a priority-only edit must not rewrite one.
+            resolvedDueAt = currentPlanningDay == selectedDay
+                ? current.dueAt
+                : PlanningDate.storedDate(for: selectedDay)
+        case .clear:
+            resolvedDueAt = nil
+        }
+
+        guard current.priority != resolvedPriority || current.dueAt != resolvedDueAt else {
+            return .unchanged
+        }
+
+        let updated = OpenLoopRules.updatedPlanning(
+            current,
+            priority: resolvedPriority,
+            dueAt: resolvedDueAt,
+            at: Date()
+        )
+
+        items[index] = updated
+        guard persist() else {
+            items[index] = current
+            return .failed("Couldn’t save those changes. Check the workspace and try again.")
+        }
+        return .saved
+    }
+
     func add(title: String, details: String = "", status: LoopStatus, priority: LoopPriority, dueAt: Date?) {
         guard canEdit else { return }
         let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -89,7 +165,9 @@ final class OpenLoopStore: ObservableObject {
                 updatedAt: now,
                 completedAt: nil,
                 deletedAt: nil,
-                source: "notch-widget"
+                source: "notch-widget",
+                priorityUpdatedAt: now,
+                dueAtUpdatedAt: now
             )
         )
         persist()
@@ -149,14 +227,15 @@ final class OpenLoopStore: ObservableObject {
                 return
             }
 
-            let document: OpenLoopsDocument
+            let decodedDocument: OpenLoopsDocument
             do {
-                document = try decoder.decode(OpenLoopsDocument.self, from: data)
+                decodedDocument = try decoder.decode(OpenLoopsDocument.self, from: data)
             } catch {
                 let preservedCopyName = (try? CorruptFileQuarantine.preserve(jsonURL))?.lastPathComponent
                 requireRecovery(preservedCopyName: preservedCopyName, error: error)
                 return
             }
+            let document = OpenLoopsMigration.upgradingPlanningSchema(decodedDocument)
 
             items = document.items
             lastSavedAt = document.updatedAt
@@ -183,23 +262,33 @@ final class OpenLoopStore: ObservableObject {
     }
     #endif
 
-    private func persist() {
-        guard canEdit else { return }
+    @discardableResult
+    private func persist() -> Bool {
+        guard canEdit else { return false }
         let now = Date()
-        let document = OpenLoopsDocument(schemaVersion: 2, updatedAt: now, items: items)
+        let document = OpenLoopsDocument(schemaVersion: 3, updatedAt: now, items: items)
 
         do {
             try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
             let data = try encoder.encode(document)
             try data.write(to: jsonURL, options: .atomic)
-            try writeContext(updatedAt: now)
             lastSavedAt = now
             lastKnownModificationDate = fileModificationDate()
             syncMessage = "Saved"
         } catch {
             syncMessage = "Save failed"
             AppDiagnostics.failure(.moveStoreSave, category: .storage, error: error)
+            return false
         }
+
+        // The JSON document is canonical. A derived Markdown refresh must never
+        // turn a successful task save into an apparent failure.
+        do {
+            try writeContext(updatedAt: now)
+        } catch {
+            AppDiagnostics.failure(.moveStoreSave, category: .storage, error: error)
+        }
+        return true
     }
 
     private func startWatching() {
@@ -266,7 +355,8 @@ final class OpenLoopStore: ObservableObject {
                     let dueFormatter = DateFormatter()
                     dueFormatter.locale = Locale(identifier: "en_GB")
                     dueFormatter.dateFormat = "d MMM yyyy"
-                    markdown += " · Due \(dueFormatter.string(from: dueAt))"
+                    let displayDate = PlanningDate.localDate(fromStored: dueAt)
+                    markdown += " · Due \(dueFormatter.string(from: displayDate))"
                 }
                 markdown += "\n"
                 if !item.details.isEmpty {

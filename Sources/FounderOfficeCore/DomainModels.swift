@@ -26,6 +26,15 @@ public enum LoopPriority: String, Codable, CaseIterable, Identifiable, Sendable 
 
     public var id: String { rawValue }
 
+    public var title: String {
+        switch self {
+        case .p0: return "Critical"
+        case .p1: return "High"
+        case .p2: return "Normal"
+        case .p3: return "Low"
+        }
+    }
+
     public var rank: Int {
         switch self {
         case .p0: return 0
@@ -46,6 +55,10 @@ public struct OpenLoop: Codable, Identifiable, Hashable, Sendable {
     public var dueAt: Date?
     public var createdAt: Date
     public var updatedAt: Date
+    /// Field-level clocks let offline devices merge a priority edit and a
+    /// deadline edit without making either whole task overwrite the other.
+    public var priorityUpdatedAt: Date?
+    public var dueAtUpdatedAt: Date?
     public var completedAt: Date?
     public var deletedAt: Date?
     public var source: String
@@ -62,7 +75,9 @@ public struct OpenLoop: Codable, Identifiable, Hashable, Sendable {
         updatedAt: Date,
         completedAt: Date?,
         deletedAt: Date?,
-        source: String
+        source: String,
+        priorityUpdatedAt: Date? = nil,
+        dueAtUpdatedAt: Date? = nil
     ) {
         self.id = id
         self.title = title
@@ -73,6 +88,8 @@ public struct OpenLoop: Codable, Identifiable, Hashable, Sendable {
         self.dueAt = dueAt
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+        self.priorityUpdatedAt = priorityUpdatedAt
+        self.dueAtUpdatedAt = dueAtUpdatedAt
         self.completedAt = completedAt
         self.deletedAt = deletedAt
         self.source = source

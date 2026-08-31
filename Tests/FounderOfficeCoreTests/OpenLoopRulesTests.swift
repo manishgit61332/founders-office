@@ -60,6 +60,70 @@ struct OpenLoopRulesTests {
     }
 
     @Test
+    func testUpdatingPlanningChangesOnlyPriorityDeadlineAndFreshness() {
+        let original = TestFixtures.loop(
+            status: .doing,
+            priority: .p2,
+            dueAt: TestFixtures.date(10),
+            updatedAt: TestFixtures.date(5)
+        )
+        let newDeadline = TestFixtures.date(40)
+
+        let updated = OpenLoopRules.updatedPlanning(
+            original,
+            priority: .p0,
+            dueAt: newDeadline,
+            at: TestFixtures.date(30)
+        )
+
+        #expect(updated.priority == .p0)
+        #expect(updated.dueAt == newDeadline)
+        #expect(updated.updatedAt == TestFixtures.date(30))
+        #expect(updated.priorityUpdatedAt == TestFixtures.date(30))
+        #expect(updated.dueAtUpdatedAt == TestFixtures.date(30))
+        #expect(updated.status == original.status)
+        #expect(updated.completedAt == original.completedAt)
+        #expect(updated.deletedAt == original.deletedAt)
+        #expect(updated.title == original.title)
+    }
+
+    @Test
+    func testUpdatingPlanningCanRemoveADeadline() {
+        let original = TestFixtures.loop(dueAt: TestFixtures.date(10))
+
+        let updated = OpenLoopRules.updatedPlanning(
+            original,
+            priority: original.priority,
+            dueAt: nil,
+            at: TestFixtures.date(30)
+        )
+
+        #expect(updated.dueAt == nil)
+        #expect(updated.updatedAt == TestFixtures.date(30))
+        #expect(updated.priorityUpdatedAt == nil)
+        #expect(updated.dueAtUpdatedAt == TestFixtures.date(30))
+    }
+
+    @Test
+    func testUpdatingPlanningWithIdenticalValuesIsANoOp() {
+        let original = TestFixtures.loop(
+            priority: .p1,
+            dueAt: TestFixtures.date(10),
+            updatedAt: TestFixtures.date(5)
+        )
+
+        let updated = OpenLoopRules.updatedPlanning(
+            original,
+            priority: original.priority,
+            dueAt: original.dueAt,
+            at: TestFixtures.date(30)
+        )
+
+        #expect(updated == original)
+        #expect(updated.updatedAt == TestFixtures.date(5))
+    }
+
+    @Test
     func testSoftDeleteAndRestoreOnlyChangeTombstoneMetadata() {
         let original = TestFixtures.loop(status: .doing)
 

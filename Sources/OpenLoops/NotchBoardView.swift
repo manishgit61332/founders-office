@@ -186,6 +186,15 @@ struct NotchBoardView: View {
     @State private var isFinishDatePickerPresented = false
     @State private var finishDateInteractionLease: UUID?
     @State private var photoInteractionLease: UUID?
+    @State private var planningItemID: UUID?
+    @State private var planningTitle = ""
+    @State private var planningPriority: LoopPriority = .p1
+    @State private var planningInitialPriority: LoopPriority = .p1
+    @State private var planningHasDeadline = false
+    @State private var planningDeadline = Calendar.current.startOfDay(for: Date())
+    @State private var planningInitialDueAt: Date?
+    @State private var planningErrorMessage: String?
+    @State private var planningInteractionLease: UUID?
     @State private var newTitle = ""
     @State private var newPriority: LoopPriority = .p1
     @State private var newStatus: LoopStatus = .doing
@@ -285,9 +294,17 @@ struct NotchBoardView: View {
         .onAppear {
             loadIdentityEditor()
             loadPrimaryGoalEditor()
+            #if !FOUNDER_OFFICE_DISTRIBUTION
+            if ProcessInfo.processInfo.environment["OPENLOOPS_PREVIEW_PLANNING_EDITOR"] == "1",
+               let previewItem = store.items(in: selectedStatus).first {
+                presentPlanningEditor(for: previewItem)
+            }
+            #endif
         }
         .onExitCommand {
-            if isFinishDatePickerPresented {
+            if planningItemID != nil {
+                closePlanningEditor()
+            } else if isFinishDatePickerPresented {
                 closeFinishDatePicker()
             } else if isSettingsPresented {
                 dismissSettings()
@@ -295,30 +312,89 @@ struct NotchBoardView: View {
                 onClose()
             }
         }
+        .onChange(of: store.items) { _, updatedItems in
+            guard let planningItemID else { return }
+            guard let currentItem = updatedItems.first(where: {
+                $0.id == planningItemID && $0.deletedAt == nil
+            }) else {
+                closePlanningEditor()
+                return
+            }
+            refreshPlanningEditor(from: currentItem)
+        }
         .onDisappear(perform: releaseTransientInteractions)
     }
 
     private var boardContent: some View {
-        Group {
-            if isEditorialHome {
-                homeContent
-            } else {
-                VStack(spacing: 0) {
-                    header
+        ZStack {
+            Group {
+                if isEditorialHome {
+                    homeContent
+                } else {
+                    VStack(spacing: 0) {
+                        header
 
-                    if isSettingsPresented {
-                        settingsContent
-                    } else {
-                        sectionContent
-                    }
+                        if isSettingsPresented {
+                            settingsContent
+                        } else {
+                            sectionContent
+                        }
 
-                    if showsContextualFooter {
-                        footer
+                        if showsContextualFooter {
+                            footer
+                        }
                     }
                 }
             }
+            .disabled(planningItemID != nil)
+            .accessibilityHidden(planningItemID != nil)
+
+            if planningItemID != nil {
+                Color.black.opacity(0.46)
+                    .contentShape(Rectangle())
+                    .onTapGesture(perform: closePlanningEditor)
+                    .accessibilityHidden(true)
+                    .transition(.opacity)
+
+                MovePlanningEditor(
+                    title: planningTitle,
+                    priority: $planningPriority,
+                    hasDeadline: $planningHasDeadline,
+                    deadline: $planningDeadline,
+                    errorMessage: planningErrorMessage,
+                    canSave: planningHasChanges,
+                    accent: accent,
+                    onCancel: closePlanningEditor,
+                    onSave: savePlanningEditor
+                )
+                .padding(17)
+                .background {
+                    let editorShape = RoundedRectangle(
+                        cornerRadius: max(16, contentRadius),
+                        style: .continuous
+                    )
+                    ZStack {
+                        editorShape.fill(.regularMaterial)
+                        editorShape.fill(
+                            Color(red: 0.018, green: 0.020, blue: 0.026)
+                                .opacity(reduceTransparency ? 0.98 : 0.84)
+                        )
+                        editorShape
+                            .fill(theme.accentGradient)
+                            .opacity(reduceTransparency ? 0 : 0.055)
+                    }
+                }
+                .overlay(
+                    RoundedRectangle(cornerRadius: max(16, contentRadius), style: .continuous)
+                        .stroke(contentBorder, lineWidth: 1)
+                )
+                .shadow(color: Color.black.opacity(0.40), radius: 28, y: 12)
+                .transition(.scale(scale: 0.96).combined(with: .opacity))
+                .zIndex(1)
+            }
         }
         .frame(width: 720, height: 350)
+        .animation(.spring(response: 0.27, dampingFraction: 0.84), value: planningItemID)
     }
 
     private var panelSurface: some View {
@@ -544,18 +620,31 @@ struct NotchBoardView: View {
             .buttonStyle(RowControlButtonStyle())
             .accessibilityLabel("Complete \(item.title)")
 
-            VStack(alignment: .leading, spacing: 5) {
-                Text(item.title)
-                    .font(interfaceFont(size: 15, weight: .bold))
-                    .foregroundStyle(primaryText)
-                    .lineLimit(1)
+            Button {
+                presentPlanningEditor(for: item)
+            } label: {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(item.title)
+                        .font(interfaceFont(size: 15, weight: .bold))
+                        .foregroundStyle(primaryText)
+                        .lineLimit(1)
 
-                if let dueAt = item.dueAt {
-                    Text(homeDueLabel(dueAt))
-                        .font(interfaceFont(size: 11.5, weight: .bold))
-                        .foregroundStyle(dueAt < Calendar.current.startOfDay(for: Date()) ? Color.red.opacity(0.94) : Color.white.opacity(0.92))
+                    if let dueAt = item.dueAt {
+                        Text(homeDueLabel(dueAt))
+                            .font(interfaceFont(size: 11.5, weight: .bold))
+                            .foregroundStyle(
+                                PlanningDate.day(fromStored: dueAt) < PlanningDate.day(fromLocal: Date())
+                                    ? Color.red.opacity(0.94)
+                                    : Color.white.opacity(0.92)
+                            )
+                    }
                 }
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                .contentShape(Rectangle())
             }
+            .buttonStyle(StatusTabButtonStyle())
+            .help("Edit priority and deadline")
+            .accessibilityLabel("Edit \(item.title) priority and deadline")
         }
         .padding(10)
         .frame(maxWidth: .infinity, minHeight: 76, maxHeight: 76, alignment: .topLeading)
@@ -962,6 +1051,7 @@ struct NotchBoardView: View {
                     trailingLabel: showsCompletionDate ? completedLabel(for: item) : nil,
                     onToggle: { store.toggleCompletion(item) },
                     onMove: { status in store.move(item, to: status) },
+                    onEditPlanning: { presentPlanningEditor(for: item) },
                     codexAction: codexRunner.action(for: item),
                     isCodexAvailable: codexRunner.isAvailable,
                     isCodexBusy: codexRunner.isRunning,
@@ -1792,7 +1882,103 @@ struct NotchBoardView: View {
         }
     }
 
+    private func presentPlanningEditor(for item: OpenLoop) {
+        guard item.deletedAt == nil else { return }
+        if planningInteractionLease == nil {
+            planningInteractionLease = presentation.beginInteraction("move-planning")
+        }
+
+        planningItemID = item.id
+        planningTitle = item.title
+        planningPriority = item.priority
+        planningInitialPriority = item.priority
+        planningHasDeadline = item.dueAt != nil
+        planningDeadline = item.dueAt.map { PlanningDate.localDate(fromStored: $0) }
+            ?? Date()
+        planningInitialDueAt = item.dueAt
+        planningErrorMessage = nil
+    }
+
+    private func refreshPlanningEditor(from item: OpenLoop) {
+        planningTitle = item.title
+
+        if planningPriority == planningInitialPriority {
+            planningPriority = item.priority
+            planningInitialPriority = item.priority
+        }
+
+        if planningDraftDueDay == planningInitialDueDay {
+            let currentDueAt = item.dueAt
+            planningInitialDueAt = currentDueAt
+            planningHasDeadline = currentDueAt != nil
+            if let currentDueAt {
+                planningDeadline = PlanningDate.localDate(fromStored: currentDueAt)
+            }
+        }
+    }
+
+    private func savePlanningEditor() {
+        guard let planningItemID else {
+            closePlanningEditor()
+            return
+        }
+
+        let priorityChange: PlanningPriorityChange = planningPriority == planningInitialPriority
+            ? .unchanged
+            : .set(planningPriority)
+        let deadlineChange: PlanningDeadlineChange
+        if planningDraftDueDay == planningInitialDueDay {
+            deadlineChange = .unchanged
+        } else if planningHasDeadline {
+            deadlineChange = .set(planningDeadline)
+        } else {
+            deadlineChange = .clear
+        }
+
+        switch store.updatePlanning(
+            id: planningItemID,
+            priorityChange: priorityChange,
+            deadlineChange: deadlineChange
+        ) {
+        case .saved:
+            NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+            closePlanningEditor()
+        case .unchanged:
+            closePlanningEditor()
+        case let .failed(message):
+            planningErrorMessage = message
+        }
+    }
+
+    private func closePlanningEditor() {
+        planningItemID = nil
+        planningTitle = ""
+        planningInitialDueAt = nil
+        planningErrorMessage = nil
+        releasePlanningInteraction()
+    }
+
+    private var planningDraftDueDay: PlanningDay? {
+        planningHasDeadline ? PlanningDate.day(fromLocal: planningDeadline) : nil
+    }
+
+    private var planningInitialDueDay: PlanningDay? {
+        planningInitialDueAt.map(PlanningDate.day(fromStored:))
+    }
+
+    private var planningHasChanges: Bool {
+        planningPriority != planningInitialPriority
+            || planningDraftDueDay != planningInitialDueDay
+    }
+
+    private func releasePlanningInteraction() {
+        guard let lease = planningInteractionLease else { return }
+        presentation.endInteraction(lease)
+        planningInteractionLease = nil
+    }
+
     private func releaseTransientInteractions() {
+        closePlanningEditor()
         releaseFinishDateInteraction()
         if let lease = photoInteractionLease {
             presentation.endInteraction(lease)
@@ -1889,7 +2075,12 @@ struct NotchBoardView: View {
             .filter { $0.deletedAt == nil && $0.status != .done && $0.dueAt != nil }
             .compactMap { item -> DeadlineSignal? in
                 guard let dueAt = item.dueAt else { return nil }
-                return DeadlineSignal(id: "task-\(item.id.uuidString)", title: item.title, dueAt: dueAt, source: "Move")
+                return DeadlineSignal(
+                    id: "task-\(item.id.uuidString)",
+                    title: item.title,
+                    dueAt: PlanningDate.localDate(fromStored: dueAt),
+                    source: "Move"
+                )
             }
 
         return (primary + custom + taskDeadlines)
@@ -1914,6 +2105,7 @@ struct NotchBoardView: View {
     }
 
     private func presentSettings() {
+        closePlanningEditor()
         loadIdentityEditor()
         loadPrimaryGoalEditor()
         calendarProvider.syncOnOpen()
@@ -1924,6 +2116,7 @@ struct NotchBoardView: View {
     }
 
     private func dismissSettings() {
+        closePlanningEditor()
         closeFinishDatePicker()
         saveIdentity()
         withAnimation(.spring(response: 0.30, dampingFraction: 0.84)) {
@@ -1933,6 +2126,7 @@ struct NotchBoardView: View {
 
     private func select(_ section: BoardSection) {
         guard section != selectedSection || isSettingsPresented else { return }
+        closePlanningEditor()
         if isSettingsPresented {
             closeFinishDatePicker()
             saveIdentity()
@@ -2027,6 +2221,7 @@ struct NotchBoardView: View {
 
     private func select(_ status: LoopStatus) {
         guard status != selectedStatus else { return }
+        closePlanningEditor()
         NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
         withAnimation(.spring(response: 0.30, dampingFraction: 0.78, blendDuration: 0.08)) {
             selectedStatus = status
@@ -2043,6 +2238,9 @@ struct NotchBoardView: View {
     }
 
     private func deleteMove(_ item: OpenLoop) {
+        if planningItemID == item.id {
+            closePlanningEditor()
+        }
         NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .now)
         withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
             store.delete(item)
@@ -2075,11 +2273,12 @@ struct NotchBoardView: View {
     }
 
     private func homeDueLabel(_ date: Date) -> String {
-        if Calendar.current.isDateInToday(date) { return "Due today" }
+        let dueDay = PlanningDate.day(fromStored: date)
+        if dueDay == PlanningDate.day(fromLocal: Date()) { return "Due today" }
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_GB")
         formatter.dateFormat = "'Due' d MMM"
-        return formatter.string(from: date)
+        return formatter.string(from: PlanningDate.localDate(fromStored: date))
     }
 
     private func primaryGoalTargetLabel(_ goal: PrimaryGoal, target: Double) -> String {
@@ -2206,6 +2405,7 @@ private struct LoopRow: View {
     let trailingLabel: String?
     let onToggle: () -> Void
     let onMove: (LoopStatus) -> Void
+    let onEditPlanning: () -> Void
     let codexAction: CodexTaskAction
     let isCodexAvailable: Bool
     let isCodexBusy: Bool
@@ -2229,40 +2429,71 @@ private struct LoopRow: View {
             .buttonStyle(RowControlButtonStyle())
             .accessibilityLabel(item.status == .done ? "Reopen \(item.title)" : "Complete \(item.title)")
 
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 8) {
-                    Text(item.priority.rawValue)
-                        .font(theme.interfaceFont(size: 9, weight: .semibold))
-                        .foregroundStyle(priorityColor)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 3)
-                        .background(priorityColor.opacity(0.12), in: Capsule())
+            Button(action: onEditPlanning) {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 8) {
+                        Text(item.priority.rawValue)
+                            .font(theme.interfaceFont(size: 9, weight: .semibold))
+                            .foregroundStyle(priorityColor)
+                            .padding(.horizontal, 7)
+                            .frame(minHeight: 24)
+                            .background(priorityColor.opacity(isHovered ? 0.19 : 0.12), in: Capsule())
 
-                    Text(item.title)
-                        .font(theme.interfaceFont(size: 13.5, weight: .semibold))
-                        .foregroundStyle(primaryText.opacity(item.status == .done ? 0.55 : 1))
-                        .strikethrough(item.status == .done, color: secondaryText)
-                        .lineLimit(1)
-                }
+                        Text(item.title)
+                            .font(theme.interfaceFont(size: 13.5, weight: .semibold))
+                            .foregroundStyle(primaryText.opacity(item.status == .done ? 0.55 : 1))
+                            .strikethrough(item.status == .done, color: secondaryText)
+                            .lineLimit(1)
 
-                if !item.details.isEmpty {
-                    Text(item.details)
-                        .font(theme.interfaceFont(size: 10.5, weight: .regular))
-                        .foregroundStyle(secondaryText)
-                        .lineLimit(1)
+                        Spacer(minLength: 0)
+                    }
+
+                    if !item.details.isEmpty {
+                        Text(item.details)
+                            .font(theme.interfaceFont(size: 10.5, weight: .regular))
+                            .foregroundStyle(secondaryText)
+                            .lineLimit(1)
+                    }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
             }
-
-            Spacer(minLength: 8)
+            .buttonStyle(StatusTabButtonStyle())
+            .help("Edit priority and deadline")
+            .accessibilityLabel("Edit \(item.title) priority and deadline")
+            .accessibilityValue(planningAccessibilityValue)
 
             if let trailingLabel {
                 Text(trailingLabel)
                     .font(theme.interfaceFont(size: 10, weight: .medium))
                     .foregroundStyle(secondaryText)
-            } else if let dueAt = item.dueAt {
-                Text(dueLabel(dueAt))
-                    .font(theme.interfaceFont(size: 10, weight: .medium))
-                    .foregroundStyle(isOverdue(dueAt) && item.status != .done ? Color.red.opacity(0.9) : secondaryText)
+            } else {
+                Button(action: onEditPlanning) {
+                    HStack(spacing: 4) {
+                        if let dueAt = item.dueAt {
+                            Image(systemName: "calendar")
+                                .font(theme.interfaceFont(size: 10, weight: .semibold))
+                            Text(dueLabel(dueAt))
+                                .font(theme.interfaceFont(size: 10.5, weight: .semibold))
+                        } else {
+                            Image(systemName: "calendar.badge.plus")
+                                .font(theme.interfaceFont(size: 10, weight: .semibold))
+                                .opacity(isHovered ? 1 : 0)
+                        }
+                    }
+                    .foregroundStyle(deadlineColor)
+                    .padding(.horizontal, 7)
+                    .frame(minWidth: 28, minHeight: 28)
+                    .background(isHovered ? Color.white.opacity(0.065) : Color.clear, in: Capsule())
+                    .contentShape(Capsule())
+                }
+                .buttonStyle(StatusTabButtonStyle())
+                .help(item.dueAt == nil ? "Add a deadline" : "Edit deadline")
+                .accessibilityLabel(
+                    item.dueAt == nil
+                        ? "Add a deadline to \(item.title)"
+                        : "Edit \(item.title) deadline"
+                )
             }
 
             Menu {
@@ -2272,6 +2503,10 @@ private struct LoopRow: View {
 
                     Divider()
                 }
+
+                Button("Edit priority and deadline…", action: onEditPlanning)
+
+                Divider()
 
                 ForEach(LoopStatus.allCases) { status in
                     if status != item.status {
@@ -2293,6 +2528,7 @@ private struct LoopRow: View {
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize()
+            .accessibilityLabel("More actions for \(item.title)")
         }
         .padding(.horizontal, 14)
         .frame(height: 58)
@@ -2315,16 +2551,186 @@ private struct LoopRow: View {
         }
     }
 
+    private var deadlineColor: Color {
+        guard let dueAt = item.dueAt else { return secondaryText.opacity(0.92) }
+        return isOverdue(dueAt) && item.status != .done
+            ? Color.red.opacity(0.92)
+            : secondaryText
+    }
+
+    private var planningAccessibilityValue: String {
+        if let dueAt = item.dueAt {
+            return "\(item.priority.rawValue), due \(dueLabel(dueAt))"
+        }
+        return "\(item.priority.rawValue), no deadline"
+    }
+
     private func dueLabel(_ date: Date) -> String {
+        let dueDay = PlanningDate.day(fromStored: date)
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_GB")
-        formatter.dateFormat = Calendar.current.isDateInToday(date) ? "'Today'" : "d MMM"
-        return formatter.string(from: date)
+        formatter.dateFormat = dueDay == PlanningDate.day(fromLocal: Date()) ? "'Today'" : "d MMM"
+        return formatter.string(from: PlanningDate.localDate(fromStored: date))
     }
 
     private func isOverdue(_ date: Date) -> Bool {
-        date < Calendar.current.startOfDay(for: Date())
+        PlanningDate.day(fromStored: date) < PlanningDate.day(fromLocal: Date())
     }
+}
+
+private struct MovePlanningEditor: View {
+    @Environment(\.founderTheme) private var theme
+    let title: String
+    @Binding var priority: LoopPriority
+    @Binding var hasDeadline: Bool
+    @Binding var deadline: Date
+    let errorMessage: String?
+    let canSave: Bool
+    let accent: Color
+    let onCancel: () -> Void
+    let onSave: () -> Void
+
+    @FocusState private var focusedPriority: LoopPriority?
+
+    private let primaryText = Color.white.opacity(0.96)
+    private let secondaryText = Color.white.opacity(0.70)
+    private let priorityColumns = [
+        GridItem(.flexible(), spacing: 8),
+        GridItem(.flexible(), spacing: 8)
+    ]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Edit Move")
+                    .font(theme.displayFont(size: 23))
+                    .foregroundStyle(primaryText)
+                Text(title)
+                    .font(theme.interfaceFont(size: 13, weight: .semibold))
+                    .foregroundStyle(primaryText.opacity(0.82))
+                    .lineLimit(2)
+            }
+
+            VStack(alignment: .leading, spacing: 7) {
+                Text("Priority")
+                    .font(theme.interfaceFont(size: 12, weight: .bold))
+                    .foregroundStyle(primaryText)
+
+                LazyVGrid(columns: priorityColumns, spacing: 8) {
+                    ForEach(LoopPriority.allCases) { option in
+                        priorityButton(option)
+                    }
+                }
+            }
+
+            Divider()
+                .overlay(Color.white.opacity(0.10))
+
+            VStack(alignment: .leading, spacing: 8) {
+                Toggle("Deadline", isOn: $hasDeadline)
+                    .toggleStyle(.switch)
+                    .font(theme.interfaceFont(size: 12.5, weight: .bold))
+                    .foregroundStyle(primaryText)
+
+                if hasDeadline {
+                    HStack {
+                        Text("Due date")
+                            .font(theme.interfaceFont(size: 12.5, weight: .semibold))
+                            .foregroundStyle(primaryText)
+                        Spacer()
+                        DatePicker(
+                            "Due date",
+                            selection: $deadline,
+                            displayedComponents: .date
+                        )
+                        .datePickerStyle(.field)
+                        .labelsHidden()
+                        .accessibilityLabel("Due date")
+                    }
+                }
+            }
+
+            if let errorMessage {
+                Label(errorMessage, systemImage: "exclamationmark.circle.fill")
+                    .font(theme.interfaceFont(size: 11.5, weight: .semibold))
+                    .foregroundStyle(Color.red.opacity(0.94))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityLabel("Save failed. \(errorMessage)")
+            }
+
+            HStack(spacing: 9) {
+                if hasDeadline {
+                    Button("Clear deadline") {
+                        hasDeadline = false
+                    }
+                    .buttonStyle(HeaderActionButtonStyle(accent: accent))
+                }
+
+                Spacer()
+
+                Button("Cancel", action: onCancel)
+                    .buttonStyle(HeaderActionButtonStyle(accent: accent))
+                    .keyboardShortcut(.cancelAction)
+
+                Button("Save", action: onSave)
+                    .buttonStyle(HeaderActionButtonStyle(isEmphasized: true, accent: accent))
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(!canSave)
+            }
+        }
+        .frame(width: 354)
+        .preferredColorScheme(.dark)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Edit \(title)")
+        .accessibilityAddTraits(.isModal)
+        .onAppear {
+            DispatchQueue.main.async {
+                focusedPriority = priority
+            }
+        }
+    }
+
+    private func priorityButton(_ option: LoopPriority) -> some View {
+        let isSelected = priority == option
+        let color = priorityColor(option)
+
+        return Button {
+            priority = option
+        } label: {
+            HStack(spacing: 6) {
+                Text(option.rawValue)
+                    .font(theme.interfaceFont(size: 11.5, weight: .bold))
+                Text(option.title)
+                    .font(theme.interfaceFont(size: 11.5, weight: .semibold))
+            }
+            .foregroundStyle(isSelected ? Color.white : color)
+            .frame(maxWidth: .infinity, minHeight: 34)
+            .background(
+                isSelected ? color.opacity(0.88) : color.opacity(0.12),
+                in: RoundedRectangle(cornerRadius: 9, style: .continuous)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .stroke(color.opacity(isSelected ? 0.95 : 0.28), lineWidth: 1)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+        }
+        .buttonStyle(StatusTabButtonStyle())
+        .focused($focusedPriority, equals: option)
+        .help("\(option.rawValue) · \(option.title)")
+        .accessibilityLabel("\(option.rawValue), \(option.title) priority")
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+    }
+
+    private func priorityColor(_ value: LoopPriority) -> Color {
+        switch value {
+        case .p0: return Color(nsColor: .systemRed)
+        case .p1: return Color(nsColor: .systemOrange)
+        case .p2: return accent
+        case .p3: return secondaryText
+        }
+    }
+
 }
 
 private struct CodexRunFooter: View {
@@ -2417,28 +2823,38 @@ private struct AppleNavigationButton: View {
 
 private struct HeaderActionButtonStyle: ButtonStyle {
     @Environment(\.founderTheme) private var theme
+    @Environment(\.isEnabled) private var isEnabled
     var isEmphasized = false
     var accent = Color(nsColor: .systemBlue)
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(theme.interfaceFont(size: 11, weight: .semibold))
-            .foregroundStyle(isEmphasized ? Color.white : Color.white.opacity(configuration.isPressed ? 0.92 : 0.68))
+            .foregroundStyle(
+                isEmphasized
+                    ? Color.white.opacity(isEnabled ? 1 : 0.62)
+                    : Color.white.opacity(isEnabled ? (configuration.isPressed ? 0.92 : 0.68) : 0.34)
+            )
             .padding(.horizontal, 11)
             .frame(height: 28)
             .background(
-                isEmphasized ? accent : Color.white.opacity(configuration.isPressed ? 0.10 : 0.055),
+                isEmphasized
+                    ? accent.opacity(isEnabled ? 1 : 0.30)
+                    : Color.white.opacity(isEnabled ? (configuration.isPressed ? 0.10 : 0.055) : 0.028),
                 in: RoundedRectangle(cornerRadius: 8, style: .continuous)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .stroke(
-                        isEmphasized ? accent.opacity(0.58) : Color.white.opacity(configuration.isPressed ? 0.14 : 0.08),
+                        isEmphasized
+                            ? accent.opacity(isEnabled ? 0.58 : 0.22)
+                            : Color.white.opacity(isEnabled ? (configuration.isPressed ? 0.14 : 0.08) : 0.04),
                         lineWidth: 1
                     )
             )
-            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .scaleEffect(configuration.isPressed && isEnabled ? 0.97 : 1)
             .animation(.easeOut(duration: 0.11), value: configuration.isPressed)
+            .animation(.easeOut(duration: 0.14), value: isEnabled)
     }
 }
 

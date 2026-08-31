@@ -4,6 +4,12 @@ import FounderOfficeCloud
 import FounderOfficeCore
 import UIKit
 
+enum TaskPlanningSaveResult: Equatable {
+    case saved
+    case unchanged
+    case failed
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     @Published private(set) var openLoops: OpenLoopsDocument
@@ -19,7 +25,7 @@ final class AppModel: ObservableObject {
         let openLoopsLoad = storage.loadOpenLoops()
         let personalizationLoad = storage.loadPersonalization()
         let initialOpenLoops = openLoopsLoad.value ?? OpenLoopsDocument(
-            schemaVersion: 2,
+            schemaVersion: 3,
             updatedAt: .now,
             items: []
         )
@@ -129,7 +135,9 @@ final class AppModel: ObservableObject {
             updatedAt: now,
             completedAt: nil,
             deletedAt: nil,
-            source: "ios"
+            source: "ios",
+            priorityUpdatedAt: now,
+            dueAtUpdatedAt: now
         )
         openLoops.items.append(loop)
         persistOpenLoops(at: now)
@@ -143,6 +151,61 @@ final class AppModel: ObservableObject {
     func move(_ loop: OpenLoop, to status: LoopStatus) {
         guard canEdit else { return }
         replace(loop, with: OpenLoopRules.moved(loop, to: status, at: .now))
+    }
+
+    @discardableResult
+    func updatePlanning(
+        id: UUID,
+        priority: LoopPriority,
+        dueAt: Date?,
+        updatesPriority: Bool,
+        updatesDeadline: Bool
+    ) -> TaskPlanningSaveResult {
+        guard canEdit else { return .failed }
+
+        // Merge the draft into the newest offline mirror rather than the copy
+        // that happened to be visible when the sheet opened. Cloud sync can
+        // update a different field while this editor remains on screen.
+        let latestDocument: OpenLoopsDocument
+        switch storage.loadOpenLoops() {
+        case let .loaded(document):
+            latestDocument = document
+        case .missing:
+            return .failed
+        case let .recoveryRequired(discoveredRecovery):
+            recoveryState = recoveryState.merging(discoveredRecovery)
+            cloudStatus = .error
+            return .failed
+        }
+        guard let index = latestDocument.items.firstIndex(where: {
+                  $0.id == id && $0.deletedAt == nil
+              })
+        else { return .failed }
+
+        let current = latestDocument.items[index]
+        let mergedPriority = updatesPriority ? priority : current.priority
+        let mergedDueAt = updatesDeadline ? dueAt : current.dueAt
+
+        let updated = OpenLoopRules.updatedPlanning(
+            current,
+            priority: mergedPriority,
+            dueAt: mergedDueAt,
+            at: .now
+        )
+        guard updated != current else { return .unchanged }
+
+        // Stage the complete document and publish it only after the atomic file
+        // save succeeds. A failed write therefore cannot leave UI state ahead
+        // of the offline mirror that CloudKit reads.
+        var candidate = latestDocument
+        candidate.schemaVersion = max(candidate.schemaVersion, 3)
+        candidate.items[index] = updated
+        candidate.updatedAt = updated.updatedAt
+        guard storage.save(candidate) else { return .failed }
+
+        openLoops = candidate
+        queueCloudSave()
+        return .saved
     }
 
     func softDelete(_ loop: OpenLoop) {
@@ -298,8 +361,9 @@ final class AppModel: ObservableObject {
 
     private func persistOpenLoops(at date: Date) {
         guard canEdit else { return }
+        openLoops.schemaVersion = max(openLoops.schemaVersion, 3)
         openLoops.updatedAt = date
-        storage.save(openLoops)
+        guard storage.save(openLoops) else { return }
         queueCloudSave()
     }
 
@@ -307,7 +371,7 @@ final class AppModel: ObservableObject {
         guard canEdit else { return }
         personalization.schemaVersion = max(personalization.schemaVersion, 6)
         personalization.updatedAt = date
-        storage.save(personalization)
+        guard storage.save(personalization) else { return }
         queueCloudSave()
     }
 
@@ -412,18 +476,27 @@ struct WorkspaceStorage {
     }
 
     func loadOpenLoops() -> WorkspaceLoadResult<OpenLoopsDocument> {
-        decode(OpenLoopsDocument.self, named: "openloops", component: .openLoops)
+        switch decode(OpenLoopsDocument.self, named: "openloops", component: .openLoops) {
+        case .missing:
+            return .missing
+        case let .loaded(document):
+            return .loaded(OpenLoopsMigration.upgradingPlanningSchema(document))
+        case let .recoveryRequired(recovery):
+            return .recoveryRequired(recovery)
+        }
     }
 
     func loadPersonalization() -> WorkspaceLoadResult<PersonalizationDocument> {
         decode(PersonalizationDocument.self, named: "personalization", component: .personalization)
     }
 
-    func save(_ document: OpenLoopsDocument) {
+    @discardableResult
+    func save(_ document: OpenLoopsDocument) -> Bool {
         encode(document, named: "openloops")
     }
 
-    func save(_ document: PersonalizationDocument) {
+    @discardableResult
+    func save(_ document: PersonalizationDocument) -> Bool {
         encode(document, named: "personalization")
     }
 
@@ -509,7 +582,7 @@ struct WorkspaceStorage {
         )
     }
 
-    private func encode<Value: Encodable>(_ value: Value, named name: String) {
+    private func encode<Value: Encodable>(_ value: Value, named name: String) -> Bool {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -521,11 +594,9 @@ struct WorkspaceStorage {
                 to: storageDirectory.appendingPathComponent("\(name).json"),
                 options: .atomic
             )
+            return true
         } catch {
-            let error = error as NSError
-            assertionFailure(
-                "Could not save \(name) (domain: \(error.domain), code: \(error.code))."
-            )
+            return false
         }
     }
 

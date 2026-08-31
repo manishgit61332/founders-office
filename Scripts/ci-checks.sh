@@ -6,8 +6,10 @@ cd "$(dirname "$0")/.."
 
 python3 -m py_compile \
     Scripts/openloops.py \
+    Scripts/test-openloops-cli.py \
     Scripts/prepare-website-mac-release.py \
     Scripts/verify-privacy-manifest.py
+python3 Scripts/test-openloops-cli.py
 bash -n \
     Scripts/check-repository-safety.sh \
     Scripts/ci-checks.sh \

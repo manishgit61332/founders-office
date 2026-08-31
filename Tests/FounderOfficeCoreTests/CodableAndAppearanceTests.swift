@@ -24,6 +24,26 @@ struct CodableAndAppearanceTests {
     }
 
     @Test
+    func testLegacyMoveDecodesWithoutPlanningFieldClocks() throws {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        var object = try #require(
+            JSONSerialization.jsonObject(with: encoder.encode(TestFixtures.loop()))
+                as? [String: Any]
+        )
+        object.removeValue(forKey: "priorityUpdatedAt")
+        object.removeValue(forKey: "dueAtUpdatedAt")
+
+        let decoded = try decoder.decode(
+            OpenLoop.self,
+            from: JSONSerialization.data(withJSONObject: object)
+        )
+
+        #expect(decoded.priorityUpdatedAt == nil)
+        #expect(decoded.dueAtUpdatedAt == nil)
+    }
+
+    @Test
     func testUnknownAppearanceIdentifiersSurviveRoundTrip() throws {
         var appearance = AppearancePreferences.preset(.minimal)
         appearance.presetID = AppearancePresetID(rawValue: "future-theme")

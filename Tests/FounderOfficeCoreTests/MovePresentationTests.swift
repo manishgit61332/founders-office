@@ -17,9 +17,18 @@ struct MovePresentationTests {
 
         let presentation = MovePresentation(
             items: [
-                TestFixtures.loop(title: "Overdue", dueAt: beforeToday),
-                TestFixtures.loop(title: "Today", dueAt: today),
-                TestFixtures.loop(title: "Upcoming", dueAt: tomorrow),
+                TestFixtures.loop(
+                    title: "Overdue",
+                    dueAt: PlanningDate.storedDate(fromLocal: beforeToday, calendar: calendar)
+                ),
+                TestFixtures.loop(
+                    title: "Today",
+                    dueAt: PlanningDate.storedDate(fromLocal: today, calendar: calendar)
+                ),
+                TestFixtures.loop(
+                    title: "Upcoming",
+                    dueAt: PlanningDate.storedDate(fromLocal: tomorrow, calendar: calendar)
+                ),
                 TestFixtures.loop(title: "Undated"),
                 TestFixtures.loop(status: .done, completedAt: yesterday),
                 TestFixtures.loop(status: .done, completedAt: oldCompletion)
@@ -32,6 +41,49 @@ struct MovePresentationTests {
         #expect(presentation.activeGroups.map { $0.bucket } == expectedBuckets)
         #expect(presentation.recentCompleted.count == 1)
         #expect(presentation.olderCompleted.count == 1)
+    }
+
+    @Test
+    func testDeadlineBucketsCompareStoredDaysWithLocalDaysAtExtremeOffsets() throws {
+        let overdueDay = try #require(PlanningDay(year: 2026, month: 8, day: 31))
+        let todayDay = try #require(PlanningDay(year: 2026, month: 9, day: 1))
+        let upcomingDay = try #require(PlanningDay(year: 2026, month: 9, day: 2))
+
+        for offset in [-12 * 3_600, 14 * 3_600] {
+            var calendar = Calendar(identifier: .gregorian)
+            calendar.locale = Locale(identifier: "en_US_POSIX")
+            calendar.timeZone = try #require(TimeZone(secondsFromGMT: offset))
+            let now = try TestFixtures.calendarDate(
+                todayDay.year,
+                todayDay.month,
+                todayDay.day,
+                hour: 9,
+                calendar: calendar
+            )
+
+            let presentation = MovePresentation(
+                items: [
+                    TestFixtures.loop(
+                        title: "Overdue",
+                        dueAt: PlanningDate.storedDate(for: overdueDay)
+                    ),
+                    TestFixtures.loop(
+                        title: "Today",
+                        dueAt: PlanningDate.storedDate(for: todayDay)
+                    ),
+                    TestFixtures.loop(
+                        title: "Upcoming",
+                        dueAt: PlanningDate.storedDate(for: upcomingDay)
+                    )
+                ],
+                now: now,
+                calendar: calendar
+            )
+
+            #expect(presentation.items(in: .overdue).map(\.title) == ["Overdue"])
+            #expect(presentation.items(in: .today).map(\.title) == ["Today"])
+            #expect(presentation.items(in: .upcoming).map(\.title) == ["Upcoming"])
+        }
     }
 
     @Test
