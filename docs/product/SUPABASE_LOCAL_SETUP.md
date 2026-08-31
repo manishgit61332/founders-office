@@ -22,15 +22,25 @@ required identity/merge cases agree. It does not execute PostgreSQL.
 
 ## Local database validation
 
-Install the Supabase CLI and a supported Docker runtime, then run:
+CI installs the official Supabase setup action at immutable commit
+`ab058987d8d6c725971f6cf9d0b5c98467e30bd1` (v1.7.1), requests CLI `2.98.2`,
+and refuses any other CLI or database image. For this repository's PostgreSQL
+15 configuration, that CLI resolves the exact local image to
+`public.ecr.aws/supabase/postgres:15.8.1.085`.
+
+Install that CLI version and a supported Docker runtime, then run the same local
+database sequence:
 
 ```bash
-supabase start
-supabase db reset
-supabase test db
+test "$(supabase --version)" = "2.98.2"
+supabase db start
+supabase db reset --local --no-seed
+supabase test db --local supabase/tests
 ```
 
-`db reset` applies the versioned migrations. `test db` runs the pgTAP suite as
+`db start` creates a credential-free local Supabase Postgres authority and
+applies the versioned migrations. `db reset` proves the migrations replay on a
+fresh schema. `test db` runs the pgTAP suite as
 anonymous, owner, unrelated, and deleted-account identities. The suite covers
 RLS visibility, direct-write denial, RPC ownership checks, idempotent duplicate
 operations, mismatched operation-ID reuse, one-workspace ownership, pull-only
@@ -40,9 +50,19 @@ asset transfer, and idempotent/non-resurrectable workspace erasure.
 
 The tests insert synthetic `auth.users` rows inside a rolled-back transaction.
 They do not call Google, Apple, Supabase Cloud, or any live network service.
-On a host without the Supabase CLI and Docker, only the static validator and
-Swift tests run. A passing static check does **not** claim that PostgreSQL, RLS,
-PostgREST error mapping, private-object transfer, or Storage deletion executed.
+The separate **Execute local Supabase RLS and RPC tests** job runs that sequence
+on every CI trigger. The fast static validator runs before Docker starts so
+malformed contracts fail quickly. On a development host without the pinned CLI
+and Docker, only the
+static validator and Swift tests run. A passing static check does **not** claim
+that PostgreSQL or RLS executed.
+
+A green local-database job proves the checked-in migrations and pgTAP suite on
+that pinned local image only. It does **not** prove production deployment,
+production grants, live PostgREST error mapping, live JWT/session revocation,
+private-object transfer, Storage deletion, backup/restore, or tenant isolation
+in the selected Supabase project. Those remain separate production evidence
+requirements.
 
 If a local adapter needs environment variables, copy `.env.example` to the
 gitignored `.env.local`. Leave the publishable key empty until the local CLI emits

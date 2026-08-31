@@ -6,18 +6,25 @@ final class TransientPresentationCoordinator {
     nonisolated static let statusMenuIdentifier = NSUserInterfaceItemIdentifier(
         "foundersOffice.status-menu"
     )
+    nonisolated static let nativeColorPanelIdentifier = NSUserInterfaceItemIdentifier(
+        "foundersOffice.native-color-panel"
+    )
 
     @MainActor
     private final class TrackedWindow {
         let window: NSWindow
         let originalLevel: NSWindow.Level
         let originalCollectionBehavior: NSWindow.CollectionBehavior
+        let originalIdentifier: NSUserInterfaceItemIdentifier?
+        let originalAccessibilityIdentifier: String
         let wasChildOfHost: Bool
 
         init(window: NSWindow, hostWindow: NSWindow) {
             self.window = window
             originalLevel = window.level
             originalCollectionBehavior = window.collectionBehavior
+            originalIdentifier = window.identifier
+            originalAccessibilityIdentifier = window.accessibilityIdentifier()
             wasChildOfHost = window.parent === hostWindow
         }
     }
@@ -122,6 +129,10 @@ final class TransientPresentationCoordinator {
             return
         }
         trackedWindows[key] = TrackedWindow(window: window, hostWindow: hostWindow)
+        if window is NSColorPanel {
+            window.identifier = Self.nativeColorPanelIdentifier
+            window.setAccessibilityIdentifier(Self.nativeColorPanelIdentifier.rawValue)
+        }
         elevate(window)
     }
 
@@ -273,6 +284,8 @@ final class TransientPresentationCoordinator {
         }
         tracked.window.level = tracked.originalLevel
         tracked.window.collectionBehavior = tracked.originalCollectionBehavior
+        tracked.window.identifier = tracked.originalIdentifier
+        tracked.window.setAccessibilityIdentifier(tracked.originalAccessibilityIdentifier)
     }
 
     private func owns(_ window: NSWindow) -> Bool {
