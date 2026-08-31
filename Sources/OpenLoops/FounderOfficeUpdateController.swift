@@ -5,7 +5,10 @@ import FounderOfficeCore
 final class FounderOfficeUpdateController {
     private enum PreferenceKey {
         static let installationID = "FounderOfficeUpdateInstallationID"
-        static let lastAutomaticCheck = "FounderOfficeLastAutomaticUpdateCheck"
+
+        static func lastAutomaticCheck(namespace: String) -> String {
+            "FounderOfficeLastAutomaticUpdateCheck.\(namespace)"
+        }
 
         static func acceptedFeedSequence(namespace: String) -> String {
             "FounderOfficeAcceptedUpdateFeedSequence.\(namespace)"
@@ -40,11 +43,14 @@ final class FounderOfficeUpdateController {
     }
 
     func startAutomaticCheckAfterRuntimeReady() {
-        guard case .success = configurationResult,
+        guard case let .success(configuration) = configurationResult,
               checkTask == nil else { return }
 
         let now = Date()
-        let lastCheck = defaults.object(forKey: PreferenceKey.lastAutomaticCheck) as? Date
+        let checkKey = PreferenceKey.lastAutomaticCheck(
+            namespace: configuration.persistenceNamespace
+        )
+        let lastCheck = defaults.object(forKey: checkKey) as? Date
         guard UpdateCheckSchedule.shouldAttempt(
             lastAttempt: lastCheck,
             now: now,
@@ -55,7 +61,7 @@ final class FounderOfficeUpdateController {
 
         // Record the attempt before network work begins. Offline Macs therefore
         // retry at most once a day instead of polling on every app activation.
-        defaults.set(now, forKey: PreferenceKey.lastAutomaticCheck)
+        defaults.set(now, forKey: checkKey)
         runCheck(mode: .automatic)
     }
 

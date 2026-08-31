@@ -58,6 +58,7 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Fixed
 
+- Automatic update throttling is now isolated by the reviewed feed URL, channel, and signing key, so a channel move or key rotation is checked immediately instead of inheriting another channel's delay.
 - Failed photo commits immediately roll back newly prepared files, successful replacement/removal retires prior owned variants only after the canonical SQLite commit, and launch reconciliation safely retries interrupted cleanup.
 - Photo import now rebases onto the latest personalization state so a concurrent name, Appearance, goal, or milestone edit is not overwritten by slow image preparation.
 - Rapid Mac mutations now serialize through component-scoped repository patches instead of racing whole-workspace JSON writes, and failed Appearance commits retain both the retryable draft and untouched committed value.
