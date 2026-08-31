@@ -299,7 +299,14 @@ struct WorkspaceSessionIntegrationTests {
         let conflict = await store.saveAppearanceChanges()
         #expect(conflict == .conflict)
         #expect(store.hasUnsavedAppearanceChanges)
+        #expect(store.hasAppearanceConflict)
         #expect(session.snapshot.content.personalization.resolvedAppearance.accent.primaryColor
+            == RGB24Color(red: 80, green: 220, blue: 90))
+
+        store.useLatestAppearance()
+        #expect(!store.hasUnsavedAppearanceChanges)
+        #expect(!store.hasAppearanceConflict)
+        #expect(store.appearance.accent.primaryColor
             == RGB24Color(red: 80, green: 220, blue: 90))
         store.stop()
         session.stop()

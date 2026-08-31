@@ -7,6 +7,56 @@ public enum AppearanceSaveResult: Equatable, Sendable {
     case failed(String)
 }
 
+/// Controls whether an appearance commit must still match the revision that
+/// was visible when editing began or may intentionally replace a newer value.
+public enum AppearanceDraftCommitPolicy: String, Codable, Equatable, Sendable {
+    case requireBaseline
+    case overwriteLatest
+}
+
+/// Persistence-agnostic input for one atomic appearance commit.
+///
+/// The commit boundary must not report `.saved` until `appearance` is durable.
+/// A platform adapter is responsible for assigning the committed revision and
+/// returning it in `AppearanceDraftCommitResult.saved`.
+public struct AppearanceDraftCommitRequest: Equatable, Sendable {
+    public let appearance: AppearancePreferences
+    public let baselineRevision: Date?
+    public let policy: AppearanceDraftCommitPolicy
+
+    public init(
+        appearance: AppearancePreferences,
+        baselineRevision: Date?,
+        policy: AppearanceDraftCommitPolicy
+    ) {
+        self.appearance = appearance
+        self.baselineRevision = baselineRevision
+        self.policy = policy
+    }
+}
+
+/// Result returned by a platform's atomic appearance commit boundary.
+public enum AppearanceDraftCommitResult: Equatable, Sendable {
+    /// The revision assigned to the exact requested appearance by storage.
+    case saved(committedRevision: Date)
+    /// The latest durable value that invalidated the request's baseline.
+    case conflict(latest: AppearancePreferences)
+    /// A customer-safe, retryable error. Raw storage errors must not cross this
+    /// boundary because they can include private paths or implementation data.
+    case failed(String)
+}
+
+/// Injected persistence seam for `AppearanceDraftSession.save`.
+///
+/// Implementations may be actors. This keeps the draft state machine Sendable
+/// and independently testable without making FounderOfficeCore depend on
+/// SQLite, Supabase, AppKit, or another platform persistence framework.
+public protocol AppearanceDraftCommitBoundary: Sendable {
+    func commit(
+        _ request: AppearanceDraftCommitRequest
+    ) async -> AppearanceDraftCommitResult
+}
+
 public enum AppearanceTerminationChoice: Equatable, Sendable {
     case save
     case discard
@@ -50,6 +100,7 @@ public struct AppearanceDraftSession: Equatable, Sendable {
     public private(set) var baselineRevision: Date?
     public private(set) var saveError: String?
     public private(set) var hasConflict: Bool
+    public private(set) var conflictingCommitted: AppearancePreferences?
 
     public init(committed: AppearancePreferences) {
         baseline = committed
@@ -57,6 +108,7 @@ public struct AppearanceDraftSession: Equatable, Sendable {
         baselineRevision = committed.updatedAt
         saveError = nil
         hasConflict = false
+        conflictingCommitted = nil
     }
 
     public var isDirty: Bool {
@@ -90,6 +142,7 @@ public struct AppearanceDraftSession: Equatable, Sendable {
         }
 
         hasConflict = true
+        conflictingCommitted = committed
         saveError = nil
     }
 
@@ -99,6 +152,14 @@ public struct AppearanceDraftSession: Equatable, Sendable {
 
     public mutating func useLatest(_ committed: AppearancePreferences) {
         reset(to: committed)
+    }
+
+    /// Adopts the durable value retained from the most recent conflict.
+    @discardableResult
+    public mutating func useLatest() -> Bool {
+        guard let conflictingCommitted else { return false }
+        reset(to: conflictingCommitted)
+        return true
     }
 
     public mutating func markFailed(_ message: String) {
@@ -111,13 +172,53 @@ public struct AppearanceDraftSession: Equatable, Sendable {
 
     public mutating func resolveConflictKeepingDraft() {
         hasConflict = false
+        conflictingCommitted = nil
         saveError = nil
+    }
+
+    /// Atomically asks an injected platform adapter to commit the current
+    /// draft and reconciles the returned durable result.
+    ///
+    /// Clean and unresolved-conflict sessions return without calling the
+    /// boundary. A failed or conflicting commit keeps the preview intact.
+    @discardableResult
+    public mutating func save(
+        policy: AppearanceDraftCommitPolicy = .requireBaseline,
+        using boundary: any AppearanceDraftCommitBoundary
+    ) async -> AppearanceSaveResult {
+        guard isDirty else { return .unchanged }
+        guard policy == .overwriteLatest || !hasConflict else {
+            return .conflict
+        }
+        if policy == .overwriteLatest {
+            resolveConflictKeepingDraft()
+        }
+
+        let request = AppearanceDraftCommitRequest(
+            appearance: draft,
+            baselineRevision: baselineRevision,
+            policy: policy
+        )
+        switch await boundary.commit(request) {
+        case let .saved(committedRevision):
+            var committed = request.appearance
+            committed.updatedAt = committedRevision
+            markSaved(committed)
+            return .saved
+        case let .conflict(latest):
+            observeCommitted(latest)
+            return .conflict
+        case let .failed(message):
+            markFailed(message)
+            return .failed(message)
+        }
     }
 
     public mutating func discard() {
         draft = baseline
         saveError = nil
         hasConflict = false
+        conflictingCommitted = nil
     }
 
     public static func hasSameContent(
@@ -137,5 +238,6 @@ public struct AppearanceDraftSession: Equatable, Sendable {
         baselineRevision = committed.updatedAt
         saveError = nil
         hasConflict = false
+        conflictingCommitted = nil
     }
 }

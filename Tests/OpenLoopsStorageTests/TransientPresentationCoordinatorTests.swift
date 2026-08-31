@@ -1,4 +1,5 @@
 import AppKit
+import FounderOfficeCore
 import Testing
 @testable import OpenLoops
 
@@ -103,7 +104,13 @@ struct TransientPresentationCoordinatorTests {
             restoreHost: { restorationCount += 1 }
         )
 
-        coordinator.present(modal, reason: "system-alert")
+        coordinator.present(
+            modal,
+            request: TransientPresentationRequest(
+                kind: .systemAlert,
+                hostDisposition: .suspendExpandedHost
+            )
+        )
 
         #expect(!host.isVisible)
         #expect(modal.isVisible)
@@ -174,7 +181,13 @@ struct TransientPresentationCoordinatorTests {
         #expect(coordinator.shouldTrack(colour, originatingWindow: unrelated))
         #expect(!coordinator.shouldTrack(colour, originatingWindow: unrelated))
 
-        coordinator.present(colour, reason: "keyboard-colour-panel")
+        coordinator.present(
+            colour,
+            request: TransientPresentationRequest(
+                kind: .colorPanel,
+                hostDisposition: .suspendExpandedHost
+            )
+        )
         #expect(coordinator.preventsAutoDismiss)
         #expect(coordinator.isTracking(colour))
         #expect(colour.identifier == TransientPresentationCoordinator.nativeColorPanelIdentifier)
@@ -186,5 +199,64 @@ struct TransientPresentationCoordinatorTests {
         #expect(!coordinator.preventsAutoDismiss)
         #expect(colour.identifier == nil)
         #expect(colour.accessibilityIdentifier() == originalColourAccessibilityIdentifier)
+    }
+
+    @Test
+    func portableRequestsPreserveDispositionAndScopedLeaseOwnership() {
+        let host = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 320, height: 180),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        defer { host.close() }
+        let coordinator = TransientPresentationCoordinator()
+        var expanded = true
+        var suspensionCount = 0
+        var restorationCount = 0
+        coordinator.configure(
+            hostWindow: host,
+            isHostExpanded: { expanded },
+            suspendHost: {
+                suspensionCount += 1
+                expanded = false
+            },
+            restoreHost: {
+                restorationCount += 1
+                expanded = true
+            }
+        )
+
+        let retained = coordinator.present(
+            request: TransientPresentationRequest(
+                kind: .inNotchEditor,
+                hostDisposition: .retainExpandedHost
+            )
+        )
+        let owner = NSObject()
+        let firstScoped = coordinator.present(
+            request: TransientPresentationRequest(
+                kind: .datePicker,
+                hostDisposition: .suspendExpandedHost
+            ),
+            scopedTo: owner
+        )
+        let duplicateScoped = coordinator.present(
+            request: TransientPresentationRequest(
+                kind: .datePicker,
+                hostDisposition: .suspendExpandedHost
+            ),
+            scopedTo: owner
+        )
+
+        #expect(firstScoped == duplicateScoped)
+        #expect(coordinator.activeCount == 2)
+        #expect(suspensionCount == 1)
+
+        coordinator.endScoped(to: owner)
+        #expect(restorationCount == 0)
+        coordinator.end(retained)
+        #expect(restorationCount == 1)
+        #expect(!coordinator.preventsAutoDismiss)
     }
 }
