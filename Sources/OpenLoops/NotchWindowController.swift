@@ -188,6 +188,15 @@ final class NotchWindowController {
         presentation.clearInteractions()
     }
 
+    func runSystemAlert(
+        _ alert: NSAlert,
+        reason: String
+    ) -> NSApplication.ModalResponse {
+        presentation.transients.present(alert.window, reason: reason)
+        defer { presentation.transients.endScoped(to: alert.window) }
+        return alert.runModal()
+    }
+
     func show(preview: Bool = false, manual: Bool = false) {
         previewMode = preview
         if manual {

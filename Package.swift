@@ -12,6 +12,7 @@ let package = Package(
         .library(name: "FounderOfficeCore", targets: ["FounderOfficeCore"]),
         .library(name: "FounderOfficeCloud", targets: ["FounderOfficeCloud"]),
         .executable(name: "FounderOfficeCoreChecks", targets: ["FounderOfficeCoreChecks"]),
+        .executable(name: "FounderOfficeUpdateSigner", targets: ["FounderOfficeUpdateSigner"]),
         .executable(name: "OpenLoops", targets: ["OpenLoops"])
     ],
     dependencies: [
@@ -39,6 +40,11 @@ let package = Package(
             name: "FounderOfficeCoreChecks",
             dependencies: ["FounderOfficeCore", "FounderOfficeCloud"],
             path: "Checks/FounderOfficeCoreChecks"
+        ),
+        .executableTarget(
+            name: "FounderOfficeUpdateSigner",
+            dependencies: ["FounderOfficeCore"],
+            path: "Tools/FounderOfficeUpdateSigner"
         ),
         .testTarget(
             name: "FounderOfficeCoreTests",

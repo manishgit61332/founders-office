@@ -24,6 +24,7 @@ final class FoundersOfficeAppDelegate: NSObject, NSApplicationDelegate {
     private var personalization: PersonalizationStore?
     private var cloudSyncBridge: CloudSyncBridge?
     private var notchController: NotchWindowController?
+    private var updateController: FounderOfficeUpdateController?
     private var onboardingStore: FirstRunOnboardingStore?
     private var onboardingWindowController: FirstRunOnboardingWindowController?
     private var statusItem: NSStatusItem?
@@ -302,6 +303,7 @@ final class FoundersOfficeAppDelegate: NSObject, NSApplicationDelegate {
         motionCaptureTimer?.invalidate()
         motionCaptureTimer = nil
         notchController?.prepareForTermination()
+        updateController?.cancel()
         cloudSyncBridge?.stop()
         store?.stop()
         personalization?.stop()
@@ -339,6 +341,8 @@ final class FoundersOfficeAppDelegate: NSObject, NSApplicationDelegate {
             calendarMode: calendarMode
         )
         notchController = controller
+        updateController?.cancel()
+        updateController = FounderOfficeUpdateController(notchController: controller)
 
         cloudSyncBridge?.stop()
         cloudSyncBridge = bridge
@@ -381,6 +385,7 @@ final class FoundersOfficeAppDelegate: NSObject, NSApplicationDelegate {
         )
         reconcileLaunchAtLoginPreference()
         controller.show(manual: true)
+        updateController?.startAutomaticCheckAfterRuntimeReady()
     }
 
     private func resolveCloudConfiguration() -> FounderOfficeCloudConfiguration? {
@@ -406,6 +411,9 @@ final class FoundersOfficeAppDelegate: NSObject, NSApplicationDelegate {
         guard !didMarkRuntimeReady else { return }
         didMarkRuntimeReady = true
         runtimeHealth.markReady()
+        if !isOnboarding {
+            updateController?.startAutomaticCheckAfterRuntimeReady()
+        }
     }
 
     private func registerBundledFonts() {
@@ -697,6 +705,15 @@ final class FoundersOfficeAppDelegate: NSObject, NSApplicationDelegate {
         folderItem.target = self
         menu.addItem(folderItem)
 
+        menu.addItem(.separator())
+        let updateItem = NSMenuItem(
+            title: "Check for Updates…",
+            action: #selector(checkForUpdates),
+            keyEquivalent: ""
+        )
+        updateItem.target = self
+        menu.addItem(updateItem)
+
         if #available(macOS 13.0, *) {
             menu.addItem(.separator())
             let loginItem = NSMenuItem(title: "Launch at Login", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
@@ -738,6 +755,10 @@ final class FoundersOfficeAppDelegate: NSObject, NSApplicationDelegate {
     @objc private func revealRecoveryFolder() {
         guard let rootURL = workspaceRootURL else { return }
         NSWorkspace.shared.open(rootURL)
+    }
+
+    @objc private func checkForUpdates() {
+        updateController?.checkManually()
     }
 
     @objc private func copySafeModeIncidentID() {

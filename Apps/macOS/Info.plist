@@ -28,6 +28,12 @@
          entitlement-matched production container before archiving. -->
     <key>FounderOfficeCloudContainerIdentifier</key>
     <string>iCloud.com.manish.foundersoffice</string>
+    <key>FounderOfficeUpdateFeedURL</key>
+    <string>$(FOUNDER_OFFICE_UPDATE_FEED_URL)</string>
+    <key>FounderOfficeUpdateChannel</key>
+    <string>$(FOUNDER_OFFICE_UPDATE_CHANNEL)</string>
+    <key>FounderOfficeUpdatePublicKey</key>
+    <string>$(FOUNDER_OFFICE_UPDATE_PUBLIC_KEY)</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
     <key>LSMultipleInstancesProhibited</key>

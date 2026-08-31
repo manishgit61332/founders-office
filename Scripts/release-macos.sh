@@ -16,6 +16,9 @@ usage() {
     print -u2 "  FOUNDER_OFFICE_DEVELOPER_ID_APPLICATION"
     print -u2 "  FOUNDER_OFFICE_PROVISIONING_PROFILE_SPECIFIER"
     print -u2 "  FOUNDER_OFFICE_NOTARY_PROFILE"
+    print -u2 "  FOUNDER_OFFICE_UPDATE_FEED_URL"
+    print -u2 "  FOUNDER_OFFICE_UPDATE_CHANNEL"
+    print -u2 "  FOUNDER_OFFICE_UPDATE_PUBLIC_KEY"
     print -u2 ""
     print -u2 "Release entitlements must be tracked at Config/Release/FoundersOfficeMac.entitlements."
 }
@@ -67,6 +70,9 @@ required_environment=(
     FOUNDER_OFFICE_DEVELOPER_ID_APPLICATION
     FOUNDER_OFFICE_PROVISIONING_PROFILE_SPECIFIER
     FOUNDER_OFFICE_NOTARY_PROFILE
+    FOUNDER_OFFICE_UPDATE_FEED_URL
+    FOUNDER_OFFICE_UPDATE_CHANNEL
+    FOUNDER_OFFICE_UPDATE_PUBLIC_KEY
 )
 
 for variable_name in "${required_environment[@]}"; do
@@ -79,6 +85,9 @@ icloud_container="$FOUNDER_OFFICE_ICLOUD_CONTAINER"
 signing_identity="$FOUNDER_OFFICE_DEVELOPER_ID_APPLICATION"
 provisioning_profile="$FOUNDER_OFFICE_PROVISIONING_PROFILE_SPECIFIER"
 notary_profile="$FOUNDER_OFFICE_NOTARY_PROFILE"
+update_feed_url="$FOUNDER_OFFICE_UPDATE_FEED_URL"
+update_channel="$FOUNDER_OFFICE_UPDATE_CHANNEL"
+update_public_key="$FOUNDER_OFFICE_UPDATE_PUBLIC_KEY"
 required_archs="${FOUNDER_OFFICE_REQUIRED_ARCHS:-arm64 x86_64}"
 release_entitlements_relative="Config/Release/FoundersOfficeMac.entitlements"
 release_entitlements="${project_dir}/${release_entitlements_relative}"
@@ -103,6 +112,49 @@ done
     || fail "the known provisional macOS bundle identifier cannot be released"
 [[ "$icloud_container" != "iCloud.com.manish.foundersoffice" ]] \
     || fail "the known provisional iCloud container cannot be released"
+
+python3 - "$update_feed_url" "$update_channel" "$update_public_key" <<'PY'
+import base64
+import binascii
+import sys
+from urllib.parse import urlsplit
+
+feed_url, channel, public_key = sys.argv[1:]
+if len(feed_url) > 2048 or any(character.isspace() for character in feed_url):
+    raise SystemExit("release update feed URL is malformed")
+try:
+    parsed = urlsplit(feed_url)
+    port = parsed.port
+except ValueError:
+    raise SystemExit("release update feed URL is malformed")
+if (
+    parsed.scheme != "https"
+    or not parsed.hostname
+    or parsed.username is not None
+    or parsed.password is not None
+    or parsed.query
+    or parsed.fragment
+    or len(parsed.path) > 1024
+    or not parsed.path.startswith("/")
+    or parsed.path == "/"
+    or not parsed.path.endswith(".json")
+    or "//" in parsed.path
+    or "%" in parsed.path
+    or any(component in {".", ".."} for component in parsed.path.split("/"))
+    or port is not None and not 1 <= port <= 65535
+):
+    raise SystemExit("release update feed must be an exact credential-free HTTPS URL")
+if channel not in {"beta", "stable"}:
+    raise SystemExit("release update channel must be beta or stable")
+if public_key != public_key.strip() or len(public_key) > 128:
+    raise SystemExit("release update public key is malformed")
+try:
+    decoded = base64.b64decode(public_key, validate=True)
+except (binascii.Error, ValueError):
+    raise SystemExit("release update public key is malformed")
+if len(decoded) != 32 or base64.b64encode(decoded).decode("ascii") != public_key:
+    raise SystemExit("release update public key must be one canonical Ed25519 public key")
+PY
 
 [[ -f "$release_entitlements" ]] || fail "release entitlements file does not exist"
 [[ ! -L "$release_entitlements" ]] || fail "release entitlements file must not be a symlink"
@@ -178,9 +230,8 @@ if entitlements.get("com.apple.developer.icloud-container-identifiers") != [expe
     errors.append("the production app must declare exactly the expected iCloud container")
 if entitlements.get("com.apple.developer.icloud-services") != ["CloudKit"]:
     errors.append("the production app must declare exactly the CloudKit iCloud service")
-if "com.apple.security.network.client" in entitlements \
-        and entitlements.get("com.apple.security.network.client") is not True:
-    errors.append("the network client entitlement, when present, must be true")
+if entitlements.get("com.apple.security.network.client") is not True:
+    errors.append("the network client entitlement must be true")
 groups = entitlements.get("com.apple.security.application-groups")
 if groups is not None and (
     not isinstance(groups, list)
@@ -242,6 +293,9 @@ plutil -replace FounderOfficeNotarized -bool true "$release_info_plist" 2>/dev/n
     || plutil -insert FounderOfficeNotarized -bool true "$release_info_plist"
 plutil -replace FounderOfficeCloudContainerIdentifier -string "$icloud_container" "$release_info_plist" 2>/dev/null \
     || plutil -insert FounderOfficeCloudContainerIdentifier -string "$icloud_container" "$release_info_plist"
+plutil -replace FounderOfficeUpdateFeedURL -string "$update_feed_url" "$release_info_plist"
+plutil -replace FounderOfficeUpdateChannel -string "$update_channel" "$release_info_plist"
+plutil -replace FounderOfficeUpdatePublicKey -string "$update_public_key" "$release_info_plist"
 plutil -lint "$release_info_plist" >/dev/null
 
 xcodegen generate \
@@ -318,6 +372,15 @@ cloud_enabled="$(plutil -extract FounderOfficeCloudEnabled raw -o - "$info_plist
 runtime_cloud_container="$(plutil -extract FounderOfficeCloudContainerIdentifier raw -o - "$info_plist")"
 [[ "$runtime_cloud_container" == "$icloud_container" ]] \
     || fail "runtime CloudKit container does not match the release entitlement"
+runtime_update_feed="$(plutil -extract FounderOfficeUpdateFeedURL raw -o - "$info_plist")"
+runtime_update_channel="$(plutil -extract FounderOfficeUpdateChannel raw -o - "$info_plist")"
+runtime_update_public_key="$(plutil -extract FounderOfficeUpdatePublicKey raw -o - "$info_plist")"
+[[ "$runtime_update_feed" == "$update_feed_url" ]] \
+    || fail "runtime update feed does not match the reviewed release setting"
+[[ "$runtime_update_channel" == "$update_channel" ]] \
+    || fail "runtime update channel does not match the reviewed release setting"
+[[ "$runtime_update_public_key" == "$update_public_key" ]] \
+    || fail "runtime update public key does not match the reviewed release setting"
 distribution_channel="$(plutil -extract FounderOfficeDistributionChannel raw -o - "$info_plist")"
 notarization_claim="$(plutil -extract FounderOfficeNotarized raw -o - "$info_plist")"
 [[ "$distribution_channel" == "direct" ]] || fail "exported app is not marked for direct distribution"
@@ -402,6 +465,8 @@ if entitlements.get("com.apple.security.personal-information.calendars") is not 
     errors.append("effective Calendar entitlement is missing")
 if entitlements.get("com.apple.security.files.user-selected.read-only") is not True:
     errors.append("effective user-selected read-only file entitlement is missing")
+if entitlements.get("com.apple.security.network.client") is not True:
+    errors.append("effective network client entitlement is missing")
 if entitlements.get("com.apple.developer.team-identifier") not in (None, team_id):
     errors.append("team identifier does not match")
 if entitlements.get("com.apple.application-identifier") not in (None, f"{team_id}.{bundle_id}"):
@@ -577,6 +642,9 @@ PY
     --expected-team-id "$team_id" \
     --expected-bundle-id "$bundle_id" \
     --expected-icloud-container "$icloud_container" \
+    --expected-update-feed-url "$update_feed_url" \
+    --expected-update-channel "$update_channel" \
+    --expected-update-public-key "$update_public_key" \
     --expected-archs "$required_archs"
 
 chmod 0444 "$payload_dir"/*

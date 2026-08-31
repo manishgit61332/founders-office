@@ -15,3 +15,4 @@ Each ADR records status, date, context, decision, consequences, privacy/security
 - [0010 — Serialized transactional workspace repository](0010-serialized-transactional-workspace-repository.md)
 - [0011 — Transactional appearance drafts and owned transient presentation](0011-transactional-appearance-and-transients.md)
 - [0012 — Redacted Health surface and preview-first support export](0012-redacted-health-and-support-export.md)
+- [0014 — Signed external Mac update channel](0014-signed-external-mac-update-channel.md)

@@ -34,6 +34,33 @@ assert_refused \
     "exactly three numeric components" \
     "$script_dir/release-macos.sh" --version 1.2.3-beta.1 --build 1
 
+release_environment=(
+    FOUNDER_OFFICE_TEAM_ID=ABCDE12345
+    FOUNDER_OFFICE_BUNDLE_ID=com.example.foundersoffice
+    FOUNDER_OFFICE_ICLOUD_CONTAINER=iCloud.com.example.foundersoffice
+    "FOUNDER_OFFICE_DEVELOPER_ID_APPLICATION=Developer ID Application: Example (ABCDE12345)"
+    FOUNDER_OFFICE_PROVISIONING_PROFILE_SPECIFIER=ExampleProfile
+    FOUNDER_OFFICE_NOTARY_PROFILE=example-notary
+    FOUNDER_OFFICE_UPDATE_CHANNEL=beta
+    FOUNDER_OFFICE_UPDATE_PUBLIC_KEY=MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
+)
+assert_refused \
+    "exact credential-free HTTPS URL" \
+    env "${release_environment[@]}" \
+        "FOUNDER_OFFICE_UPDATE_FEED_URL=https://downloads.example.com/channel/beta.json?mutable=1" \
+        "$script_dir/release-macos.sh" --version 1.2.3 --build 4
+assert_refused \
+    "public key is malformed" \
+    env "${release_environment[@]}" \
+        FOUNDER_OFFICE_UPDATE_PUBLIC_KEY=not-a-key \
+        FOUNDER_OFFICE_UPDATE_FEED_URL=https://downloads.example.com/channel/beta.json \
+        "$script_dir/release-macos.sh" --version 1.2.3 --build 4
+assert_refused \
+    "URL is malformed" \
+    env "${release_environment[@]}" \
+        FOUNDER_OFFICE_UPDATE_FEED_URL=https://downloads.example.com:70000/channel/beta.json \
+        "$script_dir/release-macos.sh" --version 1.2.3 --build 4
+
 create_binary_fixture() {
     local mode="$1"
     local directory="${fixture_root}/binary-${mode}"
@@ -260,6 +287,9 @@ verify_fixture() {
         --expected-team-id ABCDE12345 \
         --expected-bundle-id com.example.foundersoffice \
         --expected-icloud-container iCloud.com.example.foundersoffice \
+        --expected-update-feed-url https://downloads.example.com/channel/beta.json \
+        --expected-update-channel beta \
+        --expected-update-public-key MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY= \
         --expected-archs arm64
 }
 
@@ -278,6 +308,18 @@ assert_refused "duplicate or colliding archive member" verify_fixture duplicate
 create_fixture clean
 clean_commit="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 clean_url="https://downloads.example.com/releases/macos/v1.2.3/build-4/${clean_commit}/FoundersOffice-1.2.3-build-4-macOS.zip"
+assert_refused \
+    "expected update feed must be an exact credential-free HTTPS URL" \
+    "$script_dir/verify-macos-release.sh" \
+        --artifact "${fixture_root}/clean/FoundersOffice-1.2.3-build-4-macOS.zip" \
+        --metadata "${fixture_root}/clean/release.json" \
+        --expected-team-id ABCDE12345 \
+        --expected-bundle-id com.example.foundersoffice \
+        --expected-icloud-container iCloud.com.example.foundersoffice \
+        --expected-update-feed-url http://downloads.example.com/channel/beta.json \
+        --expected-update-channel beta \
+        --expected-update-public-key MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY= \
+        --expected-archs arm64
 "$script_dir/prepare-website-mac-release.py" \
     --metadata "${fixture_root}/clean/release.json" \
     --verified-artifact "${fixture_root}/clean/FoundersOffice-1.2.3-build-4-macOS.zip" \
@@ -301,5 +343,90 @@ assert_refused \
     --download-url "https://downloads.example.com/releases/macos/latest.zip" \
     --approved-origin "https://downloads.example.com" \
     --output "${fixture_root}/clean/rejected.json"
+
+signed_feed="${fixture_root}/clean/beta-update.json"
+test_public_key_file="${fixture_root}/clean/test-update-public-key.txt"
+rollout_started_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+fixture_private_key() {
+    python3 - <<'PY'
+import base64
+import hashlib
+
+# Deterministic, test-only material. It is never a production credential and
+# exists only in the private temporary release fixture for this process.
+raw = hashlib.sha256(b"founders-office-update-signer-test-only").digest()
+print(base64.b64encode(raw).decode("ascii"))
+PY
+}
+fixture_private_key \
+    | swift run --package-path "${script_dir:h}" FounderOfficeUpdateSigner \
+        --export-public-key \
+        --stdin-key \
+        --public-key-output "$test_public_key_file"
+test_public_key="$(tr -d '\n' < "$test_public_key_file")"
+wrong_test_public_key="MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
+set +e
+wrong_key_output="$(fixture_private_key \
+    | swift run --package-path "${script_dir:h}" FounderOfficeUpdateSigner \
+        --stdin-key \
+        --expected-public-key "$wrong_test_public_key" \
+        --metadata "${fixture_root}/clean/release.json" \
+        --verified-artifact "${fixture_root}/clean/FoundersOffice-1.2.3-build-4-macOS.zip" \
+        --artifact-url "$clean_url" \
+        --evidence-url "https://downloads.example.com/releases/macos/v1.2.3/build-4/${clean_commit}/release.json" \
+        --feed-url "https://downloads.example.com/channel/beta.json" \
+        --channel beta \
+        --sequence 1 \
+        --rollout-id 11111111-1111-1111-1111-111111111111 \
+        --starts-at "$rollout_started_at" \
+        --output "${fixture_root}/clean/wrong-key-update.json" 2>&1)"
+wrong_key_exit=$?
+set -e
+(( wrong_key_exit != 0 )) || {
+    print -u2 "Signer accepted a private key that did not match the reviewed public key"
+    exit 1
+}
+[[ "$wrong_key_output" == *"private key does not match the reviewed public key"* ]] || {
+    print -u2 "Signer returned the wrong finite failure for a public-key mismatch"
+    exit 1
+}
+[[ ! -e "${fixture_root}/clean/wrong-key-update.json" ]] || {
+    print -u2 "Signer created output after a public-key mismatch"
+    exit 1
+}
+fixture_private_key \
+    | swift run --package-path "${script_dir:h}" FounderOfficeUpdateSigner \
+        --stdin-key \
+        --expected-public-key "$test_public_key" \
+        --metadata "${fixture_root}/clean/release.json" \
+        --verified-artifact "${fixture_root}/clean/FoundersOffice-1.2.3-build-4-macOS.zip" \
+        --artifact-url "$clean_url" \
+        --evidence-url "https://downloads.example.com/releases/macos/v1.2.3/build-4/${clean_commit}/release.json" \
+        --feed-url "https://downloads.example.com/channel/beta.json" \
+        --channel beta \
+        --sequence 1 \
+        --rollout-id 11111111-1111-1111-1111-111111111111 \
+        --starts-at "$rollout_started_at" \
+        --phase-count 5 \
+        --phase-interval-seconds 3600 \
+        --output "$signed_feed"
+python3 - "$signed_feed" "$clean_url" <<'PY'
+import base64
+import json
+import sys
+
+path, expected_artifact_url = sys.argv[1:]
+with open(path, encoding="utf-8") as handle:
+    envelope = json.load(handle)
+if set(envelope) != {"schemaVersion", "payload", "signature"} or envelope["schemaVersion"] != 1:
+    raise SystemExit("signed update envelope schema is invalid")
+signature = base64.b64decode(envelope["signature"], validate=True)
+payload_bytes = base64.b64decode(envelope["payload"], validate=True)
+payload = json.loads(payload_bytes)
+if len(signature) != 64 or payload["release"]["artifactURL"] != expected_artifact_url:
+    raise SystemExit("signed update envelope does not name the sealed artifact")
+if len(payload_bytes) > 256 * 1024 or len(open(path, "rb").read()) > 512 * 1024:
+    raise SystemExit("signed update envelope exceeds the runtime bounds")
+PY
 
 print "Release safety checks passed."

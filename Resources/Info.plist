@@ -32,5 +32,11 @@
     <string>Founder's Office shows upcoming events and lets you add events to the calendars already enabled on this Mac.</string>
 	<key>FounderOfficeCloudEnabled</key>
 	<false/>
+	<key>FounderOfficeUpdateFeedURL</key>
+	<string></string>
+	<key>FounderOfficeUpdateChannel</key>
+	<string></string>
+	<key>FounderOfficeUpdatePublicKey</key>
+	<string></string>
 </dict>
 </plist>

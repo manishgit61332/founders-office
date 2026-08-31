@@ -14,6 +14,7 @@ enum AppDiagnostics {
         case lifecycle
         case resources
         case storage
+        case update
     }
 
     enum Operation: String {
@@ -39,6 +40,8 @@ enum AppDiagnostics {
         case safeModeRetry = "safe_mode.retry"
         case snapshotCapture = "snapshot.capture"
         case supportReportSave = "support_report.save"
+        case updateCheck = "update.check"
+        case updateDownloadOpen = "update.download.open"
         case workspaceIdentitySave = "workspace_identity.save"
     }
 
@@ -84,6 +87,7 @@ enum AppDiagnostics {
     private static let lifecycle = Logger(subsystem: subsystem, category: Category.lifecycle.rawValue)
     private static let resources = Logger(subsystem: subsystem, category: Category.resources.rawValue)
     private static let storage = Logger(subsystem: subsystem, category: Category.storage.rawValue)
+    private static let update = Logger(subsystem: subsystem, category: Category.update.rawValue)
     private static let lifecycleSignposter = OSSignposter(logger: lifecycle)
 
     static func beginInterval(_ interval: Interval) -> IntervalToken {
@@ -159,6 +163,7 @@ enum AppDiagnostics {
         case .lifecycle: lifecycle
         case .resources: resources
         case .storage: storage
+        case .update: update
         }
     }
 }

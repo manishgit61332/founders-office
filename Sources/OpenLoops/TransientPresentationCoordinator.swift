@@ -134,10 +134,10 @@ final class TransientPresentationCoordinator {
             window.level = elevatedLevel
         }
         window.collectionBehavior.formUnion([.canJoinAllSpaces, .fullScreenAuxiliary])
-        if window.parent == nil {
+        if window.parent == nil, hostWindow.isVisible {
             hostWindow.addChildWindow(window, ordered: .above)
         } else {
-            window.order(.above, relativeTo: hostWindow.windowNumber)
+            window.orderFrontRegardless()
         }
     }
 
