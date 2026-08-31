@@ -41,7 +41,8 @@ final class FoundersOfficeAppDelegate: NSObject, NSApplicationDelegate {
         let arguments = CommandLine.arguments
         if arguments.contains("--snapshot")
             || arguments.contains("--motion-frames")
-            || arguments.contains("--motion-reversal-frames") {
+            || arguments.contains("--motion-reversal-frames")
+            || arguments.contains("--ui-testing") {
             return .terminateNow
         }
         #endif
@@ -64,16 +65,22 @@ final class FoundersOfficeAppDelegate: NSObject, NSApplicationDelegate {
         #if FOUNDER_OFFICE_DISTRIBUTION
         let launchDisposition = runtimeHealth.beginLaunch(trackCrashLoop: true)
         #else
+        let isUITestLaunch = arguments.contains("--ui-testing")
         let isCaptureLaunch = arguments.contains("--preview")
             || arguments.contains("--snapshot")
             || arguments.contains("--motion-frames")
             || arguments.contains("--motion-reversal-frames")
+            || isUITestLaunch
         let launchDisposition = runtimeHealth.beginLaunch(trackCrashLoop: !isCaptureLaunch)
         #endif
         isSafeMode = launchDisposition.isSafeMode
         safeModeIncidentID = launchDisposition.incidentID
 
+        #if FOUNDER_OFFICE_DISTRIBUTION
         NSApp.setActivationPolicy(.accessory)
+        #else
+        NSApp.setActivationPolicy(isUITestLaunch ? .regular : .accessory)
+        #endif
         if isSafeMode {
             configureStatusItem()
             DispatchQueue.main.async { [weak self] in
@@ -244,7 +251,7 @@ final class FoundersOfficeAppDelegate: NSObject, NSApplicationDelegate {
         #if FOUNDER_OFFICE_DISTRIBUTION
         reconcileLaunchAtLoginPreference()
         #else
-        if !arguments.contains("--preview") && !arguments.contains("--snapshot") {
+        if !isCaptureLaunch {
             reconcileLaunchAtLoginPreference()
         }
         #endif
@@ -252,7 +259,10 @@ final class FoundersOfficeAppDelegate: NSObject, NSApplicationDelegate {
         markRuntimeReady()
 
         #if !FOUNDER_OFFICE_DISTRIBUTION
-        if arguments.contains("--snapshot") {
+        if isUITestLaunch {
+            notchController.showSnapshot()
+            NSApp.activate(ignoringOtherApps: true)
+        } else if arguments.contains("--snapshot") {
             notchController.showSnapshot()
         } else if arguments.contains("--preview") || arguments.contains("--motion-frames") || arguments.contains("--motion-reversal-frames") {
             notchController.show(preview: true)
@@ -307,23 +317,33 @@ final class FoundersOfficeAppDelegate: NSObject, NSApplicationDelegate {
         allowCloud: Bool,
         calendarMode: CalendarProvider.Mode = .live
     ) -> NotchWindowController {
+        let bridge: CloudSyncBridge?
+        if allowCloud, let cloudConfiguration, storageMode == .iCloud {
+            let currentRecovery = store.recoveryState.merging(personalization.recoveryState)
+            if currentRecovery.requiresRecovery {
+                bridge = nil
+            } else {
+                bridge = CloudSyncBridge(
+                    rootURL: store.rootURL,
+                    configuration: cloudConfiguration
+                )
+            }
+        } else {
+            bridge = nil
+        }
+
         let controller = NotchWindowController(
             store: store,
             personalization: personalization,
+            cloudSyncBridge: bridge,
             calendarMode: calendarMode
         )
         notchController = controller
 
-        if allowCloud, let cloudConfiguration, storageMode == .iCloud {
-            let currentRecovery = store.recoveryState.merging(personalization.recoveryState)
-            if !currentRecovery.requiresRecovery {
-                let bridge = CloudSyncBridge(
-                    rootURL: store.rootURL,
-                    configuration: cloudConfiguration
-                )
-                bridge.start()
-                cloudSyncBridge = bridge
-            }
+        cloudSyncBridge?.stop()
+        cloudSyncBridge = bridge
+        if let bridge {
+            bridge.start()
         }
 
         if statusItem == nil {

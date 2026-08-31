@@ -6,7 +6,10 @@ import FounderOfficeCloud
 /// by iPhone. It is activated only by the signed Xcode target because CloudKit
 /// requires iCloud and remote-notification entitlements.
 @MainActor
-final class CloudSyncBridge {
+final class CloudSyncBridge: ObservableObject {
+    @Published private(set) var status: FounderOfficeCloudStatus = .preparing
+    @Published private(set) var lastSuccessfulSyncAt: Date?
+
     private let rootURL: URL
     private let sync: FounderOfficeCloudSync
     private var watcher: Timer?
@@ -46,15 +49,31 @@ final class CloudSyncBridge {
 
         Task {
             await sync.start()
-            try? await sync.syncNow()
+            await retrySync()
         }
 
         watcher = Timer.scheduledTimer(withTimeInterval: 1.25, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.queueChangedFiles()
+                await self?.refreshPublishedStatus()
             }
         }
         watcher?.tolerance = 0.25
+    }
+
+    /// Re-runs the existing CloudKit synchronization path. Validated remote
+    /// changes can enter through the normal merge, but this does not reset the
+    /// workspace, account, credentials, permissions, or installed code.
+    func retrySync() async {
+        status = .syncing
+        do {
+            try await sync.syncNow()
+            lastSuccessfulSyncAt = Date()
+        } catch {
+            // The actor maps failures to a finite privacy-safe state. Health
+            // intentionally does not retain or export CloudKit error text.
+        }
+        await refreshPublishedStatus()
     }
 
     private func queueChangedFiles() {
@@ -65,6 +84,13 @@ final class CloudSyncBridge {
         guard previousOpenLoops != lastOpenLoopsModification
                 || previousPersonalization != lastPersonalizationModification else { return }
         Task { await sync.noteLocalChange() }
+    }
+
+    private func refreshPublishedStatus() async {
+        status = await sync.status
+        if status == .ready, lastSuccessfulSyncAt == nil {
+            lastSuccessfulSyncAt = Date()
+        }
     }
 
     private func rememberModificationDates() {

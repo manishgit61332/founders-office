@@ -49,6 +49,7 @@ final class NotchWindowController {
     private let codexRunner: CodexRunner
     private let personalization: PersonalizationStore
     private let calendarProvider: CalendarProvider
+    private let health: FounderOfficeHealthModel
     private let presentation = NotchPresentationModel()
     private let panel: NotchPanel
 
@@ -67,12 +68,23 @@ final class NotchWindowController {
     init(
         store: OpenLoopStore,
         personalization: PersonalizationStore? = nil,
+        cloudSyncBridge: CloudSyncBridge? = nil,
         calendarMode: CalendarProvider.Mode = .live
     ) {
+        let runner = CodexRunner(founderOfficeURL: store.rootURL)
+        let personalizationStore = personalization ?? PersonalizationStore(rootURL: store.rootURL)
+        let calendar = CalendarProvider(mode: calendarMode)
         self.store = store
-        codexRunner = CodexRunner(founderOfficeURL: store.rootURL)
-        self.personalization = personalization ?? PersonalizationStore(rootURL: store.rootURL)
-        calendarProvider = CalendarProvider(mode: calendarMode)
+        codexRunner = runner
+        self.personalization = personalizationStore
+        calendarProvider = calendar
+        health = FounderOfficeHealthModel(
+            store: store,
+            personalization: personalizationStore,
+            calendar: calendar,
+            assistant: runner,
+            cloud: cloudSyncBridge
+        )
         panel = NotchPanel(
             contentRect: NSRect(x: 0, y: 0, width: 720, height: 350),
             styleMask: [.borderless, .fullSizeContentView],
@@ -81,6 +93,8 @@ final class NotchWindowController {
         )
 
         panel.level = .statusBar
+        panel.title = "Founder's Office"
+        panel.identifier = NSUserInterfaceItemIdentifier("foundersOffice.notch")
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = false
@@ -97,6 +111,7 @@ final class NotchWindowController {
                 codexRunner: codexRunner,
                 personalization: self.personalization,
                 calendarProvider: calendarProvider,
+                health: health,
                 presentation: presentation
             ) { [weak self] in self?.hide(force: true) }
         )

@@ -45,6 +45,23 @@ targets:
           SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) FOUNDER_OFFICE_DISTRIBUTION"
     scheme:
       gatherCoverageData: true
+      testTargets:
+        - FoundersOfficeMacUITests
+
+  FoundersOfficeMacUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: Apps/macOSUITests
+    dependencies:
+      - target: FoundersOfficeMac
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.manish.openloops.uitests
+        PRODUCT_NAME: "Founder's Office UI Tests"
+        SWIFT_VERSION: "5.10"
+        TEST_TARGET_NAME: FoundersOfficeMac
 
   FoundersOfficeiOS:
     type: application

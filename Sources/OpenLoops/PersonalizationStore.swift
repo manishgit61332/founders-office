@@ -59,6 +59,10 @@ final class PersonalizationStore: ObservableObject {
         appearanceDraftSession = nil
     }
 
+    func reload() {
+        load(force: true)
+    }
+
     var preferredName: String { document.resolvedPreferredName ?? "" }
     var workspaceName: String { document.resolvedWorkspaceName }
     var accent: AccentPalette { document.accent }
