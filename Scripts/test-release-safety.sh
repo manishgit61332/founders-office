@@ -308,6 +308,85 @@ assert_refused "duplicate or colliding archive member" verify_fixture duplicate
 create_fixture clean
 clean_commit="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 clean_url="https://downloads.example.com/releases/macos/v1.2.3/build-4/${clean_commit}/FoundersOffice-1.2.3-build-4-macOS.zip"
+clean_manifest_url="https://downloads.example.com/releases/macos/v1.2.3/build-4/${clean_commit}/release.json"
+clean_acceptance_url="https://downloads.example.com/releases/macos/v1.2.3/build-4/${clean_commit}/clean-mac-acceptance.json"
+clean_acceptance="${fixture_root}/clean/clean-mac-acceptance.json"
+clean_acceptance_passes=(
+    immutablePublicOriginDownload
+    independentReleaseVerification
+    cleanInstall
+    gatekeeperLaunch
+    onboarding
+    calendarPermissionRetention
+    launchAtLoginRestart
+    signedUpgradeDataRetention
+    workspaceExport
+    workspaceErase
+    recovery
+    stagedUpdate
+    pausedUpdate
+    correctiveRollbackEvidence
+)
+clean_acceptance_arguments=()
+for clean_check in "${clean_acceptance_passes[@]}"; do
+    clean_acceptance_arguments+=(--passed "$clean_check")
+done
+
+assert_refused \
+    "required checks did not pass" \
+    "$script_dir/record-macos-clean-acceptance.py" \
+        --metadata "${fixture_root}/clean/release.json" \
+        --verified-artifact "${fixture_root}/clean/FoundersOffice-1.2.3-build-4-macOS.zip" \
+        --approved-origin https://downloads.example.com \
+        --artifact-url "$clean_url" \
+        --canonical-manifest-url "$clean_manifest_url" \
+        --acceptance-record-url "$clean_acceptance_url" \
+        --mac-model Mac15,3 \
+        --macos-version 15.6.1 \
+        --acceptance-id 22222222-2222-4222-8222-222222222222 \
+        --tested-at 2026-08-31T01:00:00Z \
+        --confirm-clean-account \
+        --confirm-no-developer-certificate \
+        --confirm-no-source-checkout \
+        --passed immutablePublicOriginDownload \
+        --output "${fixture_root}/clean/incomplete-acceptance.json"
+
+assert_refused \
+    "acceptance record URL is not the exact immutable release path" \
+    "$script_dir/record-macos-clean-acceptance.py" \
+        --metadata "${fixture_root}/clean/release.json" \
+        --verified-artifact "${fixture_root}/clean/FoundersOffice-1.2.3-build-4-macOS.zip" \
+        --approved-origin https://downloads.example.com \
+        --artifact-url "$clean_url" \
+        --canonical-manifest-url "$clean_manifest_url" \
+        --acceptance-record-url https://downloads.example.com/releases/macos/latest-acceptance.json \
+        --mac-model Mac15,3 \
+        --macos-version 15.6.1 \
+        --acceptance-id 22222222-2222-4222-8222-222222222222 \
+        --tested-at 2026-08-31T01:00:00Z \
+        --confirm-clean-account \
+        --confirm-no-developer-certificate \
+        --confirm-no-source-checkout \
+        "${clean_acceptance_arguments[@]}" \
+        --output "${fixture_root}/clean/mutable-path-acceptance.json"
+
+"$script_dir/record-macos-clean-acceptance.py" \
+    --metadata "${fixture_root}/clean/release.json" \
+    --verified-artifact "${fixture_root}/clean/FoundersOffice-1.2.3-build-4-macOS.zip" \
+    --approved-origin https://downloads.example.com \
+    --artifact-url "$clean_url" \
+    --canonical-manifest-url "$clean_manifest_url" \
+    --acceptance-record-url "$clean_acceptance_url" \
+    --mac-model Mac15,3 \
+    --macos-version 15.6.1 \
+    --acceptance-id 22222222-2222-4222-8222-222222222222 \
+    --tested-at 2026-08-31T01:00:00Z \
+    --confirm-clean-account \
+    --confirm-no-developer-certificate \
+    --confirm-no-source-checkout \
+    "${clean_acceptance_arguments[@]}" \
+    --output "$clean_acceptance"
+
 assert_refused \
     "expected update feed must be an exact credential-free HTTPS URL" \
     "$script_dir/verify-macos-release.sh" \
@@ -323,6 +402,7 @@ assert_refused \
 "$script_dir/prepare-website-mac-release.py" \
     --metadata "${fixture_root}/clean/release.json" \
     --verified-artifact "${fixture_root}/clean/FoundersOffice-1.2.3-build-4-macOS.zip" \
+    --clean-mac-acceptance "$clean_acceptance" \
     --download-url "$clean_url" \
     --approved-origin "https://downloads.example.com" \
     --output "${fixture_root}/clean/mac-release.json"
@@ -332,14 +412,65 @@ import sys
 
 with open(sys.argv[1], encoding="utf-8") as handle:
     manifest = json.load(handle)
-if not manifest.get("available") or not manifest.get("verifiedFromCanonicalManifest"):
-    raise SystemExit("generated website release manifest is not enabled and verified")
+if (
+    manifest.get("schemaVersion") != 2
+    or not manifest.get("available")
+    or not manifest.get("verifiedFromCanonicalManifest")
+    or not manifest.get("cleanMacAccepted")
+    or not isinstance(manifest.get("acceptanceRecordSHA256"), str)
+    or len(manifest["acceptanceRecordSHA256"]) != 64
+):
+    raise SystemExit("generated website release manifest is not clean-Mac accepted and verified")
 PY
+
+python3 - "$clean_acceptance" "${fixture_root}/clean/failed-acceptance.json" <<'PY'
+import json
+import sys
+
+source, output = sys.argv[1:]
+with open(source, encoding="utf-8") as handle:
+    acceptance = json.load(handle)
+acceptance["checks"]["launchAtLoginRestart"] = "failed"
+with open(output, "w", encoding="utf-8") as handle:
+    json.dump(acceptance, handle)
+PY
+assert_refused \
+    "clean-Mac check did not pass" \
+    "$script_dir/prepare-website-mac-release.py" \
+        --metadata "${fixture_root}/clean/release.json" \
+        --verified-artifact "${fixture_root}/clean/FoundersOffice-1.2.3-build-4-macOS.zip" \
+        --clean-mac-acceptance "${fixture_root}/clean/failed-acceptance.json" \
+        --download-url "$clean_url" \
+        --approved-origin "https://downloads.example.com" \
+        --output "${fixture_root}/clean/failed-acceptance-release.json"
+
+python3 - "$clean_acceptance" "${fixture_root}/clean/mismatched-acceptance.json" <<'PY'
+import json
+import sys
+
+source, output = sys.argv[1:]
+with open(source, encoding="utf-8") as handle:
+    acceptance = json.load(handle)
+acceptance["release"]["commit"] = "b" * 40
+with open(output, "w", encoding="utf-8") as handle:
+    json.dump(acceptance, handle)
+PY
+assert_refused \
+    "does not match the canonical release and artifact" \
+    "$script_dir/prepare-website-mac-release.py" \
+        --metadata "${fixture_root}/clean/release.json" \
+        --verified-artifact "${fixture_root}/clean/FoundersOffice-1.2.3-build-4-macOS.zip" \
+        --clean-mac-acceptance "${fixture_root}/clean/mismatched-acceptance.json" \
+        --download-url "$clean_url" \
+        --approved-origin "https://downloads.example.com" \
+        --output "${fixture_root}/clean/mismatched-acceptance-release.json"
+
 assert_refused \
     "exact immutable release path" \
     "$script_dir/prepare-website-mac-release.py" \
     --metadata "${fixture_root}/clean/release.json" \
     --verified-artifact "${fixture_root}/clean/FoundersOffice-1.2.3-build-4-macOS.zip" \
+    --clean-mac-acceptance "$clean_acceptance" \
     --download-url "https://downloads.example.com/releases/macos/latest.zip" \
     --approved-origin "https://downloads.example.com" \
     --output "${fixture_root}/clean/rejected.json"
