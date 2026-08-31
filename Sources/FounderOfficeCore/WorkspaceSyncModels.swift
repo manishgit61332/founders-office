@@ -106,6 +106,93 @@ public struct WorkspacePersistedSyncConflict: Codable, Equatable, Identifiable, 
     }
 }
 
+public enum WorkspaceSyncConflictResolution: String, Codable, Equatable, Sendable {
+    /// Reapply the exact quarantined local operation and make it deliverable
+    /// against the newest known server revision.
+    case keepMine
+    /// Apply the reviewed server record and permanently discard the exact
+    /// quarantined local operation.
+    case useLatest
+}
+
+public struct WorkspaceSyncConflictResolutionResult: Sendable {
+    public let conflictID: UUID
+    public let resolution: WorkspaceSyncConflictResolution
+    public let snapshot: WorkspaceRepositorySnapshot
+    public let origin: WorkspaceChangeOrigin
+    /// Present only for Keep Mine. This is the fresh reviewed operation whose
+    /// clocks and idempotency identity supersede the losing attempt.
+    public let reviewedOperationID: UUID?
+
+    public init(
+        conflictID: UUID,
+        resolution: WorkspaceSyncConflictResolution,
+        snapshot: WorkspaceRepositorySnapshot,
+        origin: WorkspaceChangeOrigin,
+        reviewedOperationID: UUID? = nil
+    ) {
+        self.conflictID = conflictID
+        self.resolution = resolution
+        self.snapshot = snapshot
+        self.origin = origin
+        self.reviewedOperationID = reviewedOperationID
+    }
+}
+
+/// Bounded retention for proof that may be safely discarded. Applied remote
+/// operation IDs are never pruned without a versioned server replay-horizon
+/// proof; the client reports the limit and fails closed instead.
+public struct WorkspaceSyncRetentionPolicy: Equatable, Sendable {
+    public static let `default` = try! WorkspaceSyncRetentionPolicy()
+
+    public let acknowledgementLimit: Int
+    public let bootstrapReceiptLimit: Int
+    public let appliedOperationLimit: Int
+
+    public init(
+        acknowledgementLimit: Int = 4_096,
+        bootstrapReceiptLimit: Int = 4,
+        appliedOperationLimit: Int = 250_000
+    ) throws {
+        guard (1...100_000).contains(acknowledgementLimit),
+              (1...64).contains(bootstrapReceiptLimit),
+              (1...1_000_000).contains(appliedOperationLimit) else {
+            throw WorkspaceSyncRepositoryError.requestBoundsExceeded
+        }
+        self.acknowledgementLimit = acknowledgementLimit
+        self.bootstrapReceiptLimit = bootstrapReceiptLimit
+        self.appliedOperationLimit = appliedOperationLimit
+    }
+}
+
+public struct WorkspaceSyncRetentionReport: Equatable, Sendable {
+    public let acknowledgementsPruned: Int
+    public let acknowledgementLimitReached: Bool
+    public let bootstrapReceiptsPruned: Int
+    public let appliedOperationCount: Int
+    public let appliedOperationLimitReached: Bool
+    public let unresolvedConflictCount: Int
+    public let quarantinedOperationCount: Int
+
+    public init(
+        acknowledgementsPruned: Int,
+        acknowledgementLimitReached: Bool,
+        bootstrapReceiptsPruned: Int,
+        appliedOperationCount: Int,
+        appliedOperationLimitReached: Bool,
+        unresolvedConflictCount: Int,
+        quarantinedOperationCount: Int
+    ) {
+        self.acknowledgementsPruned = acknowledgementsPruned
+        self.acknowledgementLimitReached = acknowledgementLimitReached
+        self.bootstrapReceiptsPruned = bootstrapReceiptsPruned
+        self.appliedOperationCount = appliedOperationCount
+        self.appliedOperationLimitReached = appliedOperationLimitReached
+        self.unresolvedConflictCount = unresolvedConflictCount
+        self.quarantinedOperationCount = quarantinedOperationCount
+    }
+}
+
 public struct WorkspacePendingSyncBatch: Sendable {
     public let operations: [WorkspaceOutboxOperation]
     public let requiresCanonicalBootstrap: Bool
@@ -209,6 +296,10 @@ public enum WorkspaceSyncRepositoryError: Error, Equatable, Sendable {
     case remoteRecordCannotBeRepresented
     case assetsDisabled
     case requestBoundsExceeded
+    case conflictNotFound
+    case conflictEvidenceUnavailable
+    case conflictResolutionUnavailable
+    case syncEvidenceLimitReached
 }
 
 /// Redacted transport failures shared by the coordinator and concrete HTTPS
@@ -282,6 +373,14 @@ extension WorkspaceSyncRepositoryError: LocalizedError {
             return "Photo sync stays disabled until private export and erasure are verified."
         case .requestBoundsExceeded:
             return "The sync batch exceeds the client safety limit."
+        case .conflictNotFound:
+            return "That sync conflict is no longer available for review."
+        case .conflictEvidenceUnavailable:
+            return "The exact local conflict evidence is unavailable. Nothing was changed."
+        case .conflictResolutionUnavailable:
+            return "This conflict cannot be resolved safely by this app version. Nothing was changed."
+        case .syncEvidenceLimitReached:
+            return "Device sync reached its durable replay-evidence limit and stopped safely."
         }
     }
 }
@@ -307,6 +406,16 @@ public protocol WorkspaceSyncRepository: Actor {
     ) throws
     func applyRemotePage(_ response: SyncPullResponse) throws
     func persistedSyncConflicts(limit: Int) throws -> [WorkspacePersistedSyncConflict]
+    func unresolvedSyncConflictCount() throws -> Int
+    func resolveSyncConflict(
+        id: UUID,
+        resolution: WorkspaceSyncConflictResolution,
+        resolvedAt: Date
+    ) throws -> WorkspaceSyncConflictResolutionResult
+    func enforceSyncRetention(
+        _ policy: WorkspaceSyncRetentionPolicy
+    ) throws -> WorkspaceSyncRetentionReport
     func remoteChanges() -> AsyncStream<WorkspaceRepositorySnapshot>
+    func events() -> AsyncStream<WorkspaceRepositoryEvent>
     func changes() -> AsyncStream<WorkspaceChange>
 }

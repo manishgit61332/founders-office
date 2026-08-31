@@ -6,6 +6,7 @@ public actor SQLiteWorkspaceRepository: WorkspaceRepository, WorkspaceSyncReposi
     private let database: SQLiteWorkspaceDatabase
     private var latestSnapshot: WorkspaceRepositorySnapshot
     private var changeContinuations: [UUID: AsyncStream<WorkspaceChange>.Continuation] = [:]
+    private var eventContinuations: [UUID: AsyncStream<WorkspaceRepositoryEvent>.Continuation] = [:]
     private var remoteChangeContinuations: [UUID: AsyncStream<WorkspaceRepositorySnapshot>.Continuation] = [:]
 
     private init(
@@ -47,6 +48,14 @@ public actor SQLiteWorkspaceRepository: WorkspaceRepository, WorkspaceSyncReposi
             latestSnapshot = change.snapshot
             for continuation in changeContinuations.values {
                 continuation.yield(change)
+            }
+            let event = WorkspaceRepositoryEvent(
+                snapshot: change.snapshot,
+                origin: .local,
+                operationID: change.operation.operationID
+            )
+            for continuation in eventContinuations.values {
+                continuation.yield(event)
             }
             return .committed(change)
         case let .unchanged(snapshot):
@@ -287,6 +296,23 @@ public actor SQLiteWorkspaceRepository: WorkspaceRepository, WorkspaceSyncReposi
         }
     }
 
+    public func events() -> AsyncStream<WorkspaceRepositoryEvent> {
+        let identifier = UUID()
+        return AsyncStream(bufferingPolicy: .bufferingNewest(32)) { continuation in
+            eventContinuations[identifier] = continuation
+            // Registration and replay happen in one repository-actor turn.
+            // A commit can therefore occur either before this replay (and be
+            // represented by it) or after registration (and be yielded), but
+            // can never fall into a snapshot/subscription gap.
+            continuation.yield(
+                WorkspaceRepositoryEvent(snapshot: latestSnapshot, origin: .initial)
+            )
+            continuation.onTermination = { [weak self] _ in
+                Task { await self?.removeEventContinuation(identifier) }
+            }
+        }
+    }
+
     public func pendingOperations(limit: Int = 100) throws -> [WorkspaceOutboxOperation] {
         try database.pendingOperations(limit: limit)
     }
@@ -362,6 +388,10 @@ public actor SQLiteWorkspaceRepository: WorkspaceRepository, WorkspaceSyncReposi
         let updated = try database.applyRemotePage(response)
         if let updated {
             latestSnapshot = updated
+            let event = WorkspaceRepositoryEvent(snapshot: updated, origin: .remote)
+            for continuation in eventContinuations.values {
+                continuation.yield(event)
+            }
             for continuation in remoteChangeContinuations.values {
                 continuation.yield(updated)
             }
@@ -370,6 +400,43 @@ public actor SQLiteWorkspaceRepository: WorkspaceRepository, WorkspaceSyncReposi
 
     public func persistedSyncConflicts(limit: Int = 100) throws -> [WorkspacePersistedSyncConflict] {
         try database.persistedSyncConflicts(limit: limit)
+    }
+
+    public func unresolvedSyncConflictCount() throws -> Int {
+        try database.unresolvedSyncConflictCount()
+    }
+
+    public func resolveSyncConflict(
+        id: UUID,
+        resolution: WorkspaceSyncConflictResolution,
+        resolvedAt: Date = Date()
+    ) throws -> WorkspaceSyncConflictResolutionResult {
+        let result = try database.resolveSyncConflict(
+            id: id,
+            resolution: resolution,
+            resolvedAt: resolvedAt
+        )
+        latestSnapshot = result.snapshot
+        let event = WorkspaceRepositoryEvent(
+            snapshot: result.snapshot,
+            origin: result.origin,
+            operationID: nil
+        )
+        for continuation in eventContinuations.values {
+            continuation.yield(event)
+        }
+        if result.origin == .remote {
+            for continuation in remoteChangeContinuations.values {
+                continuation.yield(result.snapshot)
+            }
+        }
+        return result
+    }
+
+    public func enforceSyncRetention(
+        _ policy: WorkspaceSyncRetentionPolicy = .default
+    ) throws -> WorkspaceSyncRetentionReport {
+        try database.enforceSyncRetention(policy)
     }
 
     public func remoteChanges() -> AsyncStream<WorkspaceRepositorySnapshot> {
@@ -384,6 +451,10 @@ public actor SQLiteWorkspaceRepository: WorkspaceRepository, WorkspaceSyncReposi
 
     private func removeRemoteChangeContinuation(_ identifier: UUID) {
         remoteChangeContinuations.removeValue(forKey: identifier)
+    }
+
+    private func removeEventContinuation(_ identifier: UUID) {
+        eventContinuations.removeValue(forKey: identifier)
     }
 
     /// Writes a revision-consistent, immutable projection. The destination
@@ -848,11 +919,25 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
     }
 
     func pendingOperations(limit: Int) throws -> [WorkspaceOutboxOperation] {
+        try readOutboxOperations(limit: limit, excludingConflicts: false)
+    }
+
+    private func deliverablePendingOperations(limit: Int) throws -> [WorkspaceOutboxOperation] {
+        try readOutboxOperations(limit: limit, excludingConflicts: true)
+    }
+
+    private func readOutboxOperations(
+        limit: Int,
+        excludingConflicts: Bool
+    ) throws -> [WorkspaceOutboxOperation] {
         guard limit > 0, limit <= 1_000 else {
             throw WorkspaceRepositoryError.invalidMutation(
                 reason: "outbox limit must be between 1 and 1000"
             )
         }
+        let conflictFilter = excludingConflicts
+            ? "WHERE NOT EXISTS (SELECT 1 FROM sync_conflicts WHERE sync_conflicts.operation_id = operation_outbox.operation_id)"
+            : ""
         let statement = try prepare(
             """
             SELECT operation_id, idempotency_key, workspace_id, writer_id,
@@ -860,6 +945,7 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
                    changed_fields, field_clocks, payload_format_version,
                    payload, created_at, delivery_attempts
             FROM operation_outbox
+            \(conflictFilter)
             ORDER BY committed_revision ASC, operation_id ASC
             LIMIT ?
             """,
@@ -1143,7 +1229,7 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
             )
         }
 
-        let candidates = try pendingOperations(limit: maximumCount)
+        let candidates = try deliverablePendingOperations(limit: maximumCount)
         var selected: [WorkspaceOutboxOperation] = []
         var total = 0
         for operation in candidates {
@@ -1283,6 +1369,15 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
                     acceptedCursor: acceptedCursor
                 )
             }
+            let bootstrapAlreadyComplete = try scalarCount(
+                "SELECT bootstrap_complete FROM sync_state WHERE singleton = 1",
+                operation: "read_bootstrap_receipt"
+            ) == 1
+            guard !bootstrapAlreadyComplete else {
+                // A pruned or otherwise missing proof can never be recreated
+                // from a later response after the outbox has been cleared.
+                throw WorkspaceSyncRepositoryError.bootstrapResponseMismatch
+            }
 
             let receiptID = UUID()
             try execute(
@@ -1344,6 +1439,30 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
                   conflictIDs.count == conflicts.count,
                   conflicts.allSatisfy({ $0.workspaceID == binding.workspaceID }) else {
                 throw WorkspaceSyncRepositoryError.invalidConflict
+            }
+            let existingConflictCount = try scalarCount(
+                "SELECT count(*) FROM sync_conflicts",
+                operation: "inspect_acknowledgement_evidence_limit"
+            )
+            if existingConflictCount > 0 || !conflicts.isEmpty {
+                var newAcknowledgementCount = 0
+                for acknowledgement in acknowledgements where
+                    try remoteAcknowledgement(
+                        operationID: acknowledgement.localOperationID
+                    ) == nil {
+                    newAcknowledgementCount += 1
+                }
+                let storedAcknowledgementCount = try scalarCount(
+                    "SELECT count(*) FROM sync_operation_acknowledgements",
+                    operation: "inspect_acknowledgement_evidence_limit"
+                )
+                guard storedAcknowledgementCount + Int64(newAcknowledgementCount)
+                        <= Int64(WorkspaceSyncRetentionPolicy.default.acknowledgementLimit) else {
+                    // Later acknowledgements can prove that an old conflict
+                    // review is stale. Never prune or exceed their bound while
+                    // such a review remains unresolved.
+                    throw WorkspaceSyncRepositoryError.syncEvidenceLimitReached
+                }
             }
 
             for acknowledgement in acknowledgements {
@@ -1415,7 +1534,9 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
                     ],
                     operation: "persist_sync_conflict"
                 )
-                try deleteV2Outbox(operationID: operationID)
+                // Keep the exact local-v2 operation durable but hidden from
+                // deliverable batches. It is the only lossless evidence that
+                // can support a later reviewed Keep Mine choice.
             }
             if !conflicts.isEmpty {
                 try execute(
@@ -1456,6 +1577,17 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
                 } else {
                     freshChanges.append(change)
                 }
+            }
+            let appliedEvidenceCount = try scalarCount(
+                "SELECT count(*) FROM sync_applied_operations",
+                operation: "inspect_applied_operation_limit"
+            )
+            guard appliedEvidenceCount + Int64(freshChanges.count)
+                    <= Int64(WorkspaceSyncRetentionPolicy.default.appliedOperationLimit) else {
+                // Exact operation-ID membership cannot be compacted without
+                // a server-authenticated replay horizon. Stop before changing
+                // canonical state rather than weaken duplicate detection.
+                throw WorkspaceSyncRepositoryError.syncEvidenceLimitReached
             }
             let content = try WorkspaceRemoteChangeApplicator.apply(freshChanges, to: current.content)
             let canonical = try codec.canonicalizedWithData(content)
@@ -1549,6 +1681,490 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
             )
         }
         return values
+    }
+
+    func unresolvedSyncConflictCount() throws -> Int {
+        let count = try scalarCount(
+            "SELECT count(*) FROM sync_conflicts",
+            operation: "count_sync_conflicts"
+        )
+        guard count >= 0, count <= Int64(Int.max) else {
+            throw WorkspaceSyncRepositoryError.invalidConflict
+        }
+        return Int(count)
+    }
+
+    func resolveSyncConflict(
+        id: UUID,
+        resolution: WorkspaceSyncConflictResolution,
+        resolvedAt: Date
+    ) throws -> WorkspaceSyncConflictResolutionResult {
+        guard resolvedAt.timeIntervalSinceReferenceDate.isFinite else {
+            throw WorkspaceSyncRepositoryError.invalidConflict
+        }
+        return try transaction {
+            guard let binding = try syncBinding() else {
+                throw WorkspaceSyncRepositoryError.bindingRequired
+            }
+            let statement = try prepare(
+                """
+                SELECT workspace_id, operation_id, conflict
+                FROM sync_conflicts WHERE conflict_id = ?
+                """,
+                operation: "read_conflict_for_resolution"
+            )
+            try statement.bind(
+                [.text(id.uuidString.lowercased())],
+                operation: "read_conflict_for_resolution"
+            )
+            guard try statement.step(operation: "read_conflict_for_resolution"),
+                  let workspaceUUID = UUID(
+                    uuidString: try statement.requiredText(
+                        at: 0,
+                        operation: "read_conflict_for_resolution"
+                    )
+                  ),
+                  let operationID = UUID(
+                    uuidString: try statement.requiredText(
+                        at: 1,
+                        operation: "read_conflict_for_resolution"
+                    )
+                  ) else {
+                throw WorkspaceSyncRepositoryError.conflictNotFound
+            }
+            guard WorkspaceID(rawValue: workspaceUUID) == binding.workspaceID else {
+                throw WorkspaceSyncRepositoryError.bindingMismatch
+            }
+            let conflict: SyncConflict
+            do {
+                conflict = try codec.decoder.decode(
+                    SyncConflict.self,
+                    from: try statement.requiredBlob(
+                        at: 2,
+                        operation: "read_conflict_for_resolution"
+                    )
+                )
+                try conflict.validate(for: binding.workspaceID)
+            } catch {
+                throw WorkspaceSyncRepositoryError.invalidConflict
+            }
+            guard conflict.operationID.rawValue == operationID,
+                  let localOperation = try v2OutboxOperation(operationID: operationID) else {
+                throw WorkspaceSyncRepositoryError.conflictEvidenceUnavailable
+            }
+            guard try !hasNewerOverlappingLocalEvidence(
+                than: localOperation,
+                conflict: conflict
+            ) else {
+                // The review UI described the older attempted value. A later
+                // local edit is a different user intent and must never be
+                // overwritten or discarded by resolving this stale conflict.
+                throw WorkspaceSyncRepositoryError.conflictResolutionUnavailable
+            }
+
+            guard let stored = try readStoredState() else {
+                throw WorkspaceRepositoryError.invalidDatabase
+            }
+            let current = try decodeState(stored)
+            let knownRemoteRevision = try remoteRevision(
+                entityType: conflict.entityType,
+                entityID: conflict.entityID
+            )
+            var replacement = current.content
+            let origin: WorkspaceChangeOrigin
+            var reviewedOperation: WorkspaceOutboxOperation?
+
+            switch resolution {
+            case .keepMine:
+                // A missing remote record requires a create-shaped operation.
+                // Rewriting an update mask into a create without a reviewed
+                // contract would be lossy, so preserve all evidence instead.
+                guard conflict.currentRevision > 0 || knownRemoteRevision > 0 else {
+                    throw WorkspaceSyncRepositoryError.conflictResolutionUnavailable
+                }
+                if conflict.currentRevision >= knownRemoteRevision,
+                   let serverRecord = conflict.serverRecord {
+                    try upsertRemoteRevision(
+                        entityType: conflict.entityType,
+                        entityID: conflict.entityID,
+                        revision: conflict.currentRevision,
+                        fieldClocks: try remoteFieldClocks(serverRecord)
+                    )
+                }
+                let remoteClocks = try remoteEntityFieldClocks(
+                    entityType: conflict.entityType,
+                    entityID: conflict.entityID
+                )
+                let localClocks = Array(localOperation.fieldClocks.values)
+                let conflictingRemoteClocks = remoteClocks
+                    .filter { conflict.conflictingFields.contains($0.key) }
+                    .map(\.value)
+                let newestRelevantClock = (localClocks + conflictingRemoteClocks).max()
+                guard newestRelevantClock.map({ resolvedAt > $0 }) ?? true else {
+                    // Reusing a losing clock would make Keep Mine immediately
+                    // conflict again. Require a real, later review instant.
+                    throw WorkspaceSyncRepositoryError.conflictResolutionUnavailable
+                }
+                replacement = try WorkspaceConflictLocalChangeApplicator.apply(
+                    localOperation,
+                    to: replacement
+                )
+                origin = .local
+
+            case .useLatest:
+                guard conflict.currentRevision > 0, conflict.serverRecord != nil else {
+                    throw WorkspaceSyncRepositoryError.conflictResolutionUnavailable
+                }
+                guard try reviewedRemoteFields(
+                    for: localOperation,
+                    workspaceID: binding.workspaceID,
+                    baseRevision: max(knownRemoteRevision, conflict.currentRevision)
+                ).isSubset(of: Set(conflict.conflictingFields)) else {
+                    // A partial server conflict record cannot justify silently
+                    // discarding other fields from the local operation.
+                    throw WorkspaceSyncRepositoryError.conflictResolutionUnavailable
+                }
+                // If a later pull already advanced the entity, canonical state
+                // is newer than this conflict response. Never reapply stale
+                // server evidence; only discard the reviewed local attempt.
+                if knownRemoteRevision <= conflict.currentRevision {
+                    guard conflict.currentRevision > 0,
+                          let serverRecord = conflict.serverRecord else {
+                        throw WorkspaceSyncRepositoryError.conflictResolutionUnavailable
+                    }
+                    let clocks = try remoteFieldClocks(serverRecord)
+                    let changedAt = conflict.conflictingFields.compactMap { clocks[$0] }.max()
+                        ?? clocks.values.max()
+                        ?? resolvedAt
+                    let isDelete: Bool
+                    if conflict.conflictingFields == ["deletedAt"],
+                       case .string? = serverRecord["deletedAt"] {
+                        isDelete = true
+                    } else {
+                        isDelete = false
+                    }
+                    let reviewedChange = try SyncChange(
+                        cursor: SyncCursor(value: 1),
+                        operationID: conflict.operationID,
+                        entityType: conflict.entityType,
+                        entityID: conflict.entityID,
+                        action: isDelete ? .delete : .upsert,
+                        revision: conflict.currentRevision,
+                        changedFields: conflict.conflictingFields,
+                        changedAt: changedAt,
+                        record: serverRecord
+                    )
+                    replacement = try WorkspaceRemoteChangeApplicator.apply(
+                        [reviewedChange],
+                        to: replacement
+                    )
+                    try upsertRemoteRevision(
+                        entityType: conflict.entityType,
+                        entityID: conflict.entityID,
+                        revision: conflict.currentRevision,
+                        fieldClocks: clocks
+                    )
+                }
+                try deleteV2Outbox(operationID: operationID)
+                origin = .remote
+            }
+
+            let canonical = try codec.canonicalizedWithData(replacement)
+            let snapshot: WorkspaceRepositorySnapshot
+            if canonical.data != stored.snapshotData || resolution == .keepMine {
+                snapshot = WorkspaceRepositorySnapshot(
+                    workspaceID: current.workspaceID,
+                    writerID: current.writerID,
+                    revision: WorkspaceRevision(rawValue: current.revision.rawValue + 1),
+                    content: canonical.snapshot
+                )
+                try updateState(
+                    snapshot,
+                    snapshotData: canonical.data,
+                    expectedRevision: current.revision
+                )
+            } else {
+                snapshot = current
+            }
+
+            if resolution == .keepMine {
+                let freshOperation = WorkspaceOutboxOperation(
+                    operationID: UUID(),
+                    idempotencyKey: WorkspaceIdempotencyKey(),
+                    workspaceID: current.workspaceID,
+                    writerID: current.writerID,
+                    baseRevision: current.revision,
+                    committedRevision: snapshot.revision,
+                    entityKind: localOperation.entityKind,
+                    entityID: localOperation.entityID,
+                    changedFields: localOperation.changedFields,
+                    fieldClocks: Dictionary(
+                        uniqueKeysWithValues: localOperation.changedFields.map {
+                            ($0, resolvedAt)
+                        }
+                    ),
+                    payloadFormatVersion: localOperation.payloadFormatVersion,
+                    payload: localOperation.payload,
+                    createdAt: resolvedAt
+                )
+                try deleteV2Outbox(operationID: operationID)
+                try insertReviewedConflictReceipt(freshOperation)
+                try insertOutbox(freshOperation)
+                reviewedOperation = freshOperation
+            }
+
+            try execute(
+                "DELETE FROM sync_conflicts WHERE conflict_id = ? AND operation_id = ?",
+                bindings: [
+                    .text(id.uuidString.lowercased()),
+                    .text(operationID.uuidString.lowercased()),
+                ],
+                operation: "resolve_sync_conflict"
+            )
+            guard sqlite3_changes(connection) == 1 else {
+                throw WorkspaceSyncRepositoryError.conflictNotFound
+            }
+            let remaining = try scalarCount(
+                "SELECT count(*) FROM sync_conflicts",
+                operation: "resolve_sync_conflict"
+            )
+            try execute(
+                """
+                UPDATE sync_state
+                SET phase = ?, retry_attempt = 0, next_retry_at = NULL,
+                    failure_code = ?
+                WHERE singleton = 1
+                """,
+                bindings: remaining > 0
+                    ? [.text(WorkspaceSyncPhase.conflictReviewRequired.rawValue), .text("sync_conflict")]
+                    : [.text(WorkspaceSyncPhase.idle.rawValue), .null],
+                operation: "resolve_sync_conflict"
+            )
+            guard sqlite3_changes(connection) == 1 else {
+                throw WorkspaceSyncRepositoryError.invalidSyncState
+            }
+            return WorkspaceSyncConflictResolutionResult(
+                conflictID: id,
+                resolution: resolution,
+                snapshot: snapshot,
+                origin: origin,
+                reviewedOperationID: reviewedOperation?.operationID
+            )
+        }
+    }
+
+    private func hasNewerOverlappingLocalEvidence(
+        than operation: WorkspaceOutboxOperation,
+        conflict: SyncConflict
+    ) throws -> Bool {
+        let laterOutbox = try prepare(
+            """
+            SELECT changed_fields FROM operation_outbox
+            WHERE entity_kind = ? AND entity_id = ?
+              AND committed_revision > ? AND operation_id <> ?
+            """,
+            operation: "inspect_stale_conflict_outbox"
+        )
+        try laterOutbox.bind(
+            [
+                .text(operation.entityKind),
+                .text(operation.entityID),
+                .integer(operation.committedRevision.rawValue),
+                .text(operation.operationID.uuidString.lowercased()),
+            ],
+            operation: "inspect_stale_conflict_outbox"
+        )
+        let localFields = Set(operation.changedFields)
+        while try laterOutbox.step(operation: "inspect_stale_conflict_outbox") {
+            let fields: [String]
+            do {
+                fields = try codec.decoder.decode(
+                    [String].self,
+                    from: try laterOutbox.requiredBlob(
+                        at: 0,
+                        operation: "inspect_stale_conflict_outbox"
+                    )
+                )
+            } catch {
+                throw WorkspaceSyncRepositoryError.conflictEvidenceUnavailable
+            }
+            if !localFields.isDisjoint(with: fields) { return true }
+        }
+
+        // A later local operation may already have been accepted and removed
+        // from the outbox. Its acknowledgement is durable enough to prevent
+        // the older review from overwriting that accepted intent.
+        let laterAcknowledgement = try prepare(
+            """
+            SELECT field_clocks FROM sync_operation_acknowledgements
+            WHERE entity_type = ? AND entity_id = ?
+            """,
+            operation: "inspect_stale_conflict_acknowledgement"
+        )
+        try laterAcknowledgement.bind(
+            [
+                .text(conflict.entityType.rawValue),
+                .text(conflict.entityID.uuidString.lowercased()),
+            ],
+            operation: "inspect_stale_conflict_acknowledgement"
+        )
+        let conflictFields = Set(conflict.conflictingFields)
+        while try laterAcknowledgement.step(
+            operation: "inspect_stale_conflict_acknowledgement"
+        ) {
+            let clocks: [String: Date]
+            do {
+                clocks = try codec.decoder.decode(
+                    [String: Date].self,
+                    from: try laterAcknowledgement.requiredBlob(
+                        at: 0,
+                        operation: "inspect_stale_conflict_acknowledgement"
+                    )
+                )
+            } catch {
+                throw WorkspaceSyncRepositoryError.conflictEvidenceUnavailable
+            }
+            let originalClock = operation.fieldClocks.values.max() ?? operation.createdAt
+            if clocks.contains(where: {
+                conflictFields.contains($0.key) && $0.value > originalClock
+            }) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private func reviewedRemoteFields(
+        for operation: WorkspaceOutboxOperation,
+        workspaceID: WorkspaceID,
+        baseRevision: Int64
+    ) throws -> Set<String> {
+        guard case let .localEntity(envelope) = try operation.decodedLocalPayload() else {
+            throw WorkspaceSyncRepositoryError.conflictEvidenceUnavailable
+        }
+        let wire = try WorkspaceV2SyncAdapter.adapt(
+            operation: operation,
+            envelope: envelope,
+            remoteBaseRevision: baseRevision,
+            workspaceID: workspaceID
+        )
+        return Set(wire.changedFields)
+    }
+
+    private func insertReviewedConflictReceipt(
+        _ operation: WorkspaceOutboxOperation
+    ) throws {
+        // The reviewed operation gets a fresh, internal idempotency identity.
+        // Its fingerprint is only an audit guard for this generated request;
+        // callers cannot manufacture or replay the private key.
+        let fingerprint = Data(SHA256.hash(data: try codec.encode(operation)))
+        try execute(
+            """
+            INSERT INTO operation_receipts (
+                idempotency_key, operation_id, request_fingerprint,
+                fingerprint_version, result_revision, produced_change, created_at
+            ) VALUES (?, ?, ?, 2, ?, 1, ?)
+            """,
+            bindings: [
+                .text(operation.idempotencyKey.description),
+                .text(operation.operationID.uuidString.lowercased()),
+                .blob(fingerprint),
+                .integer(operation.committedRevision.rawValue),
+                .real(operation.createdAt.timeIntervalSince1970),
+            ],
+            operation: "record_reviewed_conflict_operation"
+        )
+    }
+
+    private func remoteEntityFieldClocks(
+        entityType: SyncEntityType,
+        entityID: UUID
+    ) throws -> [String: Date] {
+        let statement = try prepare(
+            """
+            SELECT field_clocks FROM sync_entity_revisions
+            WHERE entity_type = ? AND entity_id = ?
+            """,
+            operation: "read_remote_field_clocks"
+        )
+        try statement.bind(
+            [.text(entityType.rawValue), .text(entityID.uuidString.lowercased())],
+            operation: "read_remote_field_clocks"
+        )
+        guard try statement.step(operation: "read_remote_field_clocks") else { return [:] }
+        do {
+            return try codec.decoder.decode(
+                [String: Date].self,
+                from: try statement.requiredBlob(at: 0, operation: "read_remote_field_clocks")
+            )
+        } catch {
+            throw WorkspaceSyncRepositoryError.invalidRemoteRevision
+        }
+    }
+
+    func enforceSyncRetention(
+        _ policy: WorkspaceSyncRetentionPolicy
+    ) throws -> WorkspaceSyncRetentionReport {
+        try transaction {
+            try execute(
+                """
+                DELETE FROM sync_operation_acknowledgements
+                WHERE operation_id NOT IN (
+                    SELECT operation_id FROM sync_operation_acknowledgements
+                    ORDER BY acknowledged_at DESC, operation_id DESC LIMIT ?
+                )
+                AND (
+                    NOT EXISTS (SELECT 1 FROM sync_conflicts)
+                    OR acknowledged_at <= (
+                        SELECT MIN(recorded_at) FROM sync_conflicts
+                    )
+                )
+                """,
+                bindings: [.integer(Int64(policy.acknowledgementLimit))],
+                operation: "prune_sync_acknowledgements"
+            )
+            let acknowledgementsPruned = Int(sqlite3_changes(connection))
+            let acknowledgements = try scalarCount(
+                "SELECT count(*) FROM sync_operation_acknowledgements",
+                operation: "inspect_sync_retention"
+            )
+
+            try execute(
+                """
+                DELETE FROM sync_bootstrap_receipts
+                WHERE receipt_id NOT IN (
+                    SELECT receipt_id FROM sync_bootstrap_receipts
+                    ORDER BY created_at DESC, receipt_id DESC LIMIT ?
+                )
+                """,
+                bindings: [.integer(Int64(policy.bootstrapReceiptLimit))],
+                operation: "prune_sync_bootstrap_receipts"
+            )
+            let bootstrapReceiptsPruned = Int(sqlite3_changes(connection))
+
+            let applied = try scalarCount(
+                "SELECT count(*) FROM sync_applied_operations",
+                operation: "inspect_sync_retention"
+            )
+            let conflicts = try scalarCount(
+                "SELECT count(*) FROM sync_conflicts",
+                operation: "inspect_sync_retention"
+            )
+            let quarantined = try scalarCount(
+                "SELECT count(*) FROM sync_quarantined_operations",
+                operation: "inspect_sync_retention"
+            )
+            return WorkspaceSyncRetentionReport(
+                acknowledgementsPruned: acknowledgementsPruned,
+                acknowledgementLimitReached: acknowledgements
+                    > Int64(policy.acknowledgementLimit),
+                bootstrapReceiptsPruned: bootstrapReceiptsPruned,
+                appliedOperationCount: Int(applied),
+                appliedOperationLimitReached: applied >= Int64(policy.appliedOperationLimit),
+                unresolvedConflictCount: Int(conflicts),
+                quarantinedOperationCount: Int(quarantined)
+            )
+        }
     }
 
     private func configureConnection() throws {
@@ -2321,6 +2937,14 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
             }
             for (field, clock) in existingClocks where mergedClocks[field] == nil {
                 mergedClocks[field] = clock
+            }
+            guard fieldClocks.allSatisfy({ field, incomingClock in
+                existingClocks[field].map { incomingClock >= $0 } ?? true
+            }) else {
+                // A partial conflict response may legitimately omit clocks
+                // for disjoint fields, which we retain above. It may never
+                // replace an already authenticated clock with an older one.
+                throw WorkspaceSyncRepositoryError.invalidRemoteRevision
             }
         }
         let clocksData = try codec.encode(mergedClocks)

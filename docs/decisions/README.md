@@ -23,3 +23,4 @@ Each ADR records status, date, context, decision, consequences, privacy/security
 - [0018 — Exact bounded primary-goal decimals](0018-exact-primary-goal-decimals.md)
 - [0019 — Clean-Mac acceptance gates the public download](0019-clean-mac-acceptance-gates-public-download.md)
 - [0020 — Fail-closed local live-sync engine](0020-fail-closed-live-sync-engine.md)
+- [0023 — Durable sync runtime state and reviewed conflicts](0023-durable-sync-runtime-state-and-conflict-review.md)
