@@ -1,0 +1,5 @@
+// Public client configuration only. Copy values into an untracked local
+// xcconfig or inject them from protected release CI variables.
+FOUNDER_OFFICE_SUPABASE_URL = https:/$()/PROJECT_REF.supabase.co
+FOUNDER_OFFICE_SUPABASE_PUBLISHABLE_KEY = sb_publishable_REPLACE_ME
+FOUNDER_OFFICE_AUTH_CALLBACK_SCHEME = com.example.foundersoffice.auth

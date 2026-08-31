@@ -8,6 +8,17 @@
     <string>$(EXECUTABLE_NAME)</string>
     <key>CFBundleIdentifier</key>
     <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>FounderOfficeProductAuth</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>$(FOUNDER_OFFICE_AUTH_CALLBACK_SCHEME)</string>
+            </array>
+        </dict>
+    </array>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
@@ -24,6 +35,12 @@
          replace it with the entitlement-matched production container. -->
     <key>FounderOfficeCloudContainerIdentifier</key>
     <string>iCloud.com.manish.foundersoffice</string>
+    <key>FounderOfficeSupabaseURL</key>
+    <string>$(FOUNDER_OFFICE_SUPABASE_URL)</string>
+    <key>FounderOfficeSupabasePublishableKey</key>
+    <string>$(FOUNDER_OFFICE_SUPABASE_PUBLISHABLE_KEY)</string>
+    <key>FounderOfficeAuthCallbackURL</key>
+    <string>$(FOUNDER_OFFICE_AUTH_CALLBACK_SCHEME)://auth/callback</string>
     <key>LSRequiresIPhoneOS</key>
     <true/>
     <key>NSCalendarsFullAccessUsageDescription</key>

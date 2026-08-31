@@ -6,6 +6,7 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Added
 
+- A configuration-gated Supabase product-identity client for Google OAuth and native Sign in with Apple, with PKCE, Keychain session storage, token-free UI state, and an explicit local-workspace claim decision before sync can begin.
 - A serialized, transactional local workspace repository foundation with durable revisions, device-writer identity, idempotent mutation receipts, a sync operation outbox, fail-closed legacy import, and immutable JSON/Markdown exports.
 - Transactional Appearance editing with live preview, explicit Save Changes and Discard actions, conflict choices, retryable save errors, and an unsaved-quit guard.
 - A centralized transient-presentation lifecycle that collapses the expanded notch for native panels, menus, and popovers, keeps overlapping interactions balanced, and restores the notch and keyboard focus after the final popup closes.
@@ -66,6 +67,7 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Security
 
+- Production identity configuration accepts only HTTPS endpoints and Supabase publishable/legacy-anon keys; secret and service-role credentials are rejected before the client is created.
 - Founder runtime data, photos, Codex runs, exports, support bundles, visual QA, credentials, and signing files are excluded from source control.
 - Direct releases accept only a tracked production entitlement file and reject debug, temporary-exception, or unsafe code-signing entitlements.
 
