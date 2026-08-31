@@ -324,6 +324,36 @@ struct WorkspaceSessionIntegrationTests {
     }
 
     @Test
+    func moveWriteFailureRemainsUnresolvedUntilASuccessfulRetry() async throws {
+        let fixture = try MacStorageFixture()
+        defer { fixture.remove() }
+        let session = try await WorkspaceSession.open(
+            rootURL: fixture.root,
+            workspaceID: UUID(),
+            initialSnapshot: fixture.snapshot(moveCount: 1)
+        )
+        let store = OpenLoopStore(session: session)
+        let committedCount = session.snapshot.content.openLoops.items.count
+
+        try fixture.installFailingWorkspaceUpdateTrigger(at: session.databaseURL)
+        store.add(title: "A Move that cannot commit", status: .next, priority: .p2, dueAt: nil)
+
+        #expect(!(await store.waitForPendingWrites()))
+        #expect(store.hasUnresolvedWriteFailure)
+        #expect(store.items.count == committedCount)
+        #expect(session.snapshot.content.openLoops.items.count == committedCount)
+
+        try fixture.removeFailingWorkspaceUpdateTrigger(at: session.databaseURL)
+        store.add(title: "Durable Move", status: .next, priority: .p2, dueAt: nil)
+
+        #expect(await store.waitForPendingWrites())
+        #expect(!store.hasUnresolvedWriteFailure)
+        #expect(session.snapshot.content.openLoops.items.count == committedCount + 1)
+        store.stop()
+        session.stop()
+    }
+
+    @Test
     func slowPhotoPreparationRebasesOntoConcurrentPersonalizationThenSurvivesRelaunchAndRemoval() async throws {
         let fixture = try MacStorageFixture()
         defer { fixture.remove() }
