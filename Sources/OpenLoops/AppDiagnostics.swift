@@ -20,6 +20,7 @@ enum AppDiagnostics {
         case applicationLaunch = "application.launch"
         case applicationReady = "application.ready"
         case calendarAuthorizationRequest = "calendar.authorization.request"
+        case calendarEventSave = "calendar.event.save"
         case cloudConfigurationLoad = "cloud.configuration.load"
         case codexProcessStart = "codex.process.start"
         case fontRegistration = "font.registration"

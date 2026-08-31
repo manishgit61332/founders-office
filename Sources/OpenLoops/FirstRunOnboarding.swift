@@ -4,6 +4,21 @@ import FounderOfficeCore
 import ServiceManagement
 import SwiftUI
 
+private func onboardingSystemFont(
+    _ role: FounderTextRole,
+    weight: Font.Weight = .regular
+) -> Font {
+    .system(size: CGFloat(FounderTypeScale.points(for: role)), weight: weight)
+}
+
+private func onboardingDisplayFont(_ role: FounderTextRole) -> Font {
+    .custom(
+        "Instrument Serif",
+        size: CGFloat(FounderTypeScale.points(for: role)),
+        relativeTo: role == .primaryTitle ? .largeTitle : .body
+    )
+}
+
 enum FirstRunStorageMode: String, Codable {
     case localOnly
     case iCloud
@@ -470,7 +485,7 @@ private struct FirstRunOnboardingView: View {
                 .background(Color.white.opacity(0.1), in: Circle())
 
             Text("Founder’s Office")
-                .font(.system(size: 16, weight: .semibold))
+                .font(onboardingSystemFont(.secondary, weight: .semibold))
 
             Spacer()
 
@@ -505,13 +520,13 @@ private struct FirstRunOnboardingView: View {
         VStack(alignment: .leading, spacing: 20) {
             onboardingTitle("Welcome. What should we call you?")
             Text("Your name stays in your Founder’s Office workspace and shapes the greeting. You can change it later.")
-                .font(.system(size: 16))
+                .font(onboardingSystemFont(.secondary))
                 .foregroundStyle(Color.white.opacity(0.78))
                 .fixedSize(horizontal: false, vertical: true)
 
             TextField("Preferred name", text: $model.nameDraft)
                 .textFieldStyle(.plain)
-                .font(.system(size: 22, weight: .medium))
+                .font(onboardingSystemFont(.secondary, weight: .medium))
                 .padding(.horizontal, 18)
                 .frame(height: 58)
                 .background(Color.white.opacity(0.1), in: RoundedRectangle(cornerRadius: 15, style: .continuous))
@@ -529,7 +544,7 @@ private struct FirstRunOnboardingView: View {
         VStack(alignment: .leading, spacing: 18) {
             onboardingTitle("Choose where your workspace lives")
             Text("Nothing syncs until you choose. You can start local and review iCloud later.")
-                .font(.system(size: 16))
+                .font(onboardingSystemFont(.secondary))
                 .foregroundStyle(Color.white.opacity(0.78))
 
             HStack(spacing: 14) {
@@ -560,7 +575,7 @@ private struct FirstRunOnboardingView: View {
                 "Founder’s Office will only register as a login item after you press Enable. "
                     + "macOS keeps the final control in System Settings."
             )
-                .font(.system(size: 16))
+                .font(onboardingSystemFont(.secondary))
                 .foregroundStyle(Color.white.opacity(0.78))
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -568,12 +583,12 @@ private struct FirstRunOnboardingView: View {
                 model.launchAtLoginEnabled ? "Launch at Login is on" : "Launch at Login is off",
                 systemImage: model.launchAtLoginEnabled ? "checkmark.circle.fill" : "circle"
             )
-            .font(.system(size: 18, weight: .semibold))
+            .font(onboardingSystemFont(.secondary, weight: .semibold))
             .foregroundStyle(model.launchAtLoginEnabled ? Color.green : Color.white)
 
             if let launchError = model.launchError {
                 Label(launchError, systemImage: "exclamationmark.triangle.fill")
-                    .font(.system(size: 15, weight: .medium))
+                    .font(onboardingSystemFont(.tertiary, weight: .medium))
                     .foregroundStyle(Color.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -584,13 +599,13 @@ private struct FirstRunOnboardingView: View {
         VStack(alignment: .leading, spacing: 20) {
             onboardingTitle("What is your next Move?")
             Text("Add one concrete thing you want to move forward. If you are not ready, skip safely and add it from the notch later.")
-                .font(.system(size: 16))
+                .font(onboardingSystemFont(.secondary))
                 .foregroundStyle(Color.white.opacity(0.78))
                 .fixedSize(horizontal: false, vertical: true)
 
             TextField("For example: send the proposal", text: $model.firstMoveDraft)
                 .textFieldStyle(.plain)
-                .font(.system(size: 19, weight: .medium))
+                .font(onboardingSystemFont(.secondary, weight: .medium))
                 .padding(.horizontal, 18)
                 .frame(height: 58)
                 .background(Color.white.opacity(0.1), in: RoundedRectangle(cornerRadius: 15, style: .continuous))
@@ -603,7 +618,7 @@ private struct FirstRunOnboardingView: View {
 
             if let moveError = model.moveError {
                 Label(moveError, systemImage: "exclamationmark.triangle.fill")
-                    .font(.system(size: 15, weight: .medium))
+                    .font(onboardingSystemFont(.tertiary, weight: .medium))
                     .foregroundStyle(Color.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -614,7 +629,7 @@ private struct FirstRunOnboardingView: View {
         VStack(alignment: .leading, spacing: 18) {
             onboardingTitle("One gesture. Then you are in.")
             Text("Move the pointer onto the notch below. It expands like the real one. Move away and it settles back.")
-                .font(.system(size: 16))
+                .font(onboardingSystemFont(.secondary))
                 .foregroundStyle(Color.white.opacity(0.78))
 
             NotchRehearsal(didRehearse: model.didRehearseNotch) {
@@ -624,7 +639,7 @@ private struct FirstRunOnboardingView: View {
 
             if model.didRehearseNotch {
                 Label("You’ve got it", systemImage: "checkmark.circle.fill")
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(onboardingSystemFont(.secondary, weight: .semibold))
                     .foregroundStyle(Color.green)
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
@@ -689,7 +704,7 @@ private struct FirstRunOnboardingView: View {
 
     private func onboardingTitle(_ value: String) -> some View {
         Text(value)
-            .font(.custom("Instrument Serif", size: 39, relativeTo: .largeTitle))
+            .font(onboardingDisplayFont(.primaryTitle))
             .foregroundStyle(Color.white)
             .fixedSize(horizontal: false, vertical: true)
             .accessibilityAddTraits(.isHeader)
@@ -713,9 +728,9 @@ private struct FirstRunOnboardingView: View {
                         .font(.system(size: 20, weight: .semibold))
                 }
                 Text(title)
-                    .font(.system(size: 18, weight: .semibold))
+                    .font(onboardingSystemFont(.secondary, weight: .semibold))
                 Text(detail)
-                    .font(.system(size: 15))
+                    .font(onboardingSystemFont(.tertiary))
                     .foregroundStyle(Color.white.opacity(0.76))
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -755,14 +770,14 @@ private struct CalendarPermissionStep: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             Text("See what matters next")
-                .font(.custom("Instrument Serif", size: 39, relativeTo: .largeTitle))
+                .font(onboardingDisplayFont(.primaryTitle))
                 .accessibilityAddTraits(.isHeader)
 
             Text(
                 "Calendar access is optional. Founder’s Office reads upcoming event titles and times "
                     + "from the Calendar database on this Mac. It does not add, change, or upload events."
             )
-                .font(.system(size: 16))
+                .font(onboardingSystemFont(.secondary))
                 .foregroundStyle(Color.white.opacity(0.78))
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -773,9 +788,9 @@ private struct CalendarPermissionStep: View {
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text(model.calendar.isAuthorized ? "Calendar is connected" : "Calendar remains off until you allow it")
-                        .font(.system(size: 18, weight: .semibold))
+                        .font(onboardingSystemFont(.secondary, weight: .semibold))
                     Text(model.calendar.isAuthorized ? model.calendar.accountCountLabel : model.calendar.message)
-                        .font(.system(size: 15))
+                        .font(onboardingSystemFont(.tertiary))
                         .foregroundStyle(Color.white.opacity(0.75))
                 }
 
@@ -813,9 +828,9 @@ private struct NotchRehearsal: View {
                                     .font(.system(size: 24))
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text("Your next Move is one glance away")
-                                        .font(.system(size: 16, weight: .semibold))
+                                        .font(onboardingSystemFont(.secondary, weight: .semibold))
                                     Text("Move away to close it")
-                                        .font(.system(size: 14))
+                                        .font(onboardingSystemFont(.tertiary))
                                         .foregroundStyle(Color.white.opacity(0.7))
                                 }
                             }
@@ -856,7 +871,7 @@ private struct NotchRehearsal: View {
 private struct PrimaryOnboardingButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 15, weight: .semibold))
+            .font(onboardingSystemFont(.secondary, weight: .semibold))
             .foregroundStyle(Color.black)
             .padding(.horizontal, 20)
             .frame(minWidth: 112, minHeight: 42)
@@ -869,7 +884,7 @@ private struct PrimaryOnboardingButtonStyle: ButtonStyle {
 private struct SecondaryOnboardingButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 15, weight: .semibold))
+            .font(onboardingSystemFont(.secondary, weight: .semibold))
             .foregroundStyle(Color.white)
             .padding(.horizontal, 18)
             .frame(minHeight: 42)

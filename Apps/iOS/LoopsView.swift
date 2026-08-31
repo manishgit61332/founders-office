@@ -1,13 +1,20 @@
 import FounderOfficeCore
 import SwiftUI
+import UIKit
 
 struct LoopsView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.calendar) private var calendar
+    @AppStorage("moves.groupingLens") private var groupingLensRawValue = MoveGroupingLens.priority.rawValue
     @State private var isPresentingNewTask = false
     @State private var planningSelection: TaskPlanningSelection?
 
     private var appearance: AppearancePreferences { model.personalization.resolvedAppearance }
+
+    private var groupingLens: MoveGroupingLens {
+        get { MoveGroupingLens(rawValue: groupingLensRawValue) ?? .priority }
+        nonmutating set { groupingLensRawValue = newValue.rawValue }
+    }
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 60)) { context in
@@ -19,28 +26,58 @@ struct LoopsView: View {
 
             List {
                 Section {
-                    Button {
-                        isPresentingNewTask = true
-                    } label: {
-                        Label("New task", systemImage: "plus.circle.fill")
-                            .font(appearance.interfaceFont(size: 17, weight: .semibold))
+                    VStack(spacing: 12) {
+                        Picker(
+                            "Group moves",
+                            selection: Binding(
+                                get: { groupingLens },
+                                set: { groupingLens = $0 }
+                            )
+                        ) {
+                            ForEach(MoveGroupingLens.allCases) { lens in
+                                Text(lens.title).tag(lens)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .accessibilityHint("Switches between priority lanes and deadline groups")
+
+                        Button {
+                            isPresentingNewTask = true
+                        } label: {
+                            Label("New task", systemImage: "plus.circle.fill")
+                                .font(appearance.interfaceFont(.secondary, weight: .semibold))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
                     }
                 }
 
-                ForEach(currentPresentation.activeGroups) { group in
-                    Section {
-                        ForEach(group.items) { loop in
-                            ActionableTaskRow(
-                                loop: loop,
-                                showsStatus: true,
-                                onEditPlanning: { planningSelection = .init(id: loop.id) }
-                            )
+                if groupingLens == .priority {
+                    ForEach(LoopPriority.allCases) { priority in
+                        PriorityMoveLane(
+                            priority: priority,
+                            items: currentPresentation.items(in: priority),
+                            onEditPlanning: { planningSelection = .init(id: $0.id) },
+                            onMove: { moveID in
+                                move(moveID: moveID, to: priority)
+                            }
+                        )
+                    }
+                } else {
+                    ForEach(currentPresentation.activeGroups) { group in
+                        Section {
+                            ForEach(group.items) { loop in
+                                ActionableTaskRow(
+                                    loop: loop,
+                                    showsStatus: true,
+                                    onEditPlanning: { planningSelection = .init(id: loop.id) }
+                                )
+                            }
+                        } header: {
+                            Label(group.bucket.title, systemImage: group.bucket.systemImage)
+                                .font(appearance.interfaceFont(.secondary, weight: .bold))
+                                .foregroundStyle(group.bucket.headerColor)
+                                .textCase(nil)
                         }
-                    } header: {
-                        Label(group.bucket.title, systemImage: group.bucket.systemImage)
-                            .font(appearance.interfaceFont(size: 17, weight: .bold))
-                            .foregroundStyle(group.bucket.headerColor(using: appearance))
-                            .textCase(nil)
                     }
                 }
 
@@ -53,10 +90,10 @@ struct LoopsView: View {
                         } label: {
                             HStack {
                                 Label("Previous tasks", systemImage: "archivebox")
-                                    .font(appearance.interfaceFont(size: 17, weight: .semibold))
+                                    .font(appearance.interfaceFont(.secondary, weight: .semibold))
                                 Spacer()
                                 Text(currentPresentation.olderCompleted.count, format: .number)
-                                    .font(appearance.interfaceFont(size: 17, weight: .semibold))
+                                    .font(appearance.interfaceFont(.secondary, weight: .semibold))
                                     .foregroundStyle(.secondary)
                             }
                         }
@@ -77,7 +114,7 @@ struct LoopsView: View {
                         Button("New task") {
                             isPresentingNewTask = true
                         }
-                        .buttonStyle(.borderedProminent)
+                        .founderProminentButton(appearance)
                     }
                 }
             }
@@ -98,6 +135,25 @@ struct LoopsView: View {
             }
         }
         .taskPlanningSheet(selection: $planningSelection)
+    }
+
+    private func move(moveID: UUID, to priority: LoopPriority) -> Bool {
+        guard let loop = model.visibleLoops.first(where: {
+            $0.id == moveID && $0.status != .done && $0.deletedAt == nil
+        }) else { return false }
+        guard loop.priority != priority else { return true }
+
+        let result = model.updatePlanning(
+            id: moveID,
+            priority: priority,
+            dueAt: nil,
+            updatesPriority: true,
+            updatesDeadline: false
+        )
+        if result != .failed {
+            UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+        }
+        return result != .failed
     }
 
     @ViewBuilder
@@ -128,15 +184,114 @@ struct LoopsView: View {
             }
         } header: {
             Label(title, systemImage: "checkmark.circle.fill")
-                .font(appearance.interfaceFont(size: 17, weight: .bold))
-                .foregroundStyle(appearance.primaryAccentColor)
+                .font(appearance.interfaceFont(.secondary, weight: .bold))
+                .foregroundStyle(.primary)
                 .textCase(nil)
         }
     }
 }
 
-private struct ActionableTaskRow: View {
+private enum MoveGroupingLens: String, CaseIterable, Identifiable {
+    case priority
+    case deadline
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .priority: return "Priority"
+        case .deadline: return "Due"
+        }
+    }
+}
+
+private struct PriorityMoveLane: View {
     @EnvironmentObject private var model: AppModel
+
+    let priority: LoopPriority
+    let items: [OpenLoop]
+    let onEditPlanning: (OpenLoop) -> Void
+    let onMove: (UUID) -> Bool
+
+    private var appearance: AppearancePreferences { model.personalization.resolvedAppearance }
+
+    var body: some View {
+        Section {
+            if items.isEmpty {
+                HStack(spacing: 10) {
+                    Capsule()
+                        .fill(priority.laneColor)
+                        .frame(width: 5, height: 28)
+                    Text("Drop a move here")
+                        .font(appearance.interfaceFont(.secondary, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                }
+                .padding(.vertical, 6)
+                .accessibilityLabel("Empty \(priority.customerTitle) priority lane")
+            } else {
+                ForEach(items) { loop in
+                    ActionableTaskRow(
+                        loop: loop,
+                        showsStatus: true,
+                        onEditPlanning: { onEditPlanning(loop) }
+                    )
+                    .draggable(loop.id.uuidString) {
+                        MoveDragPreview(loop: loop)
+                    }
+                }
+            }
+        } header: {
+            HStack(spacing: 8) {
+                Capsule()
+                    .fill(priority.laneColor)
+                    .frame(width: 5, height: 18)
+                    .accessibilityHidden(true)
+                Text(priority.customerTitle)
+                Text(items.count, format: .number)
+                    .foregroundStyle(.secondary)
+            }
+            .font(appearance.interfaceFont(.secondary, weight: .bold))
+            .foregroundStyle(.primary)
+            .textCase(nil)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("\(priority.customerTitle) priority, \(items.count) moves")
+        }
+        .dropDestination(for: String.self) { payloads, _ in
+            let moveIDs = payloads.compactMap(UUID.init(uuidString:))
+            guard !moveIDs.isEmpty else { return false }
+            return moveIDs.reduce(true) { result, moveID in
+                onMove(moveID) && result
+            }
+        }
+    }
+}
+
+private struct MoveDragPreview: View {
+    @EnvironmentObject private var model: AppModel
+
+    let loop: OpenLoop
+
+    private var appearance: AppearancePreferences { model.personalization.resolvedAppearance }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Capsule()
+                .fill(loop.priority.laneColor)
+                .frame(width: 5, height: 32)
+            Text(loop.title)
+                .font(appearance.interfaceFont(.secondary, weight: .semibold))
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+}
+
+struct ActionableTaskRow: View {
+    @EnvironmentObject private var model: AppModel
+    @State private var isPresentingPriorityUpdateFailure = false
 
     let loop: OpenLoop
     var showsStatus = false
@@ -195,6 +350,20 @@ private struct ActionableTaskRow: View {
                         .disabled(loop.status == destination)
                     }
                 }
+
+                Menu("Priority") {
+                    ForEach(LoopPriority.allCases) { priority in
+                        Button {
+                            setPriority(priority)
+                        } label: {
+                            Label(
+                                priority.customerTitle,
+                                systemImage: loop.priority == priority ? "checkmark" : "circle"
+                            )
+                        }
+                        .disabled(loop.priority == priority || loop.status == .done)
+                    }
+                }
             }
             .accessibilityAction(named: Text(completionActionTitle)) {
                 model.toggleCompletion(loop)
@@ -205,14 +374,41 @@ private struct ActionableTaskRow: View {
             .accessibilityAction(named: Text("Edit priority and deadline")) {
                 onEditPlanning()
             }
+            .accessibilityAction(named: Text("Raise priority")) {
+                guard let previous = loop.priority.previousPriority else { return }
+                setPriority(previous)
+            }
+            .accessibilityAction(named: Text("Lower priority")) {
+                guard let next = loop.priority.nextPriority else { return }
+                setPriority(next)
+            }
+            .alert("Couldn’t change priority", isPresented: $isPresentingPriorityUpdateFailure) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text("Nothing was changed. Check workspace recovery or storage, then try again.")
+            }
+    }
+
+    private func setPriority(_ priority: LoopPriority) {
+        guard loop.status != .done, loop.priority != priority else { return }
+        let result = model.updatePlanning(
+            id: loop.id,
+            priority: priority,
+            dueAt: nil,
+            updatesPriority: true,
+            updatesDeadline: false
+        )
+        if result == .failed {
+            isPresentingPriorityUpdateFailure = true
+        }
     }
 }
 
-private struct TaskPlanningSelection: Identifiable {
+struct TaskPlanningSelection: Identifiable {
     let id: UUID
 }
 
-private extension View {
+extension View {
     func taskPlanningSheet(selection: Binding<TaskPlanningSelection?>) -> some View {
         sheet(item: selection) { selected in
             TaskPlanningSheetContent(taskID: selected.id)
@@ -248,6 +444,9 @@ private struct TaskPlanningSheetContent: View {
 
 private struct MissingTaskPlanningView: View {
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var model: AppModel
+
+    private var appearance: AppearancePreferences { model.personalization.resolvedAppearance }
 
     var body: some View {
         ContentUnavailableView {
@@ -258,7 +457,7 @@ private struct MissingTaskPlanningView: View {
             Button("Close") {
                 dismiss()
             }
-            .buttonStyle(.borderedProminent)
+            .founderProminentButton(appearance)
         }
         .navigationTitle("Edit plan")
         .navigationBarTitleDisplayMode(.inline)
@@ -340,7 +539,7 @@ private struct EditTaskPlanningView: View {
         Form {
             Section {
                 Text(taskTitle)
-                    .font(appearance.interfaceFont(size: 17, weight: .semibold))
+                    .font(appearance.interfaceFont(.secondary, weight: .semibold))
             }
 
             Section("Plan") {
@@ -446,7 +645,7 @@ private struct PreviousTasksView: View {
                     Button("Back to Moves") {
                         dismiss()
                     }
-                    .buttonStyle(.borderedProminent)
+                    .founderProminentButton(appearance)
                 }
             }
         }
@@ -465,10 +664,10 @@ private extension ActiveDeadlineBucket {
         }
     }
 
-    func headerColor(using appearance: AppearancePreferences) -> Color {
+    var headerColor: Color {
         switch self {
         case .overdue: return .red
-        case .today: return appearance.primaryAccentColor
+        case .today: return .primary
         case .upcoming, .noDeadline: return .primary
         }
     }
@@ -546,7 +745,7 @@ private struct NewTaskView: View {
                 } label: {
                     Image(systemName: "checkmark")
                 }
-                .buttonStyle(.borderedProminent)
+                .founderProminentButton(appearance)
                 .disabled(!canSave)
             }
         }

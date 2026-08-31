@@ -60,7 +60,7 @@ struct OpenLoopRulesTests {
     }
 
     @Test
-    func testUpdatingPlanningChangesOnlyPriorityDeadlineAndFreshness() {
+    func testUpdatingPlanningChangesOnlyPriorityAndDeadlineClocks() {
         let original = TestFixtures.loop(
             status: .doing,
             priority: .p2,
@@ -78,7 +78,7 @@ struct OpenLoopRulesTests {
 
         #expect(updated.priority == .p0)
         #expect(updated.dueAt == newDeadline)
-        #expect(updated.updatedAt == TestFixtures.date(30))
+        #expect(updated.updatedAt == original.updatedAt)
         #expect(updated.priorityUpdatedAt == TestFixtures.date(30))
         #expect(updated.dueAtUpdatedAt == TestFixtures.date(30))
         #expect(updated.status == original.status)
@@ -99,7 +99,7 @@ struct OpenLoopRulesTests {
         )
 
         #expect(updated.dueAt == nil)
-        #expect(updated.updatedAt == TestFixtures.date(30))
+        #expect(updated.updatedAt == original.updatedAt)
         #expect(updated.priorityUpdatedAt == nil)
         #expect(updated.dueAtUpdatedAt == TestFixtures.date(30))
     }

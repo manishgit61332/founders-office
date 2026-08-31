@@ -10,3 +10,5 @@ Each ADR records status, date, context, decision, consequences, privacy/security
 - [0004 — Event-driven, approval-gated assistant connectors](0004-approval-gated-connectors.md)
 - [0006 — Composable, versioned appearance personalization](0006-composable-appearance-personalization.md)
 - [0007 — Separate product identity from connector authorization](0007-primary-auth-and-connector-authorization.md)
+- [0008 — Accessible accent fills and a three-role type hierarchy](0008-accessible-accent-and-type-hierarchy.md)
+- [0009 — Priority recategorization and a unified calendar agenda](0009-priority-recategorization-and-calendar-agenda.md)

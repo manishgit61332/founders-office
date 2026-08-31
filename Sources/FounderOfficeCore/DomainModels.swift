@@ -30,7 +30,7 @@ public enum LoopPriority: String, Codable, CaseIterable, Identifiable, Sendable 
         switch self {
         case .p0: return "Critical"
         case .p1: return "High"
-        case .p2: return "Normal"
+        case .p2: return "Medium"
         case .p3: return "Low"
         }
     }

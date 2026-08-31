@@ -346,6 +346,14 @@ func runChecks() async throws {
         "Active deadline groups were not emitted in urgency order"
     )
     try expect(
+        movePresentation.priorityGroups.map(\.priority) == [.p0, .p1, .p2],
+        "Active priority groups were not emitted in P0-to-P3 rank order"
+    )
+    try expect(
+        movePresentation.items(in: .p0).map(\.id) == [todayP0ID],
+        "Priority lookup included a Done or soft-deleted Move"
+    )
+    try expect(
         movePresentation.items(in: .overdue).map(\.id) == [overdueID],
         "Pre-midnight deadline was not classified as overdue"
     )
@@ -353,6 +361,11 @@ func runChecks() async throws {
         movePresentation.items(in: .today).map(\.id)
             == [todayP0ID, todayLaterP1ID, todayAlphaID, todayZuluID, waitingID],
         "Today Moves were not sorted by deadline, priority, and title"
+    )
+    try expect(
+        movePresentation.activeItems(dueOn: todayMorning, calendar: presentationCalendar).map(\.id)
+            == [todayP0ID, todayLaterP1ID, todayAlphaID, todayZuluID, waitingID],
+        "Selected-day lookup did not match the stored planning day"
     )
     try expect(
         movePresentation.items(in: .upcoming).map(\.id) == [upcomingID],
@@ -400,7 +413,9 @@ func runChecks() async throws {
         calendar: presentationCalendar
     )
     try expect(emptyPresentation.activeGroups.isEmpty, "Empty store emitted empty presentation sections")
+    try expect(emptyPresentation.priorityGroups.isEmpty, "Empty store emitted empty priority sections")
     try expect(emptyPresentation.items(in: .today).isEmpty, "Missing bucket did not return an empty collection")
+    try expect(emptyPresentation.items(in: .p3).isEmpty, "Missing priority did not return an empty collection")
 
     struct LegacyPersonalization: Encodable {
         var schemaVersion = 3

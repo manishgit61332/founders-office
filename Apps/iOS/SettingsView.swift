@@ -306,7 +306,7 @@ private struct PrimaryGoalEditor: View {
                 } label: {
                     Image(systemName: "checkmark")
                 }
-                .buttonStyle(.borderedProminent)
+                .founderProminentButton(appearance)
                 .disabled(!canSave)
             }
         }

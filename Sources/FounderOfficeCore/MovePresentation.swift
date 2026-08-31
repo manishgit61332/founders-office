@@ -32,6 +32,20 @@ public struct ActiveMoveGroup: Identifiable, Hashable, Sendable {
     }
 }
 
+/// Priority-first groupings for active Moves. Groups are emitted from P0 to P3
+/// and omit priorities that have no visible active Moves.
+public struct ActivePriorityGroup: Identifiable, Hashable, Sendable {
+    public let priority: LoopPriority
+    public let items: [OpenLoop]
+
+    public var id: LoopPriority { priority }
+
+    public init(priority: LoopPriority, items: [OpenLoop]) {
+        self.priority = priority
+        self.items = items
+    }
+}
+
 /// A deterministic, presentation-ready view of the Move store.
 ///
 /// This type never mutates or removes source history. Soft-deleted Moves are
@@ -39,8 +53,11 @@ public struct ActiveMoveGroup: Identifiable, Hashable, Sendable {
 /// either `recentCompleted` or `olderCompleted`.
 public struct MovePresentation: Hashable, Sendable {
     public let activeGroups: [ActiveMoveGroup]
+    public let priorityGroups: [ActivePriorityGroup]
     public let recentCompleted: [OpenLoop]
     public let olderCompleted: [OpenLoop]
+
+    private let sortedActiveItems: [OpenLoop]
 
     public init(
         items: [OpenLoop],
@@ -52,6 +69,9 @@ public struct MovePresentation: Hashable, Sendable {
         let completedItems = visibleItems.filter { $0.status == .done }
         let boundaries = Self.calendarBoundaries(now: now, calendar: calendar)
         let currentPlanningDay = PlanningDate.day(fromLocal: now, calendar: calendar)
+        let orderedActiveItems = activeItems.sorted(by: Self.activePrecedes)
+
+        sortedActiveItems = orderedActiveItems
 
         var groupedActive = Dictionary(
             uniqueKeysWithValues: ActiveDeadlineBucket.allCases.map { ($0, [OpenLoop]()) }
@@ -69,6 +89,20 @@ public struct MovePresentation: Hashable, Sendable {
             guard let items = groupedActive[bucket], !items.isEmpty else { return nil }
             return ActiveMoveGroup(bucket: bucket, items: items.sorted(by: Self.activePrecedes))
         }
+
+        var groupedByPriority = Dictionary(
+            uniqueKeysWithValues: LoopPriority.allCases.map { ($0, [OpenLoop]()) }
+        )
+        for item in orderedActiveItems {
+            groupedByPriority[item.priority, default: []].append(item)
+        }
+
+        priorityGroups = LoopPriority.allCases
+            .sorted { $0.rank < $1.rank }
+            .compactMap { priority in
+                guard let items = groupedByPriority[priority], !items.isEmpty else { return nil }
+                return ActivePriorityGroup(priority: priority, items: items)
+            }
 
         recentCompleted = completedItems
             .filter { item in
@@ -89,6 +123,23 @@ public struct MovePresentation: Hashable, Sendable {
 
     public func items(in bucket: ActiveDeadlineBucket) -> [OpenLoop] {
         activeGroups.first(where: { $0.bucket == bucket })?.items ?? []
+    }
+
+    public func items(in priority: LoopPriority) -> [OpenLoop] {
+        priorityGroups.first(where: { $0.priority == priority })?.items ?? []
+    }
+
+    /// Returns visible active Moves whose stored planning day matches the day
+    /// selected in the supplied local calendar.
+    public func activeItems(
+        dueOn selectedDate: Date,
+        calendar: Calendar = .current
+    ) -> [OpenLoop] {
+        let selectedDay = PlanningDate.day(fromLocal: selectedDate, calendar: calendar)
+        return sortedActiveItems.filter { item in
+            guard let dueAt = item.dueAt else { return false }
+            return PlanningDate.day(fromStored: dueAt) == selectedDay
+        }
     }
 
     public var allCompleted: [OpenLoop] {

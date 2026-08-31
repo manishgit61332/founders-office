@@ -128,4 +128,85 @@ struct CodableAndAppearanceTests {
         #expect(accent.primaryColor.hex == "#0A84FF")
         #expect(accent.secondaryColor.hex == "#0A84FF")
     }
+
+    @Test
+    func testWCAGRelativeLuminanceAndContrastUseSRGBMath() throws {
+        let black = try #require(RGB24Color(hex: "#000000"))
+        let white = try #require(RGB24Color(hex: "#FFFFFF"))
+
+        #expect(abs(black.relativeLuminance - 0) < 0.000_001)
+        #expect(abs(white.relativeLuminance - 1) < 0.000_001)
+        #expect(abs(black.contrastRatio(with: white) - 21) < 0.000_001)
+    }
+
+    @Test
+    func testBrightAccentChoosesDarkTextAndMeetsAAContrast() throws {
+        let mint = try #require(RGB24Color(hex: "#7EFABE"))
+        let foreground = mint.accessibleTextColor
+
+        #expect(foreground.hex == "#000000")
+        #expect(mint.contrastRatio(with: foreground) >= 4.5)
+    }
+
+    @Test
+    func testDarkAccentChoosesLightTextAndMeetsAAContrast() throws {
+        let violet = try #require(RGB24Color(hex: "#35205E"))
+        let foreground = violet.accessibleTextColor
+
+        #expect(foreground.hex == "#FFFFFF")
+        #expect(violet.contrastRatio(with: foreground) >= 4.5)
+    }
+
+    @Test
+    func testAutomaticTextContrastMeetsAAAcrossSampledRGBSpace() {
+        for red in stride(from: 0, through: 255, by: 17) {
+            for green in stride(from: 0, through: 255, by: 17) {
+                for blue in stride(from: 0, through: 255, by: 17) {
+                    let background = RGB24Color(
+                        red: UInt8(red),
+                        green: UInt8(green),
+                        blue: UInt8(blue)
+                    )
+                    #expect(background.contrastRatio(with: background.accessibleTextColor) >= 4.5)
+                }
+            }
+        }
+    }
+
+    @Test
+    func testReadableAccentPreservesPassingColourAndFallsBackForDarkColour() throws {
+        let panel = try #require(RGB24Color(hex: "#0E0F12"))
+        let mint = try #require(RGB24Color(hex: "#7EFABE"))
+        let violet = try #require(RGB24Color(hex: "#35205E"))
+
+        #expect(mint.readableForeground(on: panel) == mint)
+        #expect(violet.readableForeground(on: panel).hex == "#FFFFFF")
+        #expect(violet.readableForeground(on: panel).contrastRatio(with: panel) >= 4.5)
+    }
+
+    @Test
+    func testAccentStyleUsesItsRenderedPrimaryFillForTextContrast() throws {
+        let mint = try #require(RGB24Color(hex: "#7EFABE"))
+        let violet = try #require(RGB24Color(hex: "#35205E"))
+        let accent = AccentStyle(
+            mode: .gradient,
+            stops: [
+                AccentStop(color: mint, location: 0),
+                AccentStop(color: violet, location: 1)
+            ]
+        )
+
+        #expect(accent.primaryFillTextColor.hex == "#000000")
+        #expect(accent.primaryColor.contrastRatio(with: accent.primaryFillTextColor) >= 4.5)
+    }
+
+    @Test
+    func testFounderTypeScaleUsesOnlyTheRequestedThreeLevels() {
+        let points = FounderTextRole.allCases.map(FounderTypeScale.points(for:))
+
+        #expect(points.count == 3)
+        #expect(abs(FounderTypeScale.primaryTitle / FounderTypeScale.secondary - 1.62) < 0.000_001)
+        #expect(abs(FounderTypeScale.secondary / FounderTypeScale.tertiary - 1.6) < 0.000_001)
+        #expect(FounderTypeScale.tertiary >= 10.8)
+    }
 }

@@ -228,7 +228,8 @@ def command_edit(document: dict, args: argparse.Namespace) -> None:
     if next_due != item.get("dueAt"):
         item["dueAt"] = next_due
         item["dueAtUpdatedAt"] = timestamp
-    item["updatedAt"] = timestamp
+    # Planning fields use independent clocks. Do not advance the whole-record
+    # clock or a stale offline priority edit could overwrite a newer completion.
     save_document(document)
     print(f"Updated planning: {item['title']}")
 

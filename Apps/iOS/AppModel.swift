@@ -186,11 +186,12 @@ final class AppModel: ObservableObject {
         let mergedPriority = updatesPriority ? priority : current.priority
         let mergedDueAt = updatesDeadline ? dueAt : current.dueAt
 
+        let savedAt = Date.now
         let updated = OpenLoopRules.updatedPlanning(
             current,
             priority: mergedPriority,
             dueAt: mergedDueAt,
-            at: .now
+            at: savedAt
         )
         guard updated != current else { return .unchanged }
 
@@ -200,7 +201,7 @@ final class AppModel: ObservableObject {
         var candidate = latestDocument
         candidate.schemaVersion = max(candidate.schemaVersion, 3)
         candidate.items[index] = updated
-        candidate.updatedAt = updated.updatedAt
+        candidate.updatedAt = savedAt
         guard storage.save(candidate) else { return .failed }
 
         openLoops = candidate

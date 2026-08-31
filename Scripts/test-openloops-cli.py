@@ -81,6 +81,7 @@ def main() -> None:
         assert item["priority"] == "P0"
         assert item["dueAt"] == "2026-09-12T12:00:00Z"
         assert item["priorityUpdatedAt"] == item["dueAtUpdatedAt"]
+        assert item["updatedAt"] == "2026-08-31T00:00:00Z"
         priority_clock = item["priorityUpdatedAt"]
         assert "**P0** — Editable move · Due 12 Sep 2026" in openloops.CONTEXT_PATH.read_text()
 

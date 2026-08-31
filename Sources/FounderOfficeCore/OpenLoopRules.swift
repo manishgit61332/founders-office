@@ -63,7 +63,9 @@ public enum OpenLoopRules {
         if deadlineChanged {
             result.dueAtUpdatedAt = date
         }
-        result.updatedAt = date
+        // Planning fields have their own clocks. Keeping the whole-record clock
+        // unchanged prevents an offline priority/deadline edit from winning the
+        // status, completion, deletion, title, or details merge on another device.
         return result
     }
 

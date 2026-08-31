@@ -29,7 +29,7 @@
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSCalendarsFullAccessUsageDescription</key>
-    <string>Founder's Office shows upcoming events from every calendar account enabled on this Mac beside the goals and tasks you chose to focus on.</string>
+    <string>Founder's Office shows upcoming events and lets you add events to the calendars already enabled on this Mac.</string>
 	<key>FounderOfficeCloudEnabled</key>
 	<false/>
 </dict>
