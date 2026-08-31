@@ -6,6 +6,7 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Added
 
+- A serialized, transactional local workspace repository foundation with durable revisions, device-writer identity, idempotent mutation receipts, a sync operation outbox, fail-closed legacy import, and immutable JSON/Markdown exports.
 - A gated Founder’s Office download website whose Mac download remains unavailable until a signed and notarized release URL is configured.
 - A versioned first-run Mac onboarding flow for the user’s name, local or iCloud storage, optional Calendar access, optional launch at login, the first Move, and notch interaction rehearsal.
 - Fail-closed recovery for malformed workspace and personalization data, including a preserved recovery copy and blocked writes while recovery is required.
