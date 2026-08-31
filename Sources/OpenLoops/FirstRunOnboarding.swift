@@ -21,6 +21,9 @@ private func onboardingDisplayFont(_ role: FounderTextRole) -> Font {
 
 enum FirstRunStorageMode: String, Codable {
     case localOnly
+    /// Read-only compatibility for onboarding records written before the
+    /// transactional Supabase sync boundary. The retired CloudKit writer is
+    /// never re-enabled from this value.
     case iCloud
 }
 
@@ -50,7 +53,7 @@ enum FirstRunStep: Int, Codable, CaseIterable {
 }
 
 private struct FirstRunOnboardingState: Codable {
-    static let currentVersion = 2
+    static let currentVersion = 3
 
     var schemaVersion = currentVersion
     var completedVersion: Int?
@@ -114,12 +117,11 @@ final class FirstRunOnboardingStore: ObservableObject {
                 upgrade.completedAt = nil
                 upgrade.completedVersion = nil
                 upgrade.workspaceID = workspaceID
+                // Earlier builds offered an iCloud choice before the shared
+                // sync contract existed. Re-consent at the local-first screen;
+                // never interpret that legacy value as permission to upload.
                 upgrade.storageMode = nil
-                upgrade.calendarChoice = nil
-                upgrade.launchAtLoginEnabled = nil
-                upgrade.stepRawValue = workspaceExistedBeforeLaunch
-                    ? FirstRunStep.storage.rawValue
-                    : FirstRunStep.welcome.rawValue
+                upgrade.stepRawValue = FirstRunStep.storage.rawValue
                 state = upgrade
                 persist()
             } else if decoded.schemaVersion > FirstRunOnboardingState.currentVersion
@@ -234,7 +236,6 @@ final class FirstRunOnboardingWindowController {
         stateStore: FirstRunOnboardingStore,
         taskStore: OpenLoopStore,
         personalization: PersonalizationStore,
-        cloudAvailable: Bool,
         setLaunchAtLogin: @escaping (Bool) throws -> Bool,
         onComplete: @escaping (FirstRunStorageMode) -> Void
     ) {
@@ -242,7 +243,6 @@ final class FirstRunOnboardingWindowController {
             stateStore: stateStore,
             taskStore: taskStore,
             personalization: personalization,
-            cloudAvailable: cloudAvailable,
             setLaunchAtLogin: setLaunchAtLogin,
             onComplete: onComplete
         )
@@ -294,7 +294,6 @@ private final class FirstRunOnboardingModel: ObservableObject {
     @Published var didRehearseNotch: Bool
 
     let calendar = CalendarProvider()
-    let cloudAvailable: Bool
 
     private let stateStore: FirstRunOnboardingStore
     private let taskStore: OpenLoopStore
@@ -307,14 +306,12 @@ private final class FirstRunOnboardingModel: ObservableObject {
         stateStore: FirstRunOnboardingStore,
         taskStore: OpenLoopStore,
         personalization: PersonalizationStore,
-        cloudAvailable: Bool,
         setLaunchAtLogin: @escaping (Bool) throws -> Bool,
         onComplete: @escaping (FirstRunStorageMode) -> Void
     ) {
         self.stateStore = stateStore
         self.taskStore = taskStore
         self.personalization = personalization
-        self.cloudAvailable = cloudAvailable
         self.setLaunchAtLogin = setLaunchAtLogin
         self.onComplete = onComplete
 
@@ -350,7 +347,10 @@ private final class FirstRunOnboardingModel: ObservableObject {
     }
 
     func finishStorageStep() {
-        guard let storageMode, storageMode == .localOnly || cloudAvailable else { return }
+        // Onboarding is deliberately local-first. Product sign-in and an
+        // explicit workspace disposition happen later in Account & Sync;
+        // reaching this screen never authorizes an upload.
+        chooseStorage(.localOnly)
         go(to: .calendar)
     }
 
@@ -547,28 +547,44 @@ private struct FirstRunOnboardingView: View {
 
     private var storageStep: some View {
         VStack(alignment: .leading, spacing: 18) {
-            onboardingTitle("Choose where your workspace lives")
-            Text("Nothing syncs until you choose. You can start local and review iCloud later.")
+            onboardingTitle("Start safely on this Mac")
+            Text("Founder’s Office works without an account. Nothing is uploaded during setup.")
                 .font(onboardingSystemFont(.secondary))
                 .foregroundStyle(Color.white.opacity(0.78))
 
-            HStack(spacing: 14) {
-                choiceCard(
-                    title: "Only on this Mac",
-                    detail: "No cloud connection. Your tasks and personalization stay in this Mac’s Application Support folder.",
-                    symbol: "macbook",
-                    selected: model.storageMode == .localOnly
-                ) { model.chooseStorage(.localOnly) }
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(spacing: 14) {
+                    Image(systemName: "macbook")
+                        .font(.system(size: 24, weight: .semibold))
+                        .frame(width: 42, height: 42)
+                        .background(Color.white.opacity(0.10), in: Circle())
 
-                choiceCard(
-                    title: "Sync with iCloud",
-                    detail: model.cloudAvailable
-                        ? "Use your signed-in Apple account to sync this workspace with supported Apple devices."
-                        : "iCloud is unavailable in this build. Choose local storage to continue.",
-                    symbol: "icloud",
-                    selected: model.storageMode == .iCloud,
-                    enabled: model.cloudAvailable
-                ) { model.chooseStorage(.iCloud) }
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Local workspace")
+                            .font(onboardingSystemFont(.secondary, weight: .semibold))
+                        Text("Moves and personalization are stored in the transactional workspace on this Mac.")
+                            .font(onboardingSystemFont(.tertiary))
+                            .foregroundStyle(Color.white.opacity(0.76))
+                    }
+                }
+
+                Divider().overlay(Color.white.opacity(0.10))
+
+                Label {
+                    Text("When you want the same workspace on another device, open Account & Sync and sign in with Google or Apple. You will review what happens to existing local data before any upload.")
+                        .font(onboardingSystemFont(.tertiary, weight: .medium))
+                        .foregroundStyle(Color.white.opacity(0.78))
+                        .fixedSize(horizontal: false, vertical: true)
+                } icon: {
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                        .foregroundStyle(Color.white.opacity(0.9))
+                }
+            }
+            .padding(20)
+            .background(Color.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.13), lineWidth: 1)
             }
         }
     }
@@ -668,9 +684,8 @@ private struct FirstRunOnboardingView: View {
                     .disabled(model.cleanName.isEmpty)
                     .keyboardShortcut(.defaultAction)
             case .storage:
-                Button("Continue", action: model.finishStorageStep)
+                Button("Continue on this Mac", action: model.finishStorageStep)
                     .buttonStyle(PrimaryOnboardingButtonStyle())
-                    .disabled(model.storageMode == nil || (model.storageMode == .iCloud && !model.cloudAvailable))
                     .keyboardShortcut(.defaultAction)
             case .calendar:
                 Button(model.calendar.isAuthorized ? "Continue" : "Not now", action: model.finishCalendarStep)
@@ -717,49 +732,6 @@ private struct FirstRunOnboardingView: View {
             .foregroundStyle(Color.white)
             .fixedSize(horizontal: false, vertical: true)
             .accessibilityAddTraits(.isHeader)
-    }
-
-    private func choiceCard(
-        title: String,
-        detail: String,
-        symbol: String,
-        selected: Bool,
-        enabled: Bool = true,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            VStack(alignment: .leading, spacing: 14) {
-                HStack {
-                    Image(systemName: symbol)
-                        .font(.system(size: 22, weight: .semibold))
-                    Spacer()
-                    Image(systemName: selected ? "checkmark.circle.fill" : "circle")
-                        .font(.system(size: 20, weight: .semibold))
-                }
-                Text(title)
-                    .font(onboardingSystemFont(.secondary, weight: .semibold))
-                Text(detail)
-                    .font(onboardingSystemFont(.tertiary))
-                    .foregroundStyle(Color.white.opacity(0.76))
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .frame(maxWidth: .infinity, minHeight: 150, alignment: .topLeading)
-            .padding(18)
-            .background(
-                selected ? Color.accentColor.opacity(0.24) : Color.white.opacity(0.07),
-                in: RoundedRectangle(cornerRadius: 18, style: .continuous)
-            )
-            .overlay {
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .strokeBorder(selected ? Color.accentColor : Color.white.opacity(0.12), lineWidth: selected ? 2 : 1)
-            }
-            .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        }
-        .buttonStyle(.plain)
-        .disabled(!enabled)
-        .opacity(enabled ? 1 : 0.5)
-        .accessibilityLabel("\(title). \(detail)")
-        .accessibilityValue(selected ? "Selected" : "Not selected")
     }
 
     private func focusCurrentField() {

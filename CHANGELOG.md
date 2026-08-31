@@ -17,7 +17,7 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 - Transactional Appearance editing with live preview, explicit Save Changes and Discard actions, conflict choices, retryable save errors, and an unsaved-quit guard.
 - A centralized transient-presentation lifecycle that collapses the expanded notch for native panels, menus, and popovers, keeps overlapping interactions balanced, and restores the notch and keyboard focus after the final popup closes.
 - A gated Founder’s Office download website whose Mac download remains unavailable until a signed and notarized release URL is configured.
-- A versioned first-run Mac onboarding flow for the user’s name, local or iCloud storage, optional Calendar access, optional launch at login, the first Move, and notch interaction rehearsal.
+- A versioned, local-first Mac onboarding flow for the user’s reviewed name, optional Calendar access, optional launch at login, the first Move, and notch interaction rehearsal.
 - Fail-closed recovery for malformed workspace and personalization data, including a preserved recovery copy and blocked writes while recovery is required.
 - A durable workspace identity that prevents missing or partially restored cloud data from being replaced with newly seeded defaults.
 - A privacy-safe crash-loop detector, MetricKit runtime-health foundation, and a minimal safe mode with an incident identifier and explicit retry.
@@ -44,6 +44,7 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 - The Mac app now uses one transactional SQLite workspace for Moves, personalization, goals, Appearance, tombstones, revisions, idempotency receipts, and sync outbox operations. Legacy JSON and Recovery files remain byte-for-byte migration inputs; JSON and Markdown are generated as immutable revision projections.
 - The legacy polling-based Mac CloudKit JSON bridge has been removed so it cannot compete with the canonical workspace. Cross-device sync remains unavailable until the new authenticated sync contract passes its release gate.
 - Provider-supplied account names are now non-authoritative onboarding suggestions; only an explicitly reviewed, NFC-normalized display-name value can cross a durable identity update boundary.
+- First-run setup no longer offers the retired CloudKit writer. It starts locally and explains that Google or Apple sign-in is a later, explicit Account & Sync choice; existing local data is never uploaded from onboarding.
 
 - App-owned Mac and iPhone typography now uses one three-role hierarchy: a 28-point primary title, a secondary size divided by 1.62, and a tertiary size divided again by 1.6.
 - The Appearance accent editor now uses one compact macOS-style control surface with a native segmented mode picker, exact colour wells, and a focused gradient-direction slider instead of loose oversized controls and technical helper copy.

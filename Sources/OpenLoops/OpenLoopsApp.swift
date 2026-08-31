@@ -206,7 +206,6 @@ final class FoundersOfficeAppDelegate: NSObject, NSApplicationDelegate {
                     stateStore: onboardingStore,
                     taskStore: store,
                     personalization: personalization,
-                    cloudAvailable: false,
                     setLaunchAtLogin: { [weak self] enabled in
                         guard let self else { return false }
                         return try self.setLaunchAtLogin(enabled)
