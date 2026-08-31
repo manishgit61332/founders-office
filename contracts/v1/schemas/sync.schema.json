@@ -1,0 +1,375 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.founders-office.test/v1/schemas/sync.schema.json",
+  "title": "Founder’s Office sync protocol v1",
+  "$defs": {
+    "UUID": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "Timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "Revision": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9223372036854775807
+    },
+    "Cursor": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9223372036854775807
+    },
+    "EntityType": {
+      "enum": ["workspace", "move", "appearance", "primaryGoal", "asset"]
+    },
+    "IdentityProvider": {
+      "enum": ["google", "apple"]
+    },
+    "FieldName": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9]{0,63}$"
+    },
+    "FieldClocks": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 32,
+      "propertyNames": { "$ref": "#/$defs/FieldName" },
+      "additionalProperties": { "$ref": "#/$defs/Timestamp" }
+    },
+    "MutationAction": {
+      "enum": ["upsert", "delete"]
+    },
+    "AuthSessionIDs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["accountId", "workspaceId", "deviceId", "identityProvider"],
+      "properties": {
+        "accountId": { "$ref": "#/$defs/UUID" },
+        "workspaceId": { "$ref": "#/$defs/UUID" },
+        "deviceId": { "$ref": "#/$defs/UUID" },
+        "identityProvider": { "$ref": "#/$defs/IdentityProvider" }
+      }
+    },
+    "SyncOperation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractVersion",
+        "operationId",
+        "entityType",
+        "entityId",
+        "action",
+        "baseRevision",
+        "changedFields",
+        "fieldClocks",
+        "occurredAt"
+      ],
+      "properties": {
+        "contractVersion": { "const": 1 },
+        "operationId": { "$ref": "#/$defs/UUID" },
+        "entityType": { "$ref": "#/$defs/EntityType" },
+        "entityId": { "$ref": "#/$defs/UUID" },
+        "action": { "$ref": "#/$defs/MutationAction" },
+        "baseRevision": { "$ref": "#/$defs/Revision" },
+        "changedFields": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/FieldName" }
+        },
+        "fieldClocks": { "$ref": "#/$defs/FieldClocks" },
+        "payload": { "type": ["object", "null"] },
+        "occurredAt": { "$ref": "#/$defs/Timestamp" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "action": { "const": "upsert" } } },
+          "then": { "required": ["payload"], "properties": { "payload": { "type": "object" } } }
+        },
+        {
+          "if": { "properties": { "action": { "const": "delete" } } },
+          "then": { "properties": { "payload": { "type": "null" } } }
+        }
+      ]
+    },
+    "SyncConflict": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "operationId",
+        "entityType",
+        "entityId",
+        "baseRevision",
+        "currentRevision",
+        "reason"
+      ],
+      "properties": {
+        "operationId": { "$ref": "#/$defs/UUID" },
+        "entityType": { "$ref": "#/$defs/EntityType" },
+        "entityId": { "$ref": "#/$defs/UUID" },
+        "baseRevision": { "$ref": "#/$defs/Revision" },
+        "currentRevision": { "$ref": "#/$defs/Revision" },
+        "reason": {
+          "enum": ["revisionMismatch", "overlappingChanges", "fieldClockLost", "missingRecord"]
+        },
+        "serverRecord": {
+          "oneOf": [
+            { "$ref": "records.schema.json#/$defs/Record" },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "OperationResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operationId", "status"],
+      "properties": {
+        "operationId": { "$ref": "#/$defs/UUID" },
+        "status": { "enum": ["accepted", "duplicate", "conflict"] },
+        "revision": { "$ref": "#/$defs/Revision" },
+        "cursor": { "$ref": "#/$defs/Cursor" },
+        "conflict": { "$ref": "#/$defs/SyncConflict" }
+      }
+    },
+    "SyncChange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cursor",
+        "operationId",
+        "entityType",
+        "entityId",
+        "action",
+        "revision",
+        "changedFields",
+        "changedAt",
+        "record"
+      ],
+      "properties": {
+        "cursor": { "$ref": "#/$defs/Cursor" },
+        "operationId": { "$ref": "#/$defs/UUID" },
+        "entityType": { "$ref": "#/$defs/EntityType" },
+        "entityId": { "$ref": "#/$defs/UUID" },
+        "action": { "$ref": "#/$defs/MutationAction" },
+        "revision": { "$ref": "#/$defs/Revision" },
+        "changedFields": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/FieldName" }
+        },
+        "changedAt": { "$ref": "#/$defs/Timestamp" },
+        "record": {
+          "oneOf": [
+            { "$ref": "records.schema.json#/$defs/Record" },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "ActivityEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "workspaceId", "accountId", "kind", "occurredAt", "metadata"],
+      "properties": {
+        "id": { "$ref": "#/$defs/UUID" },
+        "workspaceId": { "$ref": "#/$defs/UUID" },
+        "accountId": { "$ref": "#/$defs/UUID" },
+        "deviceId": {
+          "oneOf": [{ "$ref": "#/$defs/UUID" }, { "type": "null" }]
+        },
+        "kind": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9]*(\\.[a-z][a-z0-9]*)+$",
+          "maxLength": 100
+        },
+        "entityType": {
+          "oneOf": [{ "$ref": "#/$defs/EntityType" }, { "type": "null" }]
+        },
+        "entityId": {
+          "oneOf": [{ "$ref": "#/$defs/UUID" }, { "type": "null" }]
+        },
+        "occurredAt": { "$ref": "#/$defs/Timestamp" },
+        "metadata": {
+          "type": "object",
+          "maxProperties": 32
+        }
+      }
+    },
+    "BootstrapRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["p_device_id"],
+      "properties": {
+        "p_device_id": { "$ref": "#/$defs/UUID" },
+        "p_local_workspace_id": {
+          "oneOf": [{ "$ref": "#/$defs/UUID" }, { "type": "null" }]
+        },
+        "p_workspace_name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "p_display_name": {
+          "oneOf": [
+            { "type": "string", "minLength": 1, "maxLength": 120 },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "BootstrapResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contractVersion", "session", "profile", "workspace", "latestCursor"],
+      "properties": {
+        "contractVersion": { "const": 1 },
+        "session": { "$ref": "#/$defs/AuthSessionIDs" },
+        "profile": { "$ref": "records.schema.json#/$defs/ProfileRecord" },
+        "workspace": { "$ref": "records.schema.json#/$defs/WorkspaceRecord" },
+        "latestCursor": { "$ref": "#/$defs/Cursor" }
+      }
+    },
+    "PushRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["p_workspace_id", "p_device_id", "p_operations"],
+      "properties": {
+        "p_workspace_id": { "$ref": "#/$defs/UUID" },
+        "p_device_id": { "$ref": "#/$defs/UUID" },
+        "p_operations": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 100,
+          "items": { "$ref": "#/$defs/SyncOperation" }
+        }
+      }
+    },
+    "PushResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contractVersion", "workspaceId", "latestCursor", "results"],
+      "properties": {
+        "contractVersion": { "const": 1 },
+        "workspaceId": { "$ref": "#/$defs/UUID" },
+        "latestCursor": { "$ref": "#/$defs/Cursor" },
+        "results": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/OperationResult" }
+        }
+      }
+    },
+    "PullRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["p_workspace_id", "p_device_id", "p_cursor"],
+      "properties": {
+        "p_workspace_id": { "$ref": "#/$defs/UUID" },
+        "p_device_id": { "$ref": "#/$defs/UUID" },
+        "p_cursor": { "$ref": "#/$defs/Cursor" },
+        "p_limit": { "type": "integer", "minimum": 1, "maximum": 500, "default": 200 }
+      }
+    },
+    "PullResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractVersion",
+        "workspaceId",
+        "fromCursor",
+        "nextCursor",
+        "latestCursor",
+        "hasMore",
+        "changes"
+      ],
+      "properties": {
+        "contractVersion": { "const": 1 },
+        "workspaceId": { "$ref": "#/$defs/UUID" },
+        "fromCursor": { "$ref": "#/$defs/Cursor" },
+        "nextCursor": { "$ref": "#/$defs/Cursor" },
+        "latestCursor": { "$ref": "#/$defs/Cursor" },
+        "hasMore": { "type": "boolean" },
+        "changes": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/SyncChange" }
+        }
+      }
+    },
+    "ExportRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["p_workspace_id"],
+      "properties": {
+        "p_workspace_id": { "$ref": "#/$defs/UUID" }
+      }
+    },
+    "ExportResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contractVersion",
+        "exportedAt",
+        "workspace",
+        "moves",
+        "appearance",
+        "primaryGoals",
+        "assets",
+        "activityEvents"
+      ],
+      "properties": {
+        "contractVersion": { "const": 1 },
+        "exportedAt": { "$ref": "#/$defs/Timestamp" },
+        "workspace": { "$ref": "records.schema.json#/$defs/WorkspaceRecord" },
+        "moves": {
+          "type": "array",
+          "items": { "$ref": "records.schema.json#/$defs/MoveRecord" }
+        },
+        "appearance": {
+          "type": "array",
+          "items": { "$ref": "records.schema.json#/$defs/AppearanceRecord" }
+        },
+        "primaryGoals": {
+          "type": "array",
+          "items": { "$ref": "records.schema.json#/$defs/PrimaryGoalRecord" }
+        },
+        "assets": {
+          "type": "array",
+          "items": { "$ref": "records.schema.json#/$defs/AssetRecord" }
+        },
+        "activityEvents": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/ActivityEvent" }
+        }
+      }
+    },
+    "EraseRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["p_workspace_id", "p_confirm_workspace_id"],
+      "properties": {
+        "p_workspace_id": { "$ref": "#/$defs/UUID" },
+        "p_confirm_workspace_id": { "$ref": "#/$defs/UUID" }
+      }
+    },
+    "EraseResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contractVersion", "workspaceId", "erasedAt"],
+      "properties": {
+        "contractVersion": { "const": 1 },
+        "workspaceId": { "$ref": "#/$defs/UUID" },
+        "erasedAt": { "$ref": "#/$defs/Timestamp" }
+      }
+    },
+    "Error": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["code", "message"],
+      "properties": {
+        "code": { "type": "string" },
+        "message": { "type": "string" }
+      }
+    }
+  }
+}

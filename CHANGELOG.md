@@ -6,13 +6,14 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Added
 
+- A credential-free Supabase Auth and Postgres contract foundation for Google and Apple product identities, single-owner cross-platform sync, deterministic offline field merging, export, and erasure.
 - A gated Founder’s Office download website whose Mac download remains unavailable until a signed and notarized release URL is configured.
 - A versioned first-run Mac onboarding flow for the user’s name, local or iCloud storage, optional Calendar access, optional launch at login, the first Move, and notch interaction rehearsal.
 - Fail-closed recovery for malformed workspace and personalization data, including a preserved recovery copy and blocked writes while recovery is required.
 - A durable workspace identity that prevents missing or partially restored cloud data from being replaced with newly seeded defaults.
 - A privacy-safe crash-loop detector, MetricKit runtime-health foundation, and a minimal safe mode with an incident identifier and explicit retry.
 - A hardened Developer ID release and independent verification pipeline for signing, notarization, stapling, entitlements, architectures, checksums, and archive safety.
-- Sixty-nine automated Swift tests with code coverage, release-archive attack fixtures, plus website build, lint, release-policy, security-header, and dependency-audit gates in CI.
+- Seventy-eight automated Swift tests with code coverage, release-archive attack fixtures, plus website build, lint, release-policy, security-header, dependency-audit, and sync-contract gates in CI.
 - Architecture records for primary account identity, connector authorization, safe auto-remediation, and the Mac → iOS → Windows → Android platform sequence.
 - A complete macOS application icon set and bundled Instrument Serif license notice.
 - Privacy, support, security, and license surfaces on the private website, with restrictive browser security headers.

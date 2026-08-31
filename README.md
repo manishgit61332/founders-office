@@ -78,6 +78,7 @@ The open panel reloads the JSON file automatically. The legacy filenames remain 
 - `MOTION_SPEC.md`: documents the reveal, retraction, and reversal physics.
 - `IOS_SYNC_PLAN.md`: the staged native iPhone and CloudKit migration plan.
 - `GOOGLE_PHOTOS_INTEGRATION.md`: the scoped Google Photos Picker integration plan.
+- `contracts/v1/`: the credential-free Supabase Auth and cross-platform sync contract, schemas, OpenAPI boundary, and fixtures.
 - `CLAY_ICON_ASSETS.md`: historical clay-icon exploration retained for design history; the app now uses SF Symbols.
 - `Resources/Fonts/InstrumentSerif-Regular.ttf`: bundled OFL display font used for the greeting and primary-goal emphasis.
 
@@ -90,6 +91,7 @@ The open panel reloads the JSON file automatically. The legacy filenames remain 
 - [docs/GITHUB_WORKFLOW.md](docs/GITHUB_WORKFLOW.md) defines branches, checks, milestones, and the local push gate.
 - [docs/product/ASSISTANT_ARCHITECTURE.md](docs/product/ASSISTANT_ARCHITECTURE.md) defines the safe assistant and connector model.
 - [docs/product/LAUNCH_GATES.md](docs/product/LAUNCH_GATES.md) defines the evidence required before beta and launch.
+- [docs/product/SUPABASE_LOCAL_SETUP.md](docs/product/SUPABASE_LOCAL_SETUP.md) explains local contract validation and the external configuration still required for live Google/Apple sign-in and remote sync.
 
 Before a commit or pull request:
 

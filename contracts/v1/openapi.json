@@ -1,0 +1,174 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Founder’s Office sync RPC contract",
+    "version": "1.0.0",
+    "description": "Credential-free contract for the approved Supabase Auth and Postgres authority. This file does not identify or enable a production project."
+  },
+  "servers": [
+    {
+      "url": "https://{projectRef}.supabase.co",
+      "variables": {
+        "projectRef": {
+          "default": "not-configured",
+          "description": "Configured outside source control for each environment."
+        }
+      }
+    }
+  ],
+  "security": [{ "bearerAuth": [] }],
+  "paths": {
+    "/rest/v1/rpc/bootstrap_workspace": {
+      "post": {
+        "operationId": "bootstrapWorkspace",
+        "summary": "Resolve or create the authenticated account’s single-owner workspace",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "schemas/sync.schema.json#/$defs/BootstrapRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Workspace bootstrap completed",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "schemas/sync.schema.json#/$defs/BootstrapResponse" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Error" },
+          "409": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/rest/v1/rpc/push_operations": {
+      "post": {
+        "operationId": "pushOperations",
+        "summary": "Apply idempotent optimistic mutations and append changes atomically",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "schemas/sync.schema.json#/$defs/PushRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Per-operation accepted, duplicate, or conflict results",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "schemas/sync.schema.json#/$defs/PushResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/Error" },
+          "401": { "$ref": "#/components/responses/Error" },
+          "403": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/rest/v1/rpc/pull_changes": {
+      "post": {
+        "operationId": "pullChanges",
+        "summary": "Read ordered workspace changes after a durable cursor",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "schemas/sync.schema.json#/$defs/PullRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "A bounded page of changes and the next cursor",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "schemas/sync.schema.json#/$defs/PullResponse" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Error" },
+          "403": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/rest/v1/rpc/export_workspace": {
+      "post": {
+        "operationId": "exportWorkspace",
+        "summary": "Export all owner-visible durable workspace data",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "schemas/sync.schema.json#/$defs/ExportRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Versioned workspace export",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "schemas/sync.schema.json#/$defs/ExportResponse" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Error" },
+          "403": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/rest/v1/rpc/erase_workspace": {
+      "post": {
+        "operationId": "eraseWorkspace",
+        "summary": "Permanently erase an owned workspace after exact-ID confirmation",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "schemas/sync.schema.json#/$defs/EraseRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Erasure receipt without deleted record content",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "schemas/sync.schema.json#/$defs/EraseResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/Error" },
+          "401": { "$ref": "#/components/responses/Error" },
+          "403": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "Supplied at runtime by an approved identity/session flow; never committed."
+      }
+    },
+    "responses": {
+      "Error": {
+        "description": "Request rejected without returning another workspace’s state",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "schemas/sync.schema.json#/$defs/Error" }
+          }
+        }
+      }
+    }
+  }
+}

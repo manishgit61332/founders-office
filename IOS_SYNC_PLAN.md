@@ -1,5 +1,10 @@
 # Founder's Office: iPhone and Cloud Sync Plan
 
+> Scope note: this document describes the Apple private-beta transport. ADR 0010
+> makes Supabase Auth and Postgres the cross-platform authority. CloudKit may
+> remain during the Apple beta and verified migration, but it must not remain a
+> concurrent writer after a workspace moves to Supabase.
+
 ## Product Decision
 
 Build a native SwiftUI iPhone companion around one shared Founder’s Office data model. Keep calendar access local to each device, and sync Founder’s Office data through the user’s private CloudKit database.
