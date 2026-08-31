@@ -27,14 +27,18 @@ The provisional custom callback registered in Supabase is:
 founders-office://auth/callback
 ```
 
-The client callback allowlist accepts that provisional scheme,
-`founders-office-dev://auth/callback` for local development, or an HTTPS
-universal link ending in `/auth/callback`. It rejects all other schemes,
+The client callback allowlist accepts that provisional scheme or
+`founders-office-dev://auth/callback` for local development. It rejects all other schemes,
 including `javascript`, `file`, `data`, and `http`, as well as callbacks with
 credentials, query strings, fragments, or a different route. A production
-universal link still requires an organization-owned domain, associated-domain
-entitlements, and an exact redirect registration. The committed custom schemes
-are provisional and cannot be used for a release without review.
+universal-link flow would require an organization-owned domain,
+associated-domain entitlements, an exact redirect registration, and a separate
+client implementation; it is not accepted by this build. The committed custom
+schemes are provisional and cannot be used for a release without review.
+
+The browser result is checked a second time before Supabase sees its PKCE code.
+The scheme, host, port, and encoded path must match the signed build's callback
+exactly; only the OAuth query or fragment may differ.
 
 ## Reviewed display-name boundary
 

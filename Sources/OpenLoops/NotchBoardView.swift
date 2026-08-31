@@ -4118,7 +4118,7 @@ private struct AccountSetupEditor: View {
             Text("What should Founder’s Office call you?")
                 .font(theme.displayFont(.secondary))
                 .foregroundStyle(Color.white.opacity(0.97))
-            Text("Google or Apple may suggest a name. Review it here before it becomes your greeting or account profile.")
+            Text("Google or Apple may suggest a name. Review it before it is saved to your account; this Mac’s workspace stays unchanged until its next step is safe.")
                 .font(theme.interfaceFont(.secondary, weight: .medium))
                 .foregroundStyle(Color.white.opacity(0.76))
 

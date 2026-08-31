@@ -91,6 +91,36 @@ struct ProductAuthTests {
         }
     }
 
+    @Test("OAuth results must return to the exact configured callback endpoint")
+    func validatesCompletedCallbackOrigin() throws {
+        let configuration = try ProductAuthConfiguration(
+            endpoint: #require(URL(string: "https://project.supabase.co")),
+            publishableKey: publishableKey,
+            callbackURL: #require(URL(string: "founders-office://auth/callback"))
+        )
+
+        for response in [
+            "founders-office://auth/callback?code=approved",
+            "FOUNDERS-OFFICE://AUTH/callback?error=access_denied",
+            "founders-office://auth/callback#code=approved"
+        ] {
+            let responseURL = try #require(URL(string: response))
+            #expect(configuration.acceptsCallbackResponse(responseURL))
+        }
+
+        for response in [
+            "founders-office://attacker/callback?code=approved",
+            "founders-office://auth/other?code=approved",
+            "founders-office://auth:443/callback?code=approved",
+            "founders-office://user@auth/callback?code=approved",
+            "founders-office://auth/callback%2F..%2Fother?code=approved",
+            "founders-office-dev://auth/callback?code=approved"
+        ] {
+            let responseURL = try #require(URL(string: response))
+            #expect(!configuration.acceptsCallbackResponse(responseURL))
+        }
+    }
+
     @Test("A signed-in state requires a durable Keychain-equivalent read-back")
     func requiresDurableSessionReadBack() throws {
         let session = makeSession()
@@ -138,6 +168,65 @@ struct ProductAuthTests {
         }
         #expect(throws: ProductAuthSecureStorageError.deleteFailed) {
             try verified.verifySessionRemoved()
+        }
+    }
+
+    @Test("A signed-out event cannot precede durable session deletion")
+    func nilAuthEventRequiresActualSessionAbsence() throws {
+        let session = makeSession()
+        let storage = TestAuthStorage()
+        let verified = VerifiedProductAuthStorage(
+            storage: storage,
+            sessionKey: "session"
+        )
+        try verified.store(key: "session", value: JSONEncoder().encode(session))
+
+        // This models an SDK nil-session event arriving before its Keychain
+        // cleanup. There is no recorded storage exception, but the residual
+        // session must still block a signed-out state.
+        #expect(throws: ProductAuthSecureStorageError.deleteFailed) {
+            try verified.verifySessionRemoved()
+        }
+
+        try verified.remove(key: "session")
+        try verified.verifySessionRemoved()
+    }
+
+    @Test("Durability verification includes account metadata, not only tokens")
+    func rejectsStalePersistedAccountMetadata() throws {
+        let storedSession = makeSession()
+        var updatedSession = storedSession
+        updatedSession.user.userMetadata["display_name"] = .string("Asha")
+        let storage = TestAuthStorage()
+        let verified = VerifiedProductAuthStorage(
+            storage: storage,
+            sessionKey: "session"
+        )
+
+        try verified.store(key: "session", value: JSONEncoder().encode(storedSession))
+
+        #expect(throws: ProductAuthSecureStorageError.mismatchedReadBack) {
+            try verified.verifyDurableSession(updatedSession)
+        }
+    }
+
+    @Test("An unrelated OAuth storage write cannot hide a session read failure")
+    func sessionStorageFailureRemainsLatched() throws {
+        let storage = TestAuthStorage()
+        let verified = VerifiedProductAuthStorage(
+            storage: storage,
+            sessionKey: "session"
+        )
+
+        storage.failReads = true
+        #expect(throws: TestStorageError.read) {
+            _ = try verified.retrieve(key: "session")
+        }
+        storage.failReads = false
+        try verified.store(key: "oauth-code-verifier", value: Data("verifier".utf8))
+
+        #expect(throws: ProductAuthSecureStorageError.readFailed) {
+            try verified.verifyNoRecordedFailure()
         }
     }
 

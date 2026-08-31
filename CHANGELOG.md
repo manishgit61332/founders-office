@@ -69,6 +69,8 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Fixed
 
+- Account restore can no longer race a second sign-in, delayed transient auth events cannot replace a terminal result, and an identity change during name review cannot apply the prior account’s name to the local workspace.
+- Keychain read failures can no longer be reported as a signed-out local-only state, and session durability now verifies the complete persisted account/session record rather than tokens alone.
 - Primary-goal editors now reopen every meaningful decimal digit instead of rounding non-integers to one place, and malformed, non-finite, over-scale, negative, or out-of-range input fails before changing canonical state.
 - Keyboard-opened colour panels now inherit the notch's interaction lease even when the pointer is elsewhere, and a failed Move or personalization write blocks quit until a later durable retry succeeds.
 - Automatic update throttling is now isolated by the reviewed feed URL, channel, and signing key, so a channel move or key rotation is checked immediately instead of inheriting another channel's delay.
@@ -106,10 +108,10 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 - Exact vision-image originals remain local and are never used by the notch or sync path; strict UUID-derived filenames, source/decompression/output bounds, private permissions, and path-safe cleanup prevent traversal and unbounded image handling.
 - Direct Mac releases now require an independently reviewed update-feed URL, Ed25519 public key, and sandbox network-client entitlement; the app opens only a signed immutable download URL and never installs code itself.
 - Support export is a local-only 16-field allow list; it never scrapes logs or workspace files and requires an exact on-screen preview before Save.
-- Product-auth callbacks now use an explicit provisional-custom-scheme or HTTPS universal-link allowlist, rejecting executable, file, data, insecure HTTP, credential-bearing, and route-mismatched URLs.
+- Product-auth callbacks now use only the reviewed provisional custom schemes supported by the native browser flow, and the completed response must match the configured scheme, host, port, and encoded path before Supabase receives its PKCE code. Universal links remain a separate unimplemented release gate.
 - Production identity configuration accepts only HTTPS endpoints and Supabase publishable/legacy-anon keys; secret and service-role credentials are rejected before the client is created.
 - Founder runtime data, photos, Codex runs, exports, support bundles, visual QA, credentials, and signing files are excluded from source control.
-- Direct releases accept only a tracked production entitlement file and reject debug, temporary-exception, or unsafe code-signing entitlements.
+- Direct releases accept only a tracked production entitlement file, require the primary-app Sign in with Apple capability, and reject debug, temporary-exception, or unsafe code-signing entitlements.
 - Activity metadata is an exact empty allow-list, product owners are limited to one workspace, and all canonical responses reject unknown contract versions.
 - Immediate access-token revocation and the private Storage adapter remain explicit unpassed production gates; neither is represented as tested on this host.
 

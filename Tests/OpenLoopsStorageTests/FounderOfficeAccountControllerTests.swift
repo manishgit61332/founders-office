@@ -39,7 +39,52 @@ struct FounderOfficeAccountControllerTests {
     }
 
     @Test
-    func providerSuggestionIsNotAppliedBeforeNameReviewAndWorkspaceChoice() async {
+    func signInCannotRaceTheInitialSecureSessionRestore() async {
+        let session = ProductAccountSession(
+            accountID: UUID(),
+            provider: .google,
+            onboardingDisplayNameSuggestion: nil,
+            expiresAt: .distantFuture
+        )
+        let service = TestProductAuthService(initialState: .localOnly, googleSession: session)
+        let controller = makeController(service: service)
+
+        controller.start()
+        #expect(controller.authState == .restoring)
+        controller.signInWithGoogle()
+
+        #expect(await service.googleSignInCallCount() == 0)
+        await waitUntil { await service.restoreCallCount() == 1 }
+        controller.stop()
+    }
+
+    @Test
+    func staleSigningInEventCannotReplaceAuthoritativeTerminalState() async {
+        let session = ProductAccountSession(
+            accountID: UUID(),
+            provider: .google,
+            onboardingDisplayNameSuggestion: nil,
+            expiresAt: .distantFuture
+        )
+        let service = TestProductAuthService(
+            initialState: .localOnly,
+            googleSession: session,
+            emitGoogleTerminalEvent: false
+        )
+        let controller = makeController(service: service)
+        controller.start()
+        await waitUntil { await service.restoreCallCount() == 1 }
+
+        controller.signInWithGoogle()
+        await waitUntil { controller.setupStage == .reviewDisplayName }
+
+        #expect(controller.authState == .signedIn(session))
+        #expect(controller.statusTitle == "Finish account setup")
+        controller.stop()
+    }
+
+    @Test
+    func crossAccountNameReviewDoesNotMutateLocalWorkspace() async {
         let existingAccount = UUID()
         let incomingAccount = UUID()
         let session = ProductAccountSession(
@@ -78,7 +123,7 @@ struct FounderOfficeAccountControllerTests {
         controller.confirmReviewedDisplayName()
         await waitUntil { controller.setupStage == .chooseWorkspace }
 
-        #expect(appliedNames == ["Asha"])
+        #expect(appliedNames.isEmpty)
         #expect(
             controller.workspacePlan == .requiresCustomerChoice([
                 .keepLocalOnly,
@@ -97,7 +142,77 @@ struct FounderOfficeAccountControllerTests {
         #expect(controller.selectedWorkspaceChoice == .keepLocalOnly)
         #expect(controller.accountSyncHealthStatus.condition == .off)
         #expect(controller.accountSyncHealthStatus.detail == "Signed in; sync is off")
+        #expect(appliedNames.isEmpty)
         #expect(interactions.events.last == .ended)
+        controller.stop()
+    }
+
+    @Test
+    func reviewedNameMayPopulateAnEmptyUnboundWorkspace() async throws {
+        let reviewed = try ReviewedDisplayName(reviewedInput: "Asha")
+        let session = ProductAccountSession(
+            accountID: UUID(),
+            provider: .google,
+            reviewedDisplayName: reviewed,
+            onboardingDisplayNameSuggestion: nil,
+            expiresAt: .distantFuture
+        )
+        let service = TestProductAuthService(initialState: .signedIn(session))
+        var appliedNames: [String] = []
+        let controller = makeController(
+            service: service,
+            context: FounderOfficeLocalAccountContext(
+                hasCustomerData: false,
+                boundAccountID: nil
+            ),
+            applyName: { appliedNames.append($0) }
+        )
+
+        controller.start()
+        await waitUntil { controller.workspacePlan == .bootstrapRemoteWorkspace }
+
+        #expect(controller.setupStage == .none)
+        #expect(appliedNames == ["Asha"])
+        #expect(controller.accountSyncHealthStatus.detail == "Signed in; sync is off")
+        controller.stop()
+    }
+
+    @Test
+    func identityChangeDuringNameSaveCannotApplyThePriorAccountsName() async {
+        let firstSession = ProductAccountSession(
+            accountID: UUID(),
+            provider: .google,
+            onboardingDisplayNameSuggestion: OnboardingDisplayNameSuggestion(providerValue: "Asha"),
+            expiresAt: .distantFuture
+        )
+        let replacementSession = ProductAccountSession(
+            accountID: UUID(),
+            provider: .apple,
+            onboardingDisplayNameSuggestion: nil,
+            expiresAt: .distantFuture
+        )
+        let service = TestProductAuthService(
+            initialState: .signedIn(firstSession),
+            replacementSessionAfterNameUpdate: replacementSession
+        )
+        var appliedNames: [String] = []
+        let controller = makeController(
+            service: service,
+            applyName: { appliedNames.append($0) }
+        )
+        controller.start()
+        await waitUntil { controller.setupStage == .reviewDisplayName }
+
+        controller.reviewedDisplayNameDraft = "Asha"
+        controller.confirmReviewedDisplayName()
+        await waitUntil {
+            controller.authState == .signedIn(replacementSession)
+                && controller.setupStage == .reviewDisplayName
+        }
+
+        #expect(appliedNames.isEmpty)
+        #expect(controller.workspacePlan == nil)
+        #expect(controller.reviewedDisplayNameDraft.isEmpty)
         controller.stop()
     }
 
@@ -226,19 +341,26 @@ private actor TestProductAuthService: ProductAuthServing {
     private var state: ProductAuthState
     private let googleSession: ProductAccountSession?
     private let appleSession: ProductAccountSession?
+    private let emitGoogleTerminalEvent: Bool
+    private let replacementSessionAfterNameUpdate: ProductAccountSession?
     private var continuations: [UUID: AsyncStream<ProductAuthState>.Continuation] = [:]
     private var restoreCalls = 0
+    private var googleSignInCalls = 0
     private var appleSignInCalls = 0
     private var reviewedNameUpdates = 0
 
     init(
         initialState: ProductAuthState,
         googleSession: ProductAccountSession? = nil,
-        appleSession: ProductAccountSession? = nil
+        appleSession: ProductAccountSession? = nil,
+        emitGoogleTerminalEvent: Bool = true,
+        replacementSessionAfterNameUpdate: ProductAccountSession? = nil
     ) {
         state = initialState
         self.googleSession = googleSession
         self.appleSession = appleSession
+        self.emitGoogleTerminalEvent = emitGoogleTerminalEvent
+        self.replacementSessionAfterNameUpdate = replacementSessionAfterNameUpdate
     }
 
     func currentState() -> ProductAuthState { state }
@@ -260,9 +382,14 @@ private actor TestProductAuthService: ProductAuthServing {
     }
 
     func signInWithGoogle() async {
+        googleSignInCalls += 1
         publish(.signingIn(.google))
         if let googleSession {
-            publish(.signedIn(googleSession))
+            if emitGoogleTerminalEvent {
+                publish(.signedIn(googleSession))
+            } else {
+                state = .signedIn(googleSession)
+            }
         }
     }
 
@@ -277,6 +404,10 @@ private actor TestProductAuthService: ProductAuthServing {
 
     func updateReviewedDisplayName(_ displayName: ReviewedDisplayName) async throws {
         reviewedNameUpdates += 1
+        if let replacementSessionAfterNameUpdate {
+            publish(.signedIn(replacementSessionAfterNameUpdate))
+            return
+        }
         guard case let .signedIn(session) = state else { return }
         publish(
             .signedIn(
@@ -298,6 +429,7 @@ private actor TestProductAuthService: ProductAuthServing {
     }
 
     func restoreCallCount() -> Int { restoreCalls }
+    func googleSignInCallCount() -> Int { googleSignInCalls }
     func appleSignInCallCount() -> Int { appleSignInCalls }
     func reviewedNameUpdateCount() -> Int { reviewedNameUpdates }
 

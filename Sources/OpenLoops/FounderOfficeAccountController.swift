@@ -60,11 +60,13 @@ final class FounderOfficeAccountController: ObservableObject, AccountSyncStatusS
     private var restoreTask: Task<Void, Never>?
     private var operationTask: Task<Void, Never>?
     private var didStart = false
+    private var isRestoringSession = false
     private var nativeInteractionLease: UUID?
     private var setupInteractionLease: UUID?
     private var deferredAuthState: ProductAuthState?
     private var activeSession: ProductAccountSession?
     private var reviewedAccountID: UUID?
+    private var pendingReviewedDisplayName: ReviewedDisplayName?
     private var claimContextAtSignIn: FounderOfficeLocalAccountContext?
 
     init(
@@ -96,9 +98,14 @@ final class FounderOfficeAccountController: ObservableObject, AccountSyncStatusS
         let configuration = ProductAuthConfiguration.load(infoDictionary: infoDictionary)
         switch configuration {
         case let .success(configuration):
-            let service = SupabaseProductAuthClient(configuration: configuration)
+            let service = SupabaseProductAuthClient(
+                configuration: configuration,
+                presentationAnchor: { [weak hostWindow] in
+                    hostWindow ?? NSApp.keyWindow
+                }
+            )
             let authorizer = AppleIdentityAuthorizer { [weak hostWindow] in
-                hostWindow ?? NSApp.keyWindow ?? NSWindow()
+                hostWindow ?? NSApp.keyWindow
             }
             return FounderOfficeAccountController(
                 availability: .available,
@@ -248,6 +255,12 @@ final class FounderOfficeAccountController: ObservableObject, AccountSyncStatusS
         didStart = true
         guard let service else { return }
 
+        // Make restoration observable synchronously. Otherwise the sign-in
+        // buttons can be activated before the restore task gets its first turn,
+        // racing a Keychain session against a new provider flow.
+        authState = .restoring
+        isRestoringSession = true
+
         observationTask = Task { [weak self, service] in
             let changes = await service.stateChanges()
             for await state in changes {
@@ -259,7 +272,10 @@ final class FounderOfficeAccountController: ObservableObject, AccountSyncStatusS
             await service.restoreSession()
             guard !Task.isCancelled else { return }
             let restored = await service.currentState()
-            self?.receive(restored)
+            guard let self else { return }
+            isRestoringSession = false
+            restoreTask = nil
+            receive(restored)
         }
     }
 
@@ -267,15 +283,17 @@ final class FounderOfficeAccountController: ObservableObject, AccountSyncStatusS
         observationTask?.cancel()
         restoreTask?.cancel()
         operationTask?.cancel()
+        appleAuthorizer?.cancel()
         observationTask = nil
         restoreTask = nil
         operationTask = nil
+        isRestoringSession = false
         releaseNativeInteraction()
         releaseSetupInteraction()
     }
 
     func signInWithGoogle() {
-        guard isAuthenticationAvailable, operationTask == nil, let service else { return }
+        guard isAuthenticationAvailable, !isBusy, operationTask == nil, let service else { return }
         beginNativeInteraction(reason: "google-sign-in")
         authState = .signingIn(.google)
         operationTask = Task { [weak self, service] in
@@ -288,6 +306,7 @@ final class FounderOfficeAccountController: ObservableObject, AccountSyncStatusS
 
     func signInWithApple() {
         guard isAuthenticationAvailable,
+              !isBusy,
               operationTask == nil,
               let service,
               let appleAuthorizer else { return }
@@ -301,6 +320,7 @@ final class FounderOfficeAccountController: ObservableObject, AccountSyncStatusS
                 let finalState = await service.currentState()
                 self?.finishNativeAuthentication(with: finalState)
             } catch {
+                guard !Task.isCancelled else { return }
                 let failure: ProductAuthFailure
                 if let appleError = error as? AppleIdentityAuthorizationError,
                    appleError == .cancelled {
@@ -337,15 +357,22 @@ final class FounderOfficeAccountController: ObservableObject, AccountSyncStatusS
         operationTask = Task { [weak self, service] in
             do {
                 try await service.updateReviewedDisplayName(reviewed)
+                let finalState = await service.currentState()
                 guard !Task.isCancelled, let self else { return }
-                reviewedAccountID = session.accountID
-                reviewedDisplayNameDraft = reviewed.value
-                applyReviewedDisplayName(reviewed.value)
                 isSavingReviewedName = false
                 operationTask = nil
-                let finalState = await service.currentState()
+                guard case let .signedIn(finalSession) = finalState,
+                      finalSession.accountID == session.accountID else {
+                    // The active identity changed (or secure persistence
+                    // failed) while the profile write was in flight. Never
+                    // apply the prior account's reviewed value locally.
+                    receive(finalState)
+                    return
+                }
+                reviewedAccountID = session.accountID
+                reviewedDisplayNameDraft = reviewed.value
+                pendingReviewedDisplayName = reviewed
                 receive(finalState)
-                applyWorkspacePlan(for: session.accountID)
             } catch {
                 guard let self else { return }
                 isSavingReviewedName = false
@@ -363,6 +390,7 @@ final class FounderOfficeAccountController: ObservableObject, AccountSyncStatusS
         }
         selectedWorkspaceChoice = choice
         operationMessage = "This workspace remains only on this Mac."
+        pendingReviewedDisplayName = nil
         setupStage = .none
         releaseSetupInteraction()
     }
@@ -399,16 +427,31 @@ final class FounderOfficeAccountController: ObservableObject, AccountSyncStatusS
     private func finishNativeAuthentication(with fallback: ProductAuthState) {
         releaseNativeInteraction()
         operationTask = nil
-        let finalState = deferredAuthState ?? fallback
+        // currentState() is sampled after the provider operation completes and
+        // is authoritative. The AsyncStream may still contain an earlier
+        // `.signingIn` value, which must not overwrite a terminal result.
+        let finalState = fallback
         deferredAuthState = nil
         receive(finalState)
     }
 
     private func receive(_ state: ProductAuthState) {
+        if isRestoringSession {
+            // The auth stream starts with its pre-restore cached value. Keep the
+            // UI locked until restoreSession() has completed and currentState()
+            // has been sampled, instead of briefly enabling a second sign-in.
+            if case .restoring = state { authState = .restoring }
+            return
+        }
         if nativeInteractionLease != nil {
             deferredAuthState = state
             return
         }
+        // Ignore delayed transient events after their owning operation ended.
+        // Terminal events remain accepted so external sign-out/session expiry
+        // still propagates normally.
+        if case .restoring = state, restoreTask == nil { return }
+        if case .signingIn = state, operationTask == nil { return }
         authState = state
         switch state {
         case let .signedIn(session):
@@ -431,6 +474,7 @@ final class FounderOfficeAccountController: ObservableObject, AccountSyncStatusS
             displayNameError = nil
             if let reviewed = session.reviewedDisplayName {
                 reviewedAccountID = session.accountID
+                pendingReviewedDisplayName = reviewed
                 reviewedDisplayNameDraft = reviewed.value
                 applyWorkspacePlan(for: session.accountID)
             } else {
@@ -470,6 +514,7 @@ final class FounderOfficeAccountController: ObservableObject, AccountSyncStatusS
             // Identity is ready, but this controller has no authority to bind,
             // upload, replace, or claim a workspace. The transport coordinator
             // may consume the reviewed plan in a later release.
+            applyPendingReviewedDisplayName()
             setupStage = .none
             releaseSetupInteraction()
         }
@@ -478,6 +523,7 @@ final class FounderOfficeAccountController: ObservableObject, AccountSyncStatusS
     private func clearActiveAccount() {
         activeSession = nil
         reviewedAccountID = nil
+        pendingReviewedDisplayName = nil
         claimContextAtSignIn = nil
         workspacePlan = nil
         selectedWorkspaceChoice = nil
@@ -485,6 +531,17 @@ final class FounderOfficeAccountController: ObservableObject, AccountSyncStatusS
         displayNameError = nil
         setupStage = .none
         releaseSetupInteraction()
+    }
+
+    /// Account profile review and local workspace mutation are separate trust
+    /// boundaries. A name may update the current workspace automatically only
+    /// when the workspace is empty/unbound or already belongs to this identity.
+    /// A cross-account/local-data choice must never mutate the local profile as
+    /// a side effect of signing in.
+    private func applyPendingReviewedDisplayName() {
+        guard let pendingReviewedDisplayName else { return }
+        self.pendingReviewedDisplayName = nil
+        applyReviewedDisplayName(pendingReviewedDisplayName.value)
     }
 
     private func ensureSetupInteraction() {
