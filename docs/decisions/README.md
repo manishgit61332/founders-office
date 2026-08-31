@@ -26,3 +26,4 @@ Each ADR records status, date, context, decision, consequences, privacy/security
 - [0021 — Replay-safe bootstrap and exact primary-goal sync](0021-replay-safe-bootstrap-and-exact-goal-sync.md)
 - [0022 — Explicit existing-workspace provisioning](0022-explicit-existing-workspace-provisioning.md)
 - [0023 — Durable sync runtime state and reviewed conflicts](0023-durable-sync-runtime-state-and-conflict-review.md)
+- [0025 — Bounded derived-state repair and workspace-blind safe mode](0025-bounded-derived-state-repair-and-workspace-blind-safe-mode.md)

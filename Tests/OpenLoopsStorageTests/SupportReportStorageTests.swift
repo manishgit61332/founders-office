@@ -27,6 +27,39 @@ struct SupportReportStorageTests {
         #expect(!payload.contains(Data("partial-old-export".utf8)))
     }
 
+    @Test
+    func savesCrashStateDiagnosticWithoutOpeningOrAcceptingWorkspaceData() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let destination = directory.appendingPathComponent("crash-state.json")
+        let incidentID = try #require(
+            UUID(uuidString: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")
+        )
+        let report = RedactedCrashStateReport(
+            incidentID: incidentID,
+            capturedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            consecutivePreReadyFailures: 3,
+            metadata: SupportReportMetadata(
+                appVersion: "1.2.3",
+                buildNumber: "45",
+                operatingSystemMajor: 15,
+                operatingSystemMinor: 6,
+                operatingSystemPatch: 0,
+                architecture: .arm64
+            )
+        )
+
+        try await SupportReportStorage().save(report, to: destination)
+
+        let payload = try Data(contentsOf: destination)
+        let object = try #require(JSONSerialization.jsonObject(with: payload) as? [String: String])
+        #expect(object.keys.sorted() == RedactedCrashStateReport.fieldKeys.sorted())
+        #expect(object["incident_id"] == incidentID.uuidString.lowercased())
+        #expect(!payload.contains(Data("workspace".utf8)))
+    }
+
     private func report(incidentID: UUID) -> RedactedSupportReport {
         let capturedAt = Date(timeIntervalSince1970: 1_700_000_000)
         return RedactedSupportReport(

@@ -2456,6 +2456,7 @@ struct NotchBoardView: View {
         case .ready: return Color(nsColor: .systemGreen)
         case .working: return accent
         case .attention: return Color(nsColor: .systemOrange)
+        case .needsYou: return Color(nsColor: .systemRed)
         case .off: return Color.white.opacity(0.58)
         }
     }

@@ -25,30 +25,39 @@ final class WorkspaceSession: ObservableObject {
     @Published private(set) var snapshot: WorkspaceRepositorySnapshot
     @Published private(set) var projectionURL: URL?
     @Published private(set) var lastErrorMessage: String?
+    @Published private(set) var projectionRepairState: BoundedRepairCustomerState
 
     let repository: SQLiteWorkspaceRepository
     let rootURL: URL
     let databaseURL: URL
     let projectionsRootURL: URL
+    let repairLedgerURL: URL
 
     private var changeTask: Task<Void, Never>?
     private var projectionTask: Task<Void, Never>?
+    private let repairCoordinator: BoundedRepairCoordinator
 
     private init(
         rootURL: URL,
         databaseURL: URL,
         projectionsRootURL: URL,
+        repairLedgerURL: URL,
         repository: SQLiteWorkspaceRepository,
         snapshot: WorkspaceRepositorySnapshot,
         projectionURL: URL?,
+        projectionRepairState: BoundedRepairCustomerState,
+        repairCoordinator: BoundedRepairCoordinator,
         eventStream: AsyncStream<WorkspaceRepositoryEvent>
     ) {
         self.rootURL = rootURL
         self.databaseURL = databaseURL
         self.projectionsRootURL = projectionsRootURL
+        self.repairLedgerURL = repairLedgerURL
         self.repository = repository
         self.snapshot = snapshot
         self.projectionURL = projectionURL
+        self.projectionRepairState = projectionRepairState
+        self.repairCoordinator = repairCoordinator
         observeRepositoryChanges(eventStream)
     }
 
@@ -59,6 +68,9 @@ final class WorkspaceSession: ObservableObject {
     ) async throws -> WorkspaceSession {
         let databaseURL = rootURL.appendingPathComponent("founders-office.sqlite3")
         let projectionsRootURL = rootURL.appendingPathComponent("Generated", isDirectory: true)
+        let repairLedgerURL = rootURL
+            .appendingPathComponent("RuntimeHealth", isDirectory: true)
+            .appendingPathComponent("repair-ledger-v1.json")
         let repository = try await SQLiteWorkspaceRepository.open(
             configuration: WorkspaceRepositoryConfiguration(
                 databaseURL: databaseURL,
@@ -72,24 +84,49 @@ final class WorkspaceSession: ObservableObject {
         // session has no snapshot-to-subscription loss window.
         let eventStream = await repository.events()
         let snapshot = try await repository.snapshot()
+        let repairCoordinator = BoundedRepairCoordinator(
+            ledger: BoundedRepairLedger(fileURL: repairLedgerURL)
+        )
         let projectionURL: URL?
+        let projectionRepairState: BoundedRepairCustomerState
         do {
             projectionURL = try await repository.ensureProjection(in: projectionsRootURL)
+            projectionRepairState = .ready
         } catch {
-            projectionURL = nil
+            let result = await repairCoordinator.run(
+                key: Self.projectionRepairKey(for: snapshot.revision),
+                isHealthy: {
+                    await repository.currentProjectionURLIfHealthy(in: projectionsRootURL) != nil
+                },
+                repair: {
+                    _ = try await repository.repairCurrentProjection(in: projectionsRootURL)
+                }
+            )
+            projectionURL = await repository.currentProjectionURLIfHealthy(
+                in: projectionsRootURL
+            )
+            projectionRepairState = result.customerState
             AppDiagnostics.failure(.moveStoreLoad, category: .storage, error: error)
         }
         let session = WorkspaceSession(
             rootURL: rootURL,
             databaseURL: databaseURL,
             projectionsRootURL: projectionsRootURL,
+            repairLedgerURL: repairLedgerURL,
             repository: repository,
             snapshot: snapshot,
             projectionURL: projectionURL,
+            projectionRepairState: projectionRepairState,
+            repairCoordinator: repairCoordinator,
             eventStream: eventStream
         )
         if projectionURL == nil {
-            session.lastErrorMessage = "Workspace loaded; generated files need to be refreshed."
+            switch projectionRepairState {
+            case .needsUser:
+                session.lastErrorMessage = "Workspace loaded; generated files need you in Health."
+            case .ready, .retryAvailable:
+                session.lastErrorMessage = "Workspace loaded; generated files need to be refreshed."
+            }
         }
         return session
     }
@@ -147,12 +184,37 @@ final class WorkspaceSession: ObservableObject {
     }
 
     private func performProjectionRefresh() async -> Bool {
+        let repairKey = Self.projectionRepairKey(for: snapshot.revision)
         do {
             projectionURL = try await repository.ensureProjection(in: projectionsRootURL)
+            await repairCoordinator.confirmHealthy(key: repairKey)
+            projectionRepairState = .ready
             lastErrorMessage = nil
             return true
         } catch {
-            lastErrorMessage = "Workspace saved; generated files need to be refreshed."
+            let result = await repairCoordinator.run(
+                key: repairKey,
+                isHealthy: { [repository, projectionsRootURL] in
+                    await repository.currentProjectionURLIfHealthy(in: projectionsRootURL) != nil
+                },
+                repair: { [repository, projectionsRootURL] in
+                    _ = try await repository.repairCurrentProjection(in: projectionsRootURL)
+                }
+            )
+            projectionRepairState = result.customerState
+            projectionURL = await repository.currentProjectionURLIfHealthy(
+                in: projectionsRootURL
+            )
+            if projectionURL != nil {
+                lastErrorMessage = nil
+                return true
+            }
+            switch projectionRepairState {
+            case .needsUser:
+                lastErrorMessage = "Workspace saved; generated files need you in Health."
+            case .ready, .retryAvailable:
+                lastErrorMessage = "Workspace saved; generated files need to be refreshed."
+            }
             AppDiagnostics.failure(.moveStoreSave, category: .storage, error: error)
             return false
         }
@@ -191,5 +253,14 @@ final class WorkspaceSession: ObservableObject {
         guard latest.revision > snapshot.revision else { return false }
         snapshot = latest
         return true
+    }
+
+    private static func projectionRepairKey(
+        for revision: WorkspaceRevision
+    ) -> BoundedRepairKey {
+        BoundedRepairKey(
+            kind: .generatedProjection,
+            generation: UInt64(max(revision.rawValue, 0))
+        )
     }
 }
