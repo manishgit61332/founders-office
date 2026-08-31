@@ -75,6 +75,7 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Fixed
 
+- Existing-workspace attachment now rejects regressing feed horizons and skipped or duplicate entity revisions, and it removes stale schema-4 bootstrap journals inside the atomic authority-replacement transaction.
 - A second device can now retain its local database identity while atomically binding a different existing remote workspace UUID; account, provider, device, feed, cursor, and remote revisions must all verify before canonical replacement.
 - Account restore can no longer race a second sign-in, delayed transient auth events cannot replace a terminal result, and an identity change during name review cannot apply the prior account’s name to the local workspace.
 - Keychain read failures can no longer be reported as a signed-out local-only state, and session durability now verifies the complete persisted account/session record rather than tokens alone.

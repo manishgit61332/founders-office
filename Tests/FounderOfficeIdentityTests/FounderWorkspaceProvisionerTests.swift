@@ -1,4 +1,5 @@
 import Foundation
+import SQLite3
 import Testing
 @testable import FounderOfficeCore
 @testable import FounderOfficeIdentity
@@ -274,6 +275,358 @@ struct FounderWorkspaceProvisionerTests {
         #expect(try await repository.snapshot().content.openLoops.items.map(\.title) == ["Claim Me"])
         #expect(try await repository.pendingSyncBatch().requiresCanonicalBootstrap)
     }
+
+    @Test
+    func existingWorkspaceAttachmentPreservesExactPrimaryGoalValuesAndPlanningDate() async throws {
+        let fixture = try ProvisioningFixture()
+        defer { fixture.remove() }
+        let repository = try await fixture.open(initial: fixture.snapshot())
+        let remote = fixture.remoteIdentity()
+        let goalID = UUID(uuidString: "33333333-3333-4333-8333-333333333333")!
+        let fraction = try GoalDecimal(userInput: "1234567890123456789012.12345678")
+        let goal = try fixture.primaryGoalChange(
+            remote: remote,
+            goalID: goalID,
+            cursor: 1,
+            revision: 1,
+            currentValue: GoalDecimal.maximum,
+            targetValue: fraction,
+            dueOn: "2040-02-29"
+        )
+        let transport = ProvisioningTransport(
+            bootstrap: try fixture.bootstrap(remote: remote, latestCursor: 1),
+            pages: [try fixture.page(remote: remote, from: 0, changes: [goal])]
+        )
+        let provisioner = try FounderWorkspaceProvisioner(repository: repository, transport: transport)
+
+        _ = try await provisioner.provision(
+            account: fixture.productAccount(remote: remote),
+            deviceID: remote.deviceID,
+            disposition: .attachExisting(.freshDevice),
+            workspaceName: "Founder's Office",
+            reviewedDisplayName: nil
+        )
+
+        let snapshot = try await repository.snapshot()
+        let storedGoal = try #require(snapshot.content.personalization.primaryGoal)
+        #expect(storedGoal.id == goalID)
+        #expect(storedGoal.currentValue == .maximum)
+        #expect(storedGoal.targetValue == fraction)
+        #expect(PlanningDate.day(fromStored: storedGoal.dueAt) == PlanningDay(
+            year: 2040,
+            month: 2,
+            day: 29
+        ))
+        #expect(storedGoal.deletedAt == nil)
+        #expect(try await repository.remoteRevision(entityType: .primaryGoal, entityID: goalID) == 1)
+
+        let relaunched = try await fixture.open(initial: nil)
+        let relaunchedGoal = try #require(
+            try await relaunched.snapshot().content.personalization.primaryGoal
+        )
+        #expect(relaunchedGoal.currentValue == .maximum)
+        #expect(relaunchedGoal.targetValue == fraction)
+        #expect(PlanningDate.day(fromStored: relaunchedGoal.dueAt) == PlanningDay(
+            year: 2040,
+            month: 2,
+            day: 29
+        ))
+    }
+
+    @Test
+    func existingWorkspaceAttachmentPreservesNullablePrimaryGoalTombstone() async throws {
+        let fixture = try ProvisioningFixture()
+        defer { fixture.remove() }
+        let repository = try await fixture.open(initial: fixture.snapshot())
+        let remote = fixture.remoteIdentity()
+        let goalID = UUID(uuidString: "44444444-4444-4444-8444-444444444444")!
+        let created = try fixture.primaryGoalChange(
+            remote: remote,
+            goalID: goalID,
+            cursor: 1,
+            revision: 1,
+            currentValue: nil,
+            targetValue: nil,
+            dueOn: "2032-12-31"
+        )
+        let deletedAt = "2026-09-01T00:00:02Z"
+        let tombstone = try fixture.primaryGoalChange(
+            remote: remote,
+            goalID: goalID,
+            cursor: 2,
+            revision: 2,
+            action: .delete,
+            currentValue: nil,
+            targetValue: nil,
+            dueOn: "2032-12-31",
+            deletedAt: deletedAt,
+            changedFields: ["deletedAt"],
+            clock: deletedAt
+        )
+        let transport = ProvisioningTransport(
+            bootstrap: try fixture.bootstrap(remote: remote, latestCursor: 2),
+            pages: [try fixture.page(remote: remote, from: 0, changes: [created, tombstone])]
+        )
+        let provisioner = try FounderWorkspaceProvisioner(repository: repository, transport: transport)
+
+        _ = try await provisioner.provision(
+            account: fixture.productAccount(remote: remote),
+            deviceID: remote.deviceID,
+            disposition: .attachExisting(.freshDevice),
+            workspaceName: "Founder's Office",
+            reviewedDisplayName: nil
+        )
+
+        let storedGoal = try #require(
+            try await repository.snapshot().content.personalization.primaryGoal
+        )
+        #expect(storedGoal.id == goalID)
+        #expect(storedGoal.currentValue == nil)
+        #expect(storedGoal.targetValue == nil)
+        #expect(PlanningDate.day(fromStored: storedGoal.dueAt) == PlanningDay(
+            year: 2032,
+            month: 12,
+            day: 31
+        ))
+        let expectedDeletedAt = try WorkspaceV2SyncAdapter.parseTimestamp(deletedAt)
+        #expect(storedGoal.deletedAt == expectedDeletedAt)
+        #expect(try await repository.remoteRevision(entityType: .primaryGoal, entityID: goalID) == 2)
+        #expect(try await repository.syncCursor() == SyncCursor(value: 2))
+    }
+
+    @Test
+    func attachmentRejectsARegressedFeedHorizonWithoutChangingLocalAuthority() async throws {
+        let fixture = try ProvisioningFixture()
+        defer { fixture.remove() }
+        let repository = try await fixture.open(initial: fixture.snapshot())
+        let remote = fixture.remoteIdentity()
+        let move = try fixture.moveChange(remote: remote, cursor: 1, title: "Incomplete")
+        let first = try fixture.page(
+            remote: remote,
+            from: 0,
+            changes: [move],
+            latestCursor: 100,
+            hasMore: true
+        )
+        let regressedFinal = try fixture.page(
+            remote: remote,
+            from: 1,
+            changes: [],
+            latestCursor: 1,
+            hasMore: false
+        )
+        let transport = ProvisioningTransport(
+            bootstrap: try fixture.bootstrap(remote: remote, latestCursor: 1),
+            pages: [first, regressedFinal]
+        )
+        let provisioner = try FounderWorkspaceProvisioner(repository: repository, transport: transport)
+
+        let error = await provisioningError {
+            try await provisioner.provision(
+                account: fixture.productAccount(remote: remote),
+                deviceID: remote.deviceID,
+                disposition: .attachExisting(.freshDevice),
+                workspaceName: "Founder's Office",
+                reviewedDisplayName: nil
+            )
+        }
+
+        #expect(error.sync == .invalidProvisioningFeed)
+        #expect(try await repository.syncBinding() == nil)
+        #expect(try await repository.snapshot().revision == .initial)
+        #expect(try await repository.syncCursor() == SyncCursor(value: 0))
+    }
+
+    @Test
+    func attachmentRejectsDuplicateEntityRevisionEvenWhenClocksMatch() async throws {
+        let fixture = try ProvisioningFixture()
+        defer { fixture.remove() }
+        let repository = try await fixture.open(initial: fixture.snapshot())
+        let remote = fixture.remoteIdentity()
+        let goalID = UUID(uuidString: "55555555-5555-4555-8555-555555555555")!
+        let first = try fixture.primaryGoalChange(
+            remote: remote,
+            goalID: goalID,
+            cursor: 1,
+            revision: 1,
+            title: "First",
+            currentValue: 1,
+            targetValue: 10,
+            dueOn: "2030-01-01"
+        )
+        let duplicateRevision = try fixture.primaryGoalChange(
+            remote: remote,
+            goalID: goalID,
+            cursor: 2,
+            revision: 1,
+            title: "Impossible duplicate",
+            currentValue: 2,
+            targetValue: 10,
+            dueOn: "2030-01-01"
+        )
+        let transport = ProvisioningTransport(
+            bootstrap: try fixture.bootstrap(remote: remote, latestCursor: 2),
+            pages: [try fixture.page(
+                remote: remote,
+                from: 0,
+                changes: [first, duplicateRevision]
+            )]
+        )
+        let provisioner = try FounderWorkspaceProvisioner(repository: repository, transport: transport)
+
+        let error = await provisioningError {
+            try await provisioner.provision(
+                account: fixture.productAccount(remote: remote),
+                deviceID: remote.deviceID,
+                disposition: .attachExisting(.freshDevice),
+                workspaceName: "Founder's Office",
+                reviewedDisplayName: nil
+            )
+        }
+
+        #expect(error.sync == .invalidProvisioningFeed)
+        #expect(try await repository.syncBinding() == nil)
+        #expect(try await repository.snapshot().content.personalization.primaryGoal == nil)
+    }
+
+    @Test
+    func schemaFourMigrationCreatesBootstrapJournalAndAttachmentClearsStaleAttempt() async throws {
+        let fixture = try ProvisioningFixture()
+        defer { fixture.remove() }
+        var original: SQLiteWorkspaceRepository? = try await fixture.open(initial: fixture.snapshot())
+        #expect(try await original?.snapshot().workspaceID == fixture.localWorkspaceID)
+        original = nil
+
+        try fixture.rewriteAsSchemaThreeWithoutBootstrapAttempt()
+        let repository = try await fixture.open(initial: nil)
+        #expect(try fixture.databaseUserVersion() == 4)
+        #expect(try fixture.tableExists("sync_bootstrap_attempt"))
+
+        let remote = fixture.remoteIdentity()
+        try fixture.insertStaleBootstrapAttempt(remote: remote)
+        #expect(try fixture.rowCount(in: "sync_bootstrap_attempt") == 1)
+        let transport = ProvisioningTransport(
+            bootstrap: try fixture.bootstrap(remote: remote, latestCursor: 0),
+            pages: [try fixture.page(remote: remote, from: 0, changes: [])]
+        )
+        let provisioner = try FounderWorkspaceProvisioner(repository: repository, transport: transport)
+
+        _ = try await provisioner.provision(
+            account: fixture.productAccount(remote: remote),
+            deviceID: remote.deviceID,
+            disposition: .attachExisting(.freshDevice),
+            workspaceName: "Founder's Office",
+            reviewedDisplayName: nil
+        )
+
+        #expect(try fixture.rowCount(in: "sync_bootstrap_attempt") == 0)
+        #expect(try await repository.syncBinding()?.workspaceID == remote.workspaceID)
+    }
+
+    @Test
+    func remoteAssetBlocksAttachmentBeforeLocalExportOrReplacement() async throws {
+        let fixture = try ProvisioningFixture()
+        defer { fixture.remove() }
+        let repository = try await fixture.open(initial: fixture.snapshot(title: "Keep locally"))
+        let remote = fixture.remoteIdentity()
+        let asset = try fixture.assetChange(remote: remote, cursor: 1)
+        let transport = ProvisioningTransport(
+            bootstrap: try fixture.bootstrap(remote: remote, latestCursor: 1),
+            pages: [try fixture.page(remote: remote, from: 0, changes: [asset])]
+        )
+        let provisioner = try FounderWorkspaceProvisioner(repository: repository, transport: transport)
+        let destination = fixture.rootURL.appendingPathComponent(
+            "must-not-be-created",
+            isDirectory: true
+        )
+
+        let error = await provisioningError {
+            try await provisioner.provision(
+                account: fixture.productAccount(remote: remote),
+                deviceID: remote.deviceID,
+                disposition: .attachExisting(.exportAndReplace(destination: destination)),
+                workspaceName: "Founder's Office",
+                reviewedDisplayName: nil
+            )
+        }
+
+        #expect(error.sync == .assetsDisabled)
+        #expect(!FileManager.default.fileExists(atPath: destination.path))
+        #expect(try await repository.syncBinding() == nil)
+        #expect(try await repository.snapshot().content.openLoops.items.map(\.title) == ["Keep locally"])
+    }
+
+    @Test
+    func olderGoalEchoAfterAttachmentCannotHideANewerPendingLocalValue() async throws {
+        let fixture = try ProvisioningFixture()
+        defer { fixture.remove() }
+        let repository = try await fixture.open(initial: fixture.snapshot())
+        let remote = fixture.remoteIdentity()
+        let goalID = UUID(uuidString: "66666666-6666-4666-8666-666666666666")!
+        let initialGoal = try fixture.primaryGoalChange(
+            remote: remote,
+            goalID: goalID,
+            cursor: 1,
+            revision: 1,
+            currentValue: 3,
+            targetValue: 10,
+            dueOn: "2035-06-30"
+        )
+        let transport = ProvisioningTransport(
+            bootstrap: try fixture.bootstrap(remote: remote, latestCursor: 1),
+            pages: [try fixture.page(remote: remote, from: 0, changes: [initialGoal])]
+        )
+        let provisioner = try FounderWorkspaceProvisioner(repository: repository, transport: transport)
+        _ = try await provisioner.provision(
+            account: fixture.productAccount(remote: remote),
+            deviceID: remote.deviceID,
+            disposition: .attachExisting(.freshDevice),
+            workspaceName: "Founder's Office",
+            reviewedDisplayName: nil
+        )
+
+        let localClock = try WorkspaceV2SyncAdapter.parseTimestamp("2026-09-01T00:00:10Z")
+        let attached = try await repository.snapshot()
+        var localReplacement = attached.content
+        localReplacement.personalization.primaryGoal?.currentValue = .maximum
+        localReplacement.personalization.primaryGoal?.updatedAt = localClock
+        localReplacement.personalization.updatedAt = localClock
+        _ = try await repository.transact(
+            expectedRevision: attached.revision,
+            mutation: WorkspaceMutation(
+                entityKind: "primaryGoal",
+                entityID: goalID.uuidString.lowercased(),
+                changedFields: ["currentValue"],
+                fieldClocks: ["currentValue": localClock],
+                replacement: localReplacement,
+                createdAt: localClock
+            )
+        )
+        #expect(try await repository.pendingOperations().count == 1)
+
+        let olderServerEcho = try fixture.primaryGoalChange(
+            remote: remote,
+            goalID: goalID,
+            cursor: 2,
+            revision: 2,
+            currentValue: 5,
+            targetValue: 10,
+            dueOn: "2035-06-30",
+            changedFields: ["currentValue"],
+            clock: "2026-09-01T00:00:05Z"
+        )
+        try await repository.applyRemotePage(
+            fixture.page(remote: remote, from: 1, changes: [olderServerEcho])
+        )
+
+        let converged = try await repository.snapshot()
+        #expect(converged.workspaceID == fixture.localWorkspaceID)
+        #expect(try await repository.syncBinding()?.workspaceID == remote.workspaceID)
+        #expect(converged.content.personalization.primaryGoal?.currentValue == .maximum)
+        #expect(try await repository.pendingOperations().count == 1)
+        #expect(try await repository.remoteRevision(entityType: .primaryGoal, entityID: goalID) == 2)
+        #expect(try await repository.syncCursor() == SyncCursor(value: 2))
+    }
 }
 
 private struct ProvisioningRemoteIdentity: Sendable {
@@ -448,10 +801,101 @@ private final class ProvisioningFixture: @unchecked Sendable {
         )
     }
 
+    func primaryGoalChange(
+        remote: ProvisioningRemoteIdentity,
+        goalID: UUID,
+        cursor: Int64,
+        revision: Int64,
+        action: SyncMutationAction = .upsert,
+        title: String = "Reach the finish line",
+        currentValue: GoalDecimal?,
+        targetValue: GoalDecimal?,
+        dueOn: String,
+        deletedAt: String? = nil,
+        changedFields: [String] = [
+            "title", "metric", "currentValue", "targetValue", "unit", "dueOn", "deletedAt",
+        ],
+        clock: String = "2026-09-01T00:00:01Z"
+    ) throws -> SyncChange {
+        _ = remote
+        let createdAt = "2026-09-01T00:00:01Z"
+        let fields = [
+            "title", "metric", "currentValue", "targetValue", "unit", "dueOn", "deletedAt",
+        ]
+        var fieldClocks = Dictionary(
+            uniqueKeysWithValues: fields.map { ($0, SyncJSONValue.string(createdAt)) }
+        )
+        for field in changedFields {
+            fieldClocks[field] = .string(clock)
+        }
+        return try SyncChange(
+            cursor: SyncCursor(value: cursor),
+            operationID: SyncOperationID(rawValue: UUID()),
+            entityType: .primaryGoal,
+            entityID: goalID,
+            action: action,
+            revision: revision,
+            changedFields: changedFields,
+            changedAt: try WorkspaceV2SyncAdapter.parseTimestamp(clock),
+            record: [
+                "id": .string(goalID.uuidString.lowercased()),
+                "title": .string(title),
+                "metric": .string("MRR"),
+                "currentValue": currentValue.map { .number($0.decimalValue) } ?? .null,
+                "targetValue": targetValue.map { .number($0.decimalValue) } ?? .null,
+                "unit": .string("usd"),
+                "dueOn": .string(dueOn),
+                "deletedAt": deletedAt.map(SyncJSONValue.string) ?? .null,
+                "revision": .integer(revision),
+                "fieldClocks": .object(fieldClocks),
+                "createdAt": .string(createdAt),
+                "updatedAt": .string(clock),
+            ]
+        )
+    }
+
+    func assetChange(
+        remote: ProvisioningRemoteIdentity,
+        cursor: Int64
+    ) throws -> SyncChange {
+        let assetID = UUID(uuidString: "77777777-7777-4777-8777-777777777777")!
+        let timestamp = "2026-09-01T00:00:01Z"
+        let fields = ["kind", "storagePath", "contentType", "byteSize", "sha256", "deletedAt"]
+        return try SyncChange(
+            cursor: SyncCursor(value: cursor),
+            operationID: SyncOperationID(rawValue: UUID()),
+            entityType: .asset,
+            entityID: assetID,
+            action: .upsert,
+            revision: 1,
+            changedFields: fields,
+            changedAt: try WorkspaceV2SyncAdapter.parseTimestamp(timestamp),
+            record: [
+                "id": .string(assetID.uuidString.lowercased()),
+                "kind": .string("visionImage"),
+                "storagePath": .string(
+                    "workspaces/\(remote.workspaceID.rawValue.uuidString.lowercased())/vision-images/\(assetID.uuidString.lowercased()).jpg"
+                ),
+                "contentType": .string("image/jpeg"),
+                "byteSize": .integer(1_024),
+                "sha256": .string(String(repeating: "a", count: 64)),
+                "deletedAt": .null,
+                "revision": .integer(1),
+                "fieldClocks": .object(
+                    Dictionary(uniqueKeysWithValues: fields.map { ($0, .string(timestamp)) })
+                ),
+                "createdAt": .string(timestamp),
+                "updatedAt": .string(timestamp),
+            ]
+        )
+    }
+
     func page(
         remote: ProvisioningRemoteIdentity,
         from: Int64,
-        changes: [SyncChange]
+        changes: [SyncChange],
+        latestCursor: Int64? = nil,
+        hasMore: Bool = false
     ) throws -> SyncPullResponse {
         struct Encoded: Encodable {
             let contractVersion = 1
@@ -463,6 +907,7 @@ private final class ProvisioningFixture: @unchecked Sendable {
             let changes: [SyncChange]
         }
         let next = changes.last?.cursor.value ?? from
+        let latest = latestCursor ?? next
         return try provisioningDecoder.decode(
             SyncPullResponse.self,
             from: provisioningEncoder.encode(
@@ -470,13 +915,109 @@ private final class ProvisioningFixture: @unchecked Sendable {
                     workspaceId: remote.workspaceID,
                     fromCursor: try SyncCursor(value: from),
                     nextCursor: try SyncCursor(value: next),
-                    latestCursor: try SyncCursor(value: next),
-                    hasMore: false,
+                    latestCursor: try SyncCursor(value: latest),
+                    hasMore: hasMore,
                     changes: changes
                 )
             )
         )
     }
+
+    func rewriteAsSchemaThreeWithoutBootstrapAttempt() throws {
+        try withDatabase { connection in
+            guard sqlite3_exec(
+                connection,
+                "DROP TABLE sync_bootstrap_attempt; PRAGMA user_version = 3;",
+                nil,
+                nil,
+                nil
+            ) == SQLITE_OK else {
+                throw SQLiteProvisioningFixtureError.statementFailed(sqlite3_errcode(connection))
+            }
+        }
+    }
+
+    func insertStaleBootstrapAttempt(remote: ProvisioningRemoteIdentity) throws {
+        let sql = """
+        INSERT INTO sync_bootstrap_attempt (
+            singleton, account_id, remote_workspace_id, device_id, plan, created_at
+        ) VALUES (
+            1,
+            '\(remote.accountID.rawValue.uuidString.lowercased())',
+            '\(remote.workspaceID.rawValue.uuidString.lowercased())',
+            '\(remote.deviceID.rawValue.uuidString.lowercased())',
+            X'00',
+            1
+        );
+        """
+        try withDatabase { connection in
+            guard sqlite3_exec(connection, sql, nil, nil, nil) == SQLITE_OK else {
+                throw SQLiteProvisioningFixtureError.statementFailed(sqlite3_errcode(connection))
+            }
+        }
+    }
+
+    func databaseUserVersion() throws -> Int64 {
+        try scalarInteger("PRAGMA user_version")
+    }
+
+    func tableExists(_ name: String) throws -> Bool {
+        guard name == "sync_bootstrap_attempt" else {
+            throw SQLiteProvisioningFixtureError.invalidFixtureQuery
+        }
+        return try scalarInteger(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'sync_bootstrap_attempt'"
+        ) == 1
+    }
+
+    func rowCount(in table: String) throws -> Int64 {
+        guard table == "sync_bootstrap_attempt" else {
+            throw SQLiteProvisioningFixtureError.invalidFixtureQuery
+        }
+        return try scalarInteger("SELECT COUNT(*) FROM sync_bootstrap_attempt")
+    }
+
+    private func scalarInteger(_ sql: String) throws -> Int64 {
+        try withDatabase { connection in
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(connection, sql, -1, &statement, nil) == SQLITE_OK,
+                  let statement else {
+                throw SQLiteProvisioningFixtureError.statementFailed(sqlite3_errcode(connection))
+            }
+            defer { sqlite3_finalize(statement) }
+            guard sqlite3_step(statement) == SQLITE_ROW else {
+                throw SQLiteProvisioningFixtureError.statementFailed(sqlite3_errcode(connection))
+            }
+            return sqlite3_column_int64(statement, 0)
+        }
+    }
+
+    private func withDatabase<Result>(
+        _ body: (OpaquePointer) throws -> Result
+    ) throws -> Result {
+        var connection: OpaquePointer?
+        let result = sqlite3_open_v2(
+            databaseURL.path,
+            &connection,
+            SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX,
+            nil
+        )
+        guard result == SQLITE_OK, let connection else {
+            if let connection { sqlite3_close_v2(connection) }
+            throw SQLiteProvisioningFixtureError.openFailed(result)
+        }
+        defer { sqlite3_close_v2(connection) }
+        guard sqlite3_busy_timeout(connection, 5_000) == SQLITE_OK else {
+            throw SQLiteProvisioningFixtureError.statementFailed(sqlite3_errcode(connection))
+        }
+        return try body(connection)
+    }
+}
+
+private enum SQLiteProvisioningFixtureError: Error {
+    case openFailed(Int32)
+    case statementFailed(Int32)
+    case invalidFixtureQuery
 }
 
 private actor ProvisioningTransport: WorkspaceSyncTransport {
