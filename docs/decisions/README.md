@@ -20,3 +20,4 @@ Each ADR records status, date, context, decision, consequences, privacy/security
 - [0015 — Supabase Auth and revisioned cross-platform sync](0015-supabase-auth-and-revisioned-sync.md)
 - [0016 — Bounded personalization image assets](0016-bounded-personalization-image-assets.md)
 - [0017 — Bounded local entity operation outbox](0017-bounded-local-entity-outbox.md)
+- [0018 — Exact bounded primary-goal decimals](0018-exact-primary-goal-decimals.md)

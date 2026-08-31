@@ -282,7 +282,6 @@ public enum SyncContractValidationError: Error, Equatable, Sendable {
 private enum SyncContractRules {
     static let maximumAssetByteSize: Int64 = 5_242_880
     static let maximumAppearanceByteSize = 262_144
-    private static let maximumGoalValue = Decimal(string: "9999999999999999999999.99999999")!
 
     static func allowedFields(for entityType: SyncEntityType) -> Set<String> {
         switch entityType {
@@ -651,11 +650,7 @@ private enum SyncContractRules {
         case let .number(number): decimal = number
         default: return false
         }
-        guard !decimal.isNaN, decimal >= 0, decimal <= maximumGoalValue else { return false }
-        var source = decimal
-        var rounded = Decimal()
-        NSDecimalRound(&rounded, &source, 8, .plain)
-        return rounded == decimal
+        return (try? GoalDecimal(validating: decimal)) != nil
     }
 }
 

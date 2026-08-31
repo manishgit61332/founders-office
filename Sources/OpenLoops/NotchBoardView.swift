@@ -277,6 +277,7 @@ struct NotchBoardView: View {
     @State private var primaryGoalMetric = ""
     @State private var primaryGoalCurrent = ""
     @State private var primaryGoalTarget = ""
+    @State private var primaryGoalValidationMessage: String?
     @State private var primaryGoalUnit: GoalValueUnit = .usd
     @State private var primaryGoalDate = Calendar.current.date(byAdding: .day, value: 60, to: Date()) ?? Date()
     @State private var finishDateDraft = Calendar.current.date(byAdding: .day, value: 60, to: Date()) ?? Date()
@@ -2085,6 +2086,13 @@ struct NotchBoardView: View {
                 goalTextField("Metric", text: $primaryGoalMetric)
             }
 
+            if let primaryGoalValidationMessage {
+                Text(primaryGoalValidationMessage)
+                    .font(interfaceFont(.tertiary, weight: .semibold))
+                    .foregroundStyle(Color(nsColor: .systemRed))
+                    .accessibilityIdentifier("primaryGoal.validationError")
+            }
+
             HStack(spacing: 7) {
                 Text("Target date")
                     .font(interfaceFont(.tertiary, weight: .bold))
@@ -3115,8 +3123,9 @@ struct NotchBoardView: View {
 
         primaryGoalTitle = goal.title
         primaryGoalMetric = goal.metric
-        primaryGoalCurrent = goal.currentValue.map(editingNumber) ?? ""
-        primaryGoalTarget = goal.targetValue.map(editingNumber) ?? ""
+        primaryGoalCurrent = goal.currentValue?.canonicalString ?? ""
+        primaryGoalTarget = goal.targetValue?.canonicalString ?? ""
+        primaryGoalValidationMessage = nil
         primaryGoalUnit = goal.unit
         primaryGoalDate = goal.dueAt
     }
@@ -3136,6 +3145,7 @@ struct NotchBoardView: View {
         primaryGoalMetric = ""
         primaryGoalCurrent = ""
         primaryGoalTarget = ""
+        primaryGoalValidationMessage = nil
         primaryGoalUnit = .usd
         primaryGoalDate = Calendar.current.date(byAdding: .day, value: 60, to: Date()) ?? Date()
     }
@@ -3144,15 +3154,29 @@ struct NotchBoardView: View {
         let cleanTitle = primaryGoalTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleanTitle.isEmpty else { return }
 
-        let parsedTarget = parsedGoalValue(primaryGoalTarget).flatMap { $0 > 0 ? $0 : nil }
+        let currentValue: GoalDecimal?
+        let targetValue: GoalDecimal?
+        do {
+            currentValue = try parsedGoalValue(primaryGoalCurrent)
+            targetValue = try parsedGoalValue(primaryGoalTarget)
+            if let targetValue, targetValue == .zero {
+                primaryGoalValidationMessage = "Target must be greater than zero."
+                return
+            }
+        } catch {
+            primaryGoalValidationMessage = goalValidationMessage(for: error)
+            return
+        }
+
         personalization.setPrimaryGoal(
             title: cleanTitle,
             metric: primaryGoalMetric,
-            currentValue: parsedGoalValue(primaryGoalCurrent),
-            targetValue: parsedTarget,
+            currentValue: currentValue,
+            targetValue: targetValue,
             unit: primaryGoalUnit,
             dueAt: primaryGoalDate
         )
+        primaryGoalValidationMessage = nil
         NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
     }
 
@@ -3160,18 +3184,22 @@ struct NotchBoardView: View {
         primaryGoalDate = Calendar.current.date(byAdding: .day, value: days, to: Date()) ?? primaryGoalDate
     }
 
-    private func parsedGoalValue(_ text: String) -> Double? {
-        let clean = text
-            .replacingOccurrences(of: ",", with: "")
-            .replacingOccurrences(of: "$", with: "")
-            .replacingOccurrences(of: "₹", with: "")
-            .replacingOccurrences(of: "%", with: "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return clean.isEmpty ? nil : Double(clean)
+    private func parsedGoalValue(_ text: String) throws -> GoalDecimal? {
+        let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return clean.isEmpty ? nil : try GoalDecimal(userInput: clean)
     }
 
-    private func editingNumber(_ value: Double) -> String {
-        value.rounded() == value ? String(format: "%.0f", value) : String(format: "%.1f", value)
+    private func goalValidationMessage(for error: Error) -> String {
+        switch error as? GoalDecimal.ValidationError {
+        case .tooManyFractionDigits:
+            return "Use no more than 8 digits after the decimal point."
+        case .outOfRange:
+            return "That number is too large. Use at most 22 digits before the decimal point."
+        case .negative:
+            return "Goal values cannot be negative."
+        default:
+            return "Enter a valid number, such as 3,000.12345678."
+        }
     }
 
     private func select(_ status: LoopStatus) {
@@ -3236,14 +3264,15 @@ struct NotchBoardView: View {
         return formatter.string(from: PlanningDate.localDate(fromStored: date))
     }
 
-    private func primaryGoalTargetLabel(_ goal: PrimaryGoal, target: Double) -> String {
+    private func primaryGoalTargetLabel(_ goal: PrimaryGoal, target: GoalDecimal) -> String {
         let metric = goal.metric.trimmingCharacters(in: .whitespacesAndNewlines)
         return metric.isEmpty ? goal.unit.format(target) : "\(goal.unit.format(target)) \(metric)"
     }
 
     private func primaryGoalProgress(_ goal: PrimaryGoal) -> Double {
         guard let target = goal.targetValue, target > 0 else { return 0 }
-        return min(max((goal.currentValue ?? 0) / target, 0), 1)
+        let ratio = (goal.currentValue ?? .zero).doubleValue / target.doubleValue
+        return min(max(ratio, 0), 1)
     }
 
     private func daysLeftLabel(_ date: Date) -> String {

@@ -543,8 +543,6 @@ private enum WorkspaceLocalOperationValidator {
             guard goal.id.uuidString.lowercased() == envelope.entityID.lowercased(),
                   validString(goal.title),
                   validString(goal.metric),
-                  goal.currentValue.map(\.isFinite) ?? true,
-                  goal.targetValue.map(\.isFinite) ?? true,
                   validDates([goal.createdAt, goal.updatedAt, goal.dueAt, goal.deletedAt]),
                   envelope.action == (goal.deletedAt == nil ? .upsert : .tombstone) else {
                 throw WorkspaceLocalOperationError.invalidRecord
