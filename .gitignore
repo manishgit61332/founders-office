@@ -27,6 +27,8 @@ Recovery/
 *.jsonl
 *.sqlite
 *.sqlite-*
+*.sqlite3
+*.sqlite3-*
 *.bak
 *.trace
 *.crash
