@@ -6,6 +6,68 @@ import Testing
 
 struct WorkspaceRepositoryTests {
     @Test
+    func exactPrimaryGoalEditSurvivesOutboxAndRepositoryRelaunch() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.remove() }
+        let goalID = UUID()
+        var initial = fixture.snapshot(title: "Before")
+        initial.personalization.primaryGoal = PrimaryGoal(
+            id: goalID,
+            title: "Reach the finish line",
+            metric: "MRR",
+            currentValue: try GoalDecimal(userInput: "3000.1234567"),
+            targetValue: 10_000,
+            unit: .usd,
+            dueAt: fixture.date(9_000),
+            createdAt: fixture.date(10),
+            updatedAt: fixture.date(10)
+        )
+
+        let repository = try await fixture.open(initial: initial)
+        let baseline = try await repository.snapshot()
+        var replacement = baseline.content
+        replacement.personalization.primaryGoal?.currentValue = try GoalDecimal(
+            userInput: "3000.12345678"
+        )
+        replacement.personalization.primaryGoal?.updatedAt = fixture.date(20)
+        replacement.personalization.updatedAt = fixture.date(20)
+        let mutation = WorkspaceMutation(
+            entityKind: "primary_goal",
+            entityID: goalID.uuidString.lowercased(),
+            changedFields: ["currentValue", "updatedAt"],
+            fieldClocks: [
+                "currentValue": fixture.date(20),
+                "updatedAt": fixture.date(20)
+            ],
+            replacement: replacement,
+            createdAt: fixture.date(20)
+        )
+
+        _ = try await repository.transact(
+            expectedRevision: baseline.revision,
+            mutation: mutation
+        )
+
+        let pending = try #require(try await repository.pendingOperations().first)
+        #expect(String(decoding: pending.payload, as: UTF8.self).contains(
+            #""currentValue":3000.12345678"#
+        ))
+        guard case let .localEntity(envelope) = try pending.decodedLocalPayload(),
+              case let .primaryGoal(outboxGoal) = envelope.record else {
+            Issue.record("Expected an exact primary-goal operation")
+            return
+        }
+        #expect(outboxGoal.currentValue?.canonicalString == "3000.12345678")
+
+        let reopened = try await fixture.open(initial: nil)
+        let durable = try await reopened.snapshot()
+        #expect(
+            durable.content.personalization.primaryGoal?.currentValue?.canonicalString
+                == "3000.12345678"
+        )
+    }
+
+    @Test
     func commitAdvancesRevisionAndPersistsWriterReceiptAndOutbox() async throws {
         let fixture = try RepositoryFixture()
         defer { fixture.remove() }

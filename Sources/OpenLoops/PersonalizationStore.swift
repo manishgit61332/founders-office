@@ -493,8 +493,8 @@ final class PersonalizationStore: ObservableObject {
     func setPrimaryGoal(
         title: String,
         metric: String,
-        currentValue: Double?,
-        targetValue: Double?,
+        currentValue: GoalDecimal?,
+        targetValue: GoalDecimal?,
         unit: GoalValueUnit,
         dueAt: Date
     ) {
@@ -509,8 +509,8 @@ final class PersonalizationStore: ObservableObject {
             id: existing?.id ?? UUID(),
             title: cleanTitle,
             metric: cleanMetric,
-            currentValue: targetValue == nil ? nil : max(0, currentValue ?? 0),
-            targetValue: targetValue.map { max(0, $0) },
+            currentValue: targetValue == nil ? nil : currentValue ?? .zero,
+            targetValue: targetValue,
             unit: unit,
             dueAt: dueAt,
             createdAt: existing?.createdAt ?? now,
@@ -821,8 +821,10 @@ final class PersonalizationStore: ObservableObject {
         if let rawDays = environment["OPENLOOPS_PREVIEW_MILESTONE_DAYS"],
            let days = Int(rawDays),
            let dueAt = Calendar.current.date(byAdding: .day, value: days, to: Date()) {
-            let targetValue = environment["OPENLOOPS_PREVIEW_GOAL_TARGET"].flatMap(Double.init)
-            let currentValue = environment["OPENLOOPS_PREVIEW_GOAL_CURRENT"].flatMap(Double.init)
+            let targetValue = environment["OPENLOOPS_PREVIEW_GOAL_TARGET"]
+                .flatMap { try? GoalDecimal(userInput: $0) }
+            let currentValue = environment["OPENLOOPS_PREVIEW_GOAL_CURRENT"]
+                .flatMap { try? GoalDecimal(userInput: $0) }
             let unit = environment["OPENLOOPS_PREVIEW_GOAL_UNIT"].flatMap(GoalValueUnit.init(rawValue:)) ?? .usd
             document.primaryGoal = PrimaryGoal(
                 id: UUID(),

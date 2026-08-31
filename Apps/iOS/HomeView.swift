@@ -100,7 +100,7 @@ private struct PrimaryGoalCard: View {
               let target = goal.targetValue,
               target > 0
         else { return nil }
-        return min(max(current / target, 0), 1)
+        return min(max(current.doubleValue / target.doubleValue, 0), 1)
     }
 
     var body: some View {

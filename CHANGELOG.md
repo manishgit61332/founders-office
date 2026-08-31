@@ -45,6 +45,7 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Changed
 
+- Primary-goal current and target values now use one exact, nonnegative `numeric(30,8)`-compatible type across Mac, iPhone, SQLite snapshots, JSON projections, and local outbox records while retaining the existing JSON-number shape.
 - New Move, profile, workspace, Appearance, primary-goal, milestone, and asset mutations now retain one bounded entity operation instead of another complete workspace snapshot; exact image-original metadata remains excluded.
 - Workspace retry receipts now version their fingerprint algorithm so schema-1 idempotent retries remain valid while new mutations avoid a redundant full-snapshot fingerprint encoding pass.
 - The Mac personal-image widget now renders only a bounded ImageIO thumbnail; file copies, thumbnail generation, export, and cleanup run outside the main actor.
@@ -66,6 +67,7 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Fixed
 
+- Primary-goal editors now reopen every meaningful decimal digit instead of rounding non-integers to one place, and malformed, non-finite, over-scale, negative, or out-of-range input fails before changing canonical state.
 - Keyboard-opened colour panels now inherit the notch's interaction lease even when the pointer is elsewhere, and a failed Move or personalization write blocks quit until a later durable retry succeeds.
 - Automatic update throttling is now isolated by the reviewed feed URL, channel, and signing key, so a channel move or key rotation is checked immediately instead of inheriting another channel's delay.
 - Repeated mutations in large workspaces no longer amplify the SQLite outbox by one full canonical snapshot per edit, and multiline Move details remain valid during strict v2 validation and schema-1 migration.

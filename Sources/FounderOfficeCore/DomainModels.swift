@@ -184,12 +184,8 @@ public enum GoalValueUnit: String, Codable, CaseIterable, Identifiable, Sendable
         }
     }
 
-    public func format(_ value: Double) -> String {
-        let formatter = NumberFormatter()
-        formatter.numberStyle = .decimal
-        formatter.usesGroupingSeparator = true
-        formatter.maximumFractionDigits = value.rounded() == value ? 0 : 1
-        let number = formatter.string(from: NSNumber(value: value)) ?? String(format: "%.0f", value)
+    public func format(_ value: GoalDecimal, locale: Locale = .current) -> String {
+        let number = value.formatted(locale: locale)
 
         switch self {
         case .usd: return "$\(number)"
@@ -204,8 +200,8 @@ public struct PrimaryGoal: Codable, Identifiable, Hashable, Sendable {
     public var id: UUID
     public var title: String
     public var metric: String
-    public var currentValue: Double?
-    public var targetValue: Double?
+    public var currentValue: GoalDecimal?
+    public var targetValue: GoalDecimal?
     public var unit: GoalValueUnit
     public var dueAt: Date
     public var createdAt: Date
@@ -216,8 +212,8 @@ public struct PrimaryGoal: Codable, Identifiable, Hashable, Sendable {
         id: UUID,
         title: String,
         metric: String,
-        currentValue: Double?,
-        targetValue: Double?,
+        currentValue: GoalDecimal?,
+        targetValue: GoalDecimal?,
         unit: GoalValueUnit,
         dueAt: Date,
         createdAt: Date,
