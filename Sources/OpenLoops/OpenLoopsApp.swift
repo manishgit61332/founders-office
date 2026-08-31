@@ -36,6 +36,23 @@ final class FoundersOfficeAppDelegate: NSObject, NSApplicationDelegate {
     private var workspaceRootURL: URL?
     private var didMarkRuntimeReady = false
 
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        #if !FOUNDER_OFFICE_DISTRIBUTION
+        let arguments = CommandLine.arguments
+        if arguments.contains("--snapshot")
+            || arguments.contains("--motion-frames")
+            || arguments.contains("--motion-reversal-frames") {
+            return .terminateNow
+        }
+        #endif
+
+        guard let notchController,
+              notchController.hasUnsavedAppearanceChanges else { return .terminateNow }
+        return notchController.resolveUnsavedAppearanceForTermination()
+            ? .terminateNow
+            : .terminateCancel
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         let arguments = CommandLine.arguments
         if arguments.contains("--unregister-login") {

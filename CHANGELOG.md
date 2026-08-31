@@ -7,13 +7,15 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 ### Added
 
 - A serialized, transactional local workspace repository foundation with durable revisions, device-writer identity, idempotent mutation receipts, a sync operation outbox, fail-closed legacy import, and immutable JSON/Markdown exports.
+- Transactional Appearance editing with live preview, explicit Save Changes and Discard actions, conflict choices, retryable save errors, and an unsaved-quit guard.
+- A centralized transient-presentation lifecycle that collapses the expanded notch for native panels, menus, and popovers, keeps overlapping interactions balanced, and restores the notch and keyboard focus after the final popup closes.
 - A gated Founder’s Office download website whose Mac download remains unavailable until a signed and notarized release URL is configured.
 - A versioned first-run Mac onboarding flow for the user’s name, local or iCloud storage, optional Calendar access, optional launch at login, the first Move, and notch interaction rehearsal.
 - Fail-closed recovery for malformed workspace and personalization data, including a preserved recovery copy and blocked writes while recovery is required.
 - A durable workspace identity that prevents missing or partially restored cloud data from being replaced with newly seeded defaults.
 - A privacy-safe crash-loop detector, MetricKit runtime-health foundation, and a minimal safe mode with an incident identifier and explicit retry.
 - A hardened Developer ID release and independent verification pipeline for signing, notarization, stapling, entitlements, architectures, checksums, and archive safety.
-- Sixty-nine automated Swift tests with code coverage, release-archive attack fixtures, plus website build, lint, release-policy, security-header, and dependency-audit gates in CI.
+- Seventy-nine automated Swift tests with code coverage, release-archive attack fixtures, plus website build, lint, release-policy, security-header, and dependency-audit gates in CI.
 - Architecture records for primary account identity, connector authorization, safe auto-remediation, and the Mac → iOS → Windows → Android platform sequence.
 - A complete macOS application icon set and bundled Instrument Serif license notice.
 - Privacy, support, security, and license surfaces on the private website, with restrictive browser security headers.
@@ -44,6 +46,8 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Fixed
 
+- Appearance controls no longer write personalization data or advance modification timestamps before Save Changes succeeds.
+- Native colour, date, menu, and file-picker surfaces now remain above the physical notch instead of falling outside its hover lifecycle.
 - Buttons and selected priority controls now calculate black-or-white foreground contrast from the customer’s exact accent colour instead of assuming white text will remain readable.
 - Dark custom accents used as functional text now fall back to a readable neutral while retaining the chosen colour in markers, borders, and fills.
 - Corrupt canonical data can no longer be silently replaced with an empty default workspace.

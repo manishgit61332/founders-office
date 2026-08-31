@@ -1,0 +1,200 @@
+import AppKit
+import FounderOfficeCore
+
+@MainActor
+final class TransientPresentationCoordinator {
+    @MainActor
+    private final class TrackedWindow {
+        let window: NSWindow
+        let originalLevel: NSWindow.Level
+        let originalCollectionBehavior: NSWindow.CollectionBehavior
+        let wasChildOfHost: Bool
+
+        init(window: NSWindow, hostWindow: NSWindow) {
+            self.window = window
+            originalLevel = window.level
+            originalCollectionBehavior = window.collectionBehavior
+            wasChildOfHost = window.parent === hostWindow
+        }
+    }
+
+    private var session = TransientPresentationSession()
+    private weak var hostWindow: NSWindow?
+    private weak var capturedFirstResponder: NSResponder?
+    private var suspendHost: (() -> Void)?
+    private var restoreHost: (() -> Void)?
+    private var isHostExpanded: (() -> Bool)?
+    private var objectLeases: [ObjectIdentifier: UUID] = [:]
+    private var trackedWindows: [ObjectIdentifier: TrackedWindow] = [:]
+
+    var phase: TransientPresentationPhase { session.phase }
+    var preventsAutoDismiss: Bool { session.isActive }
+    var activeCount: Int { session.activeCount }
+
+    func configure(
+        hostWindow: NSWindow,
+        isHostExpanded: @escaping () -> Bool,
+        suspendHost: @escaping () -> Void,
+        restoreHost: @escaping () -> Void
+    ) {
+        self.hostWindow = hostWindow
+        self.isHostExpanded = isHostExpanded
+        self.suspendHost = suspendHost
+        self.restoreHost = restoreHost
+    }
+
+    @discardableResult
+    func begin(_ reason: String, suspendsHost: Bool = false) -> UUID {
+        if !session.isActive {
+            capturedFirstResponder = hostWindow?.firstResponder
+        }
+        let shouldSuspend = suspendsHost && !session.hostSuspensionRequested
+        let lease = session.begin(
+            reason,
+            hostIsExpanded: isHostExpanded?() == true,
+            suspendsHost: suspendsHost
+        )
+        if shouldSuspend, session.hostWasExpanded {
+            suspendHost?()
+        }
+        return lease
+    }
+
+    func end(_ lease: UUID) {
+        guard session.end(lease) else { return }
+        restoreAfterLastPresentation()
+    }
+
+    @discardableResult
+    func beginScoped(
+        to object: AnyObject,
+        reason: String,
+        suspendsHost: Bool = true
+    ) -> UUID {
+        beginScoped(
+            key: ObjectIdentifier(object),
+            reason: reason,
+            suspendsHost: suspendsHost
+        )
+    }
+
+    @discardableResult
+    func beginScoped(
+        key: ObjectIdentifier,
+        reason: String,
+        suspendsHost: Bool = true
+    ) -> UUID {
+        if let existing = objectLeases[key] { return existing }
+        let lease = begin(reason, suspendsHost: suspendsHost)
+        objectLeases[key] = lease
+        return lease
+    }
+
+    func endScoped(to object: AnyObject) {
+        endScoped(key: ObjectIdentifier(object))
+    }
+
+    func endScoped(key: ObjectIdentifier) {
+        if let tracked = trackedWindows.removeValue(forKey: key) {
+            restoreWindow(tracked)
+        }
+        guard let lease = objectLeases.removeValue(forKey: key) else { return }
+        end(lease)
+    }
+
+    func present(_ window: NSWindow, reason: String) {
+        let key = ObjectIdentifier(window)
+        guard trackedWindows[key] == nil else {
+            elevate(window)
+            return
+        }
+        let lease = beginScoped(to: window, reason: reason, suspendsHost: true)
+        guard let hostWindow else {
+            end(lease)
+            return
+        }
+        trackedWindows[key] = TrackedWindow(window: window, hostWindow: hostWindow)
+        elevate(window)
+    }
+
+    func elevate(_ window: NSWindow, scopedTo owner: AnyObject) {
+        guard let hostWindow else { return }
+        let key = ObjectIdentifier(owner)
+        guard objectLeases[key] != nil else { return }
+        if trackedWindows[key] == nil {
+            trackedWindows[key] = TrackedWindow(window: window, hostWindow: hostWindow)
+        }
+        elevate(window)
+    }
+
+    func elevate(_ window: NSWindow) {
+        guard let hostWindow, window !== hostWindow else { return }
+        let elevatedLevel = NSWindow.Level(rawValue: hostWindow.level.rawValue + 1)
+        if window.level.rawValue < elevatedLevel.rawValue {
+            window.level = elevatedLevel
+        }
+        window.collectionBehavior.formUnion([.canJoinAllSpaces, .fullScreenAuxiliary])
+        if window.parent == nil {
+            hostWindow.addChildWindow(window, ordered: .above)
+        } else {
+            window.order(.above, relativeTo: hostWindow.windowNumber)
+        }
+    }
+
+    /// SwiftUI menus and popovers do not expose their source view. Scope their
+    /// process-wide notifications to a visible/key Founder’s Office host or a
+    /// presentation already owned by it.
+    func shouldTrackCurrentOrigin() -> Bool {
+        guard let hostWindow, hostWindow.isVisible else { return false }
+        if session.isActive || hostWindow.isKeyWindow || NSApp.keyWindow === hostWindow {
+            return true
+        }
+        return hostWindow.frame.insetBy(dx: -12, dy: -12).contains(NSEvent.mouseLocation)
+    }
+
+    func closeNativeColorPanels() {
+        let panels = trackedWindows.values.filter { $0.window is NSColorPanel }
+        for tracked in panels {
+            tracked.window.orderOut(nil)
+            endScoped(to: tracked.window)
+        }
+    }
+
+    func cancelAll() {
+        for tracked in trackedWindows.values {
+            tracked.window.orderOut(nil)
+            restoreWindow(tracked)
+        }
+        trackedWindows.removeAll()
+        objectLeases.removeAll()
+        capturedFirstResponder = nil
+        session.cancelAll()
+    }
+
+    private func restoreAfterLastPresentation() {
+        let shouldRestoreHost = session.hostWasExpanded
+        if shouldRestoreHost {
+            restoreHost?()
+            if let hostWindow {
+                hostWindow.orderFrontRegardless()
+                hostWindow.makeKey()
+                if let capturedFirstResponder {
+                    hostWindow.makeFirstResponder(capturedFirstResponder)
+                }
+            }
+        }
+        capturedFirstResponder = nil
+        session.finishRestoring()
+    }
+
+    private func restoreWindow(_ tracked: TrackedWindow) {
+        guard let hostWindow else { return }
+        if tracked.window.parent === hostWindow {
+            if !tracked.wasChildOfHost {
+                hostWindow.removeChildWindow(tracked.window)
+            }
+        }
+        tracked.window.level = tracked.originalLevel
+        tracked.window.collectionBehavior = tracked.originalCollectionBehavior
+    }
+}

@@ -13,3 +13,4 @@ Each ADR records status, date, context, decision, consequences, privacy/security
 - [0008 — Accessible accent fills and a three-role type hierarchy](0008-accessible-accent-and-type-hierarchy.md)
 - [0009 — Priority recategorization and a unified calendar agenda](0009-priority-recategorization-and-calendar-agenda.md)
 - [0010 — Serialized transactional workspace repository](0010-serialized-transactional-workspace-repository.md)
+- [0011 — Transactional appearance drafts and owned transient presentation](0011-transactional-appearance-and-transients.md)
