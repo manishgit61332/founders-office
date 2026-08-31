@@ -185,6 +185,16 @@ final class FoundersOfficeMacUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["UI test event"].waitForExistence(timeout: 2))
     }
 
+    func testHomeUpNextSkipsFinishedCalendarEvents() {
+        let app = launch(
+            root: makeTemporaryRoot(),
+            environment: ["OPENLOOPS_PREVIEW_CALENDAR": "1"]
+        )
+
+        XCTAssertTrue(app.staticTexts["Product review"].waitForExistence(timeout: 4))
+        XCTAssertFalse(app.staticTexts["Finished planning review"].exists)
+    }
+
     func testNativeColourPanelRestoresTheNotchAfterClosing() throws {
         let app = launch(
             root: makeTemporaryRoot(),

@@ -946,38 +946,47 @@ struct NotchBoardView: View {
     }
 
     private var homeCalendarSignal: some View {
-        Button {
-            select(.calendar)
-        } label: {
-            VStack(alignment: .leading, spacing: 5) {
-                if let event = calendarProvider.events.first {
-                    Text(event.title)
-                        .font(interfaceFont(.secondary, weight: .bold))
-                        .foregroundStyle(primaryText)
-                        .lineLimit(2)
-                    Text(eventDateLabel(event))
-                        .font(interfaceFont(.tertiary, weight: .semibold))
-                        .foregroundStyle(Color.white.opacity(0.82))
-                } else {
-                    Text(calendarProvider.isAuthorized ? "No meetings soon" : "Connect Calendar")
-                        .font(interfaceFont(.secondary, weight: .bold))
-                        .foregroundStyle(primaryText)
-                    Text(calendarProvider.isAuthorized ? "Your time is clear" : "Only important dates")
-                        .font(interfaceFont(.tertiary, weight: .semibold))
-                        .foregroundStyle(Color.white.opacity(0.82))
-                }
-            }
-            .padding(11)
-            .frame(maxWidth: .infinity, minHeight: 76, maxHeight: 76, alignment: .topLeading)
-            .background(contentSurface, in: RoundedRectangle(cornerRadius: contentRadius, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: contentRadius, style: .continuous)
-                    .stroke(contentBorder, lineWidth: 1)
+        TimelineView(.periodic(from: .now, by: 60)) { context in
+            let nextEvent = CalendarEventPresentation.upNext(
+                from: calendarProvider.events,
+                at: context.date,
+                startDate: \.startDate,
+                endDate: \.endDate
             )
-            .contentShape(Rectangle())
+
+            Button {
+                select(.calendar)
+            } label: {
+                VStack(alignment: .leading, spacing: 5) {
+                    if let event = nextEvent {
+                        Text(event.title)
+                            .font(interfaceFont(.secondary, weight: .bold))
+                            .foregroundStyle(primaryText)
+                            .lineLimit(2)
+                        Text(eventDateLabel(event))
+                            .font(interfaceFont(.tertiary, weight: .semibold))
+                            .foregroundStyle(Color.white.opacity(0.82))
+                    } else {
+                        Text(calendarProvider.isAuthorized ? "No meetings soon" : "Connect Calendar")
+                            .font(interfaceFont(.secondary, weight: .bold))
+                            .foregroundStyle(primaryText)
+                        Text(calendarProvider.isAuthorized ? "Your time is clear" : "Only important dates")
+                            .font(interfaceFont(.tertiary, weight: .semibold))
+                            .foregroundStyle(Color.white.opacity(0.82))
+                    }
+                }
+                .padding(11)
+                .frame(maxWidth: .infinity, minHeight: 76, maxHeight: 76, alignment: .topLeading)
+                .background(contentSurface, in: RoundedRectangle(cornerRadius: contentRadius, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: contentRadius, style: .continuous)
+                        .stroke(contentBorder, lineWidth: 1)
+                )
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(StatusTabButtonStyle())
+            .help("Open Calendar")
         }
-        .buttonStyle(StatusTabButtonStyle())
-        .help("Open Calendar")
     }
 
     private var homePrimaryGoal: some View {

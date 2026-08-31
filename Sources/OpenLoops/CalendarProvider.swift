@@ -459,6 +459,16 @@ final class CalendarProvider: ObservableObject {
         recommendedDestinationID = "preview-work"
         events = [
             CalendarSignal(
+                id: "preview-finished",
+                title: "Finished planning review",
+                startDate: Calendar.current.date(byAdding: .hour, value: -3, to: now) ?? now,
+                endDate: Calendar.current.date(byAdding: .hour, value: -2, to: now) ?? now,
+                isAllDay: false,
+                calendarTitle: "Work",
+                accountTitle: "work@company.com",
+                providerTitle: "Google"
+            ),
+            CalendarSignal(
                 id: "preview-1",
                 title: "Product review",
                 startDate: Calendar.current.date(byAdding: .hour, value: 3, to: now) ?? now,
