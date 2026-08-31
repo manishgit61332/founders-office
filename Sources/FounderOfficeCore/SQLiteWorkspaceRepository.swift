@@ -2,7 +2,8 @@ import CryptoKit
 import Foundation
 import SQLite3
 
-public actor SQLiteWorkspaceRepository: WorkspaceRepository, WorkspaceSyncRepository {
+public actor SQLiteWorkspaceRepository: WorkspaceRepository, WorkspaceSyncRepository,
+    WorkspaceProvisioningRepository {
     private let database: SQLiteWorkspaceDatabase
     private var latestSnapshot: WorkspaceRepositorySnapshot
     private var changeContinuations: [UUID: AsyncStream<WorkspaceChange>.Continuation] = [:]
@@ -307,6 +308,62 @@ public actor SQLiteWorkspaceRepository: WorkspaceRepository, WorkspaceSyncReposi
 
     public func bindSync(_ binding: WorkspaceSyncBinding) throws {
         try database.bindSync(binding)
+    }
+
+    /// Installs a fully verified remote feed as the canonical local snapshot.
+    /// Network work happens before this call. Export and the SQLite replacement
+    /// are then serialized by this actor so local edits cannot slip between
+    /// preservation and replacement.
+    public func attachExistingWorkspace(
+        bootstrap: WorkspaceBootstrap,
+        pages: [SyncPullResponse],
+        authorization: ExistingWorkspaceAttachmentAuthorization
+    ) throws -> ExistingWorkspaceAttachmentCommit {
+        let plan = try database.prepareExistingWorkspaceAttachment(
+            bootstrap: bootstrap,
+            pages: pages
+        )
+        let current = try database.loadSnapshot()
+        switch authorization {
+        case .freshDevice:
+            guard !Self.hasCustomerData(current.content) else {
+                throw WorkspaceSyncRepositoryError.replacementExportRequired
+            }
+        case let .exportAndReplace(destination):
+            guard current.content.personalization.visionImageAsset == nil,
+                  current.content.personalization.photoFileName == nil else {
+                throw WorkspaceSyncRepositoryError.assetsDisabled
+            }
+            _ = try Self.writeExport(
+                snapshot: current,
+                to: destination,
+                generatedAt: Date(),
+                calendar: .current
+            )
+        }
+
+        let updated = try database.commitExistingWorkspaceAttachment(plan)
+        latestSnapshot = updated
+        for continuation in remoteChangeContinuations.values {
+            continuation.yield(updated)
+        }
+        return ExistingWorkspaceAttachmentCommit(snapshot: updated, binding: plan.binding)
+    }
+
+    private static func hasCustomerData(_ snapshot: FounderOfficeSnapshot) -> Bool {
+        let personalization = snapshot.personalization
+        return !snapshot.openLoops.items.isEmpty
+            || personalization.primaryGoal != nil
+            || !personalization.milestones.isEmpty
+            || personalization.visionImageAsset != nil
+            || personalization.photoFileName != nil
+            || personalization.resolvedPreferredName != nil
+            || personalization.resolvedWorkspaceName != "Founder's Office"
+            || personalization.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+                != "Founder's Office"
+            || personalization.resolvedAppearance != .manish()
+            || personalization.accent != .blue
+            || (personalization.iconStyle ?? .system) != .system
     }
 
     public func syncCursor() throws -> SyncCursor {
@@ -627,6 +684,22 @@ private struct StoredRemoteAcknowledgement {
 private struct RemoteEntityKey: Hashable {
     let type: SyncEntityType
     let id: UUID
+}
+
+private struct PreparedRemoteEntityRevision {
+    let entityType: SyncEntityType
+    let entityID: UUID
+    let revision: Int64
+    let fieldClocks: [String: Date]
+}
+
+private struct PreparedExistingWorkspaceAttachment {
+    let expectedLocalRevision: WorkspaceRevision
+    let binding: WorkspaceSyncBinding
+    let cursor: SyncCursor
+    let replacement: FounderOfficeSnapshot
+    let remoteRevisions: [PreparedRemoteEntityRevision]
+    let appliedChanges: [SyncChange]
 }
 
 private enum SQLiteWorkspaceValue {
@@ -1057,6 +1130,233 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
                 """,
                 operation: "bind_sync"
             )
+        }
+    }
+
+    func prepareExistingWorkspaceAttachment(
+        bootstrap: WorkspaceBootstrap,
+        pages: [SyncPullResponse]
+    ) throws -> PreparedExistingWorkspaceAttachment {
+        guard try syncBinding() == nil,
+              !pages.isEmpty else {
+            throw WorkspaceSyncRepositoryError.identityReplacementRequiresDisposition
+        }
+        let current = try loadSnapshot()
+        let remoteWorkspaceID = bootstrap.session.workspaceID
+        var expectedCursor = bootstrap.startingCursor
+        var allChanges: [SyncChange] = []
+        var operationIDs = Set<UUID>()
+
+        for (index, page) in pages.enumerated() {
+            guard page.workspaceID == remoteWorkspaceID,
+                  page.fromCursor == expectedCursor,
+                  page.changes.allSatisfy({ operationIDs.insert($0.operationID.rawValue).inserted }) else {
+                throw WorkspaceSyncRepositoryError.invalidProvisioningFeed
+            }
+            allChanges.append(contentsOf: page.changes)
+            expectedCursor = page.nextCursor
+            if page.hasMore {
+                guard index < pages.index(before: pages.endIndex) else {
+                    throw WorkspaceSyncRepositoryError.invalidProvisioningFeed
+                }
+            } else {
+                guard index == pages.index(before: pages.endIndex),
+                      page.nextCursor == page.latestCursor else {
+                    throw WorkspaceSyncRepositoryError.invalidProvisioningFeed
+                }
+            }
+        }
+        guard let finalPage = pages.last,
+              !finalPage.hasMore,
+              finalPage.nextCursor >= bootstrap.latestCursor else {
+            throw WorkspaceSyncRepositoryError.invalidProvisioningFeed
+        }
+
+        guard case let .string(workspaceName)? = bootstrap.workspace["name"],
+              case let .integer(workspaceRevision)? = bootstrap.workspace["revision"],
+              workspaceRevision > 0,
+              case let .string(workspaceUpdatedAt)? = bootstrap.workspace["updatedAt"] else {
+            throw WorkspaceSyncRepositoryError.invalidProvisioningFeed
+        }
+        let baselineDate = try WorkspaceV2SyncAdapter.parseTimestamp(workspaceUpdatedAt)
+        var replacement = FounderOfficeSnapshot(
+            openLoops: OpenLoopsDocument(
+                schemaVersion: Self.supportedOpenLoopsSchemaVersion,
+                updatedAt: baselineDate,
+                items: []
+            ),
+            personalization: PersonalizationDocument(
+                schemaVersion: Self.supportedPersonalizationSchemaVersion,
+                displayName: "Founder's Office",
+                accent: .blue,
+                iconStyle: .system,
+                photoFileName: nil,
+                primaryGoal: nil,
+                milestones: [],
+                updatedAt: baselineDate,
+                preferredName: bootstrap.profile.displayName,
+                workspaceName: workspaceName,
+                appearance: .manish(),
+                visionImageAsset: nil
+            )
+        )
+
+        // bootstrap_workspace returns the latest workspace record. Replaying
+        // older workspace-name changes over it would regress the name before
+        // eventually arriving at the same revision, so only later concurrent
+        // workspace revisions are applied. Other entity histories start empty.
+        let applicableChanges = allChanges.filter {
+            $0.entityType != .workspace || $0.revision > workspaceRevision
+        }
+        replacement = try WorkspaceRemoteChangeApplicator.apply(
+            applicableChanges,
+            to: replacement
+        )
+
+        struct RemoteKey: Hashable {
+            let type: SyncEntityType
+            let id: UUID
+        }
+        var revisions: [RemoteKey: PreparedRemoteEntityRevision] = [:]
+        let workspaceClocks = try remoteFieldClocks(bootstrap.workspace)
+        let workspaceKey = RemoteKey(type: .workspace, id: remoteWorkspaceID.rawValue)
+        revisions[workspaceKey] = PreparedRemoteEntityRevision(
+            entityType: .workspace,
+            entityID: remoteWorkspaceID.rawValue,
+            revision: workspaceRevision,
+            fieldClocks: workspaceClocks
+        )
+        for change in allChanges {
+            let key = RemoteKey(type: change.entityType, id: change.entityID)
+            let clocks = try remoteFieldClocks(change.record)
+            if let existing = revisions[key] {
+                if change.revision < existing.revision {
+                    guard change.entityType == .workspace else {
+                        throw WorkspaceSyncRepositoryError.invalidProvisioningFeed
+                    }
+                    continue
+                }
+                guard change.revision > existing.revision
+                        || clocks == existing.fieldClocks else {
+                    throw WorkspaceSyncRepositoryError.invalidProvisioningFeed
+                }
+            }
+            revisions[key] = PreparedRemoteEntityRevision(
+                entityType: change.entityType,
+                entityID: change.entityID,
+                revision: change.revision,
+                fieldClocks: clocks
+            )
+        }
+
+        let binding = try WorkspaceSyncBinding(
+            accountID: bootstrap.session.accountID,
+            workspaceID: remoteWorkspaceID,
+            deviceID: bootstrap.session.deviceID,
+            identityProvider: bootstrap.session.identityProvider
+        )
+        return PreparedExistingWorkspaceAttachment(
+            expectedLocalRevision: current.revision,
+            binding: binding,
+            cursor: finalPage.nextCursor,
+            replacement: replacement,
+            remoteRevisions: revisions.values.sorted {
+                if $0.entityType.rawValue != $1.entityType.rawValue {
+                    return $0.entityType.rawValue < $1.entityType.rawValue
+                }
+                return $0.entityID.uuidString < $1.entityID.uuidString
+            },
+            appliedChanges: allChanges
+        )
+    }
+
+    func commitExistingWorkspaceAttachment(
+        _ plan: PreparedExistingWorkspaceAttachment
+    ) throws -> WorkspaceRepositorySnapshot {
+        let canonical = try codec.canonicalizedWithData(plan.replacement)
+        return try transaction {
+            guard try syncBinding() == nil,
+                  let stored = try readStoredState(),
+                  stored.revision == plan.expectedLocalRevision else {
+                throw WorkspaceSyncRepositoryError.identityReplacementRequiresDisposition
+            }
+            let replacement = WorkspaceRepositorySnapshot(
+                workspaceID: stored.workspaceID,
+                writerID: stored.writerID,
+                revision: WorkspaceRevision(rawValue: stored.revision.rawValue + 1),
+                content: canonical.snapshot
+            )
+
+            // The preserved export is already durable before this transaction.
+            // Old receipts/outbox/sync evidence belong to the replaced local
+            // authority and must not be delivered into the attached workspace.
+            try execute("DELETE FROM operation_outbox", operation: "replace_workspace")
+            try execute("DELETE FROM operation_receipts", operation: "replace_workspace")
+            try execute("DELETE FROM sync_conflicts", operation: "replace_workspace")
+            try execute("DELETE FROM sync_operation_acknowledgements", operation: "replace_workspace")
+            try execute("DELETE FROM sync_applied_operations", operation: "replace_workspace")
+            try execute("DELETE FROM sync_bootstrap_receipts", operation: "replace_workspace")
+            try execute("DELETE FROM sync_entity_revisions", operation: "replace_workspace")
+            try execute("DELETE FROM sync_quarantined_operations", operation: "replace_workspace")
+            try updateState(
+                replacement,
+                snapshotData: canonical.data,
+                expectedRevision: stored.revision
+            )
+            try execute("DELETE FROM sync_binding", operation: "replace_workspace")
+            try execute(
+                """
+                INSERT INTO sync_binding (
+                    singleton, account_id, remote_workspace_id, device_id,
+                    identity_provider, bound_at
+                ) VALUES (1, ?, ?, ?, ?, ?)
+                """,
+                bindings: [
+                    .text(plan.binding.accountID.rawValue.uuidString.lowercased()),
+                    .text(plan.binding.workspaceID.rawValue.uuidString.lowercased()),
+                    .text(plan.binding.deviceID.rawValue.uuidString.lowercased()),
+                    .text(plan.binding.identityProvider.rawValue),
+                    .real(plan.binding.boundAt.timeIntervalSince1970),
+                ],
+                operation: "replace_workspace"
+            )
+            try execute(
+                """
+                UPDATE sync_state
+                SET cursor = ?, phase = 'idle', retry_attempt = 0,
+                    next_retry_at = NULL, last_success_at = NULL,
+                    failure_code = NULL, bootstrap_complete = 1
+                WHERE singleton = 1
+                """,
+                bindings: [.integer(plan.cursor.value)],
+                operation: "replace_workspace"
+            )
+            guard sqlite3_changes(connection) == 1 else {
+                throw WorkspaceSyncRepositoryError.invalidSyncState
+            }
+            for revision in plan.remoteRevisions {
+                try upsertRemoteRevision(
+                    entityType: revision.entityType,
+                    entityID: revision.entityID,
+                    revision: revision.revision,
+                    fieldClocks: revision.fieldClocks
+                )
+            }
+            for change in plan.appliedChanges {
+                try execute(
+                    """
+                    INSERT INTO sync_applied_operations (operation_id, cursor, applied_at)
+                    VALUES (?, ?, ?)
+                    """,
+                    bindings: [
+                        .text(change.operationID.rawValue.uuidString.lowercased()),
+                        .integer(change.cursor.value),
+                        .real(Date().timeIntervalSince1970),
+                    ],
+                    operation: "replace_workspace"
+                )
+            }
+            return replacement
         }
     }
 

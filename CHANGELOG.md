@@ -6,8 +6,9 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Added
 
+- An explicit, fail-closed provisioning seam that distinguishes claiming a local workspace from attaching an existing account workspace, including fresh-device and immutable export-and-replace authorization.
 - A fail-closed clean-Mac acceptance record that binds restart, upgrade, export, erase, recovery, and staged-update checks to the exact sealed Mac artifact before the website can expose it.
-- A fail-closed schema-3 live-sync core with durable binding, server revisions, pull cursor, exact bootstrap and acknowledgement receipts, conflict evidence, inbound deduplication, and quarantine for malformed historical clock masks.
+- A fail-closed schema-4 live-sync core with durable binding, server revisions, pull cursor, exact bootstrap and acknowledgement receipts, conflict evidence, inbound deduplication, and quarantine for malformed historical clock masks.
 - A schema-4 immutable bootstrap-attempt journal that safely replays partial server acceptance across local edits, crashes, and relaunches while retaining later outbox work.
 - A bounded Supabase HTTPS RPC transport and event-driven sync coordinator with strict nested response shapes, cancellation, push-before-pull ordering, coalesced manual/automatic runs, hard continuation budgets, and no polling.
 - A versioned, typed local entity-operation envelope capped at 256 KiB, with strict identity, field, string, number, and date validation plus an explicit transport-adapter seam.
@@ -74,6 +75,7 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Fixed
 
+- A second device can now retain its local database identity while atomically binding a different existing remote workspace UUID; account, provider, device, feed, cursor, and remote revisions must all verify before canonical replacement.
 - Account restore can no longer race a second sign-in, delayed transient auth events cannot replace a terminal result, and an identity change during name review cannot apply the prior account’s name to the local workspace.
 - Keychain read failures can no longer be reported as a signed-out local-only state, and session durability now verifies the complete persisted account/session record rather than tokens alone.
 - Primary-goal editors now reopen every meaningful decimal digit instead of rounding non-integers to one place, and malformed, non-finite, over-scale, negative, or out-of-range input fails before changing canonical state.
@@ -114,6 +116,7 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Security
 
+- Signing in cannot silently attach or replace a workspace: data-bearing replacement requires an immutable local export, failures leave the original canonical state untouched, and private image assets remain blocked.
 - Remote sync remains disabled in the customer runtime. Unsupported ordinary profile operations and asset transfers fail closed; tokens and response content never enter workspace storage or diagnostics.
 - Exact vision-image originals remain local and are never used by the notch or sync path; strict UUID-derived filenames, source/decompression/output bounds, private permissions, and path-safe cleanup prevent traversal and unbounded image handling.
 - Direct Mac releases now require an independently reviewed update-feed URL, Ed25519 public key, and sandbox network-client entitlement; the app opens only a signed immutable download URL and never installs code itself.
