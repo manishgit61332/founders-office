@@ -9,6 +9,7 @@ const valid = {
   verifiedFromCanonicalManifest: true,
   signedAndNotarized: true,
   cleanMacAccepted: true,
+  acceptanceAttestation: 'operator-confirmed',
   version: '1.2.3',
   build: 7,
   teamID: 'AB12CD34EF',
@@ -18,6 +19,7 @@ const valid = {
   releaseCommit: commit,
   sourceManifestSHA256: 'c'.repeat(64),
   acceptanceRecordSHA256: 'd'.repeat(64),
+  canonicalManifestURL: `https://downloads.example.com/releases/macos/v1.2.3/build-7/${commit}/release.json`,
   acceptanceRecordURL: `https://downloads.example.com/releases/macos/v1.2.3/build-7/${commit}/clean-mac-acceptance.json`,
   downloadURL: `https://downloads.example.com/releases/macos/v1.2.3/build-7/${commit}/FoundersOffice-1.2.3-build-7-macOS.zip`,
 };
@@ -37,14 +39,24 @@ for (const mutation of [
   { verifiedFromCanonicalManifest: false },
   { signedAndNotarized: false },
   { cleanMacAccepted: false },
+  { acceptanceAttestation: 'cryptographic' },
   { artifactFileName: 'latest.zip' },
   { sourceManifestSHA256: '' },
   { acceptanceRecordSHA256: '' },
+  {
+    canonicalManifestURL: 'https://downloads.example.com/releases/latest.json',
+  },
   {
     acceptanceRecordURL: 'https://downloads.example.com/acceptance/latest.json',
   },
   { downloadURL: `${valid.downloadURL}?cache=latest` },
   { downloadURL: valid.downloadURL.replace(commit, 'latest') },
+  {
+    downloadURL: valid.downloadURL.replace(
+      `/${commit}/`,
+      `/ignored/../${commit}/`,
+    ),
+  },
   {
     downloadURL: valid.downloadURL.replace(
       'downloads.example.com',
@@ -60,6 +72,15 @@ for (const mutation of [
     ),
     null,
   );
+}
+
+for (const origin of [
+  'https://DOWNLOADS.example.com',
+  'https://downloads.example.com:443',
+  'https://downloads.example.com/',
+  'https://downloads.example.com.',
+]) {
+  assert.equal(validateMacReleaseManifest(valid, origin), null);
 }
 
 console.log('Mac website release gate denied every unsafe fixture.');

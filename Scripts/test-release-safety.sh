@@ -387,6 +387,61 @@ assert_refused \
     "${clean_acceptance_arguments[@]}" \
     --output "$clean_acceptance"
 
+clean_acceptance_base=(
+    --metadata "${fixture_root}/clean/release.json"
+    --verified-artifact "${fixture_root}/clean/FoundersOffice-1.2.3-build-4-macOS.zip"
+    --approved-origin https://downloads.example.com
+    --artifact-url "$clean_url"
+    --canonical-manifest-url "$clean_manifest_url"
+    --acceptance-record-url "$clean_acceptance_url"
+    --mac-model Mac15,3
+    --macos-version 15.6.1
+    --acceptance-id 22222222-2222-4222-8222-222222222222
+    --confirm-clean-account
+    --confirm-no-developer-certificate
+    --confirm-no-source-checkout
+)
+
+assert_refused \
+    "write-once and already exists" \
+    "$script_dir/record-macos-clean-acceptance.py" \
+        "${clean_acceptance_base[@]}" \
+        --tested-at 2026-08-31T01:00:00Z \
+        "${clean_acceptance_arguments[@]}" \
+        --output "$clean_acceptance"
+
+for noncanonical_origin in \
+    https://DOWNLOADS.example.com \
+    https://downloads.example.com:443 \
+    https://downloads.example.com/; do
+    assert_refused \
+        "canonical" \
+        "$script_dir/record-macos-clean-acceptance.py" \
+            "${clean_acceptance_base[@]}" \
+            --approved-origin "$noncanonical_origin" \
+            --tested-at 2026-08-31T01:00:00Z \
+            "${clean_acceptance_arguments[@]}" \
+            --output "${fixture_root}/clean/noncanonical-origin.json"
+done
+
+assert_refused \
+    "cannot be in the future" \
+    "$script_dir/record-macos-clean-acceptance.py" \
+        "${clean_acceptance_base[@]}" \
+        --tested-at 9999-01-01T00:00:00Z \
+        "${clean_acceptance_arguments[@]}" \
+        --output "${fixture_root}/clean/future-acceptance.json"
+
+ln -s "${fixture_root}/clean/release.json" "${fixture_root}/clean/release-symlink.json"
+assert_refused \
+    "regular, non-symlink file" \
+    "$script_dir/record-macos-clean-acceptance.py" \
+        "${clean_acceptance_base[@]}" \
+        --metadata "${fixture_root}/clean/release-symlink.json" \
+        --tested-at 2026-08-31T01:00:00Z \
+        "${clean_acceptance_arguments[@]}" \
+        --output "${fixture_root}/clean/symlink-input-acceptance.json"
+
 assert_refused \
     "expected update feed must be an exact credential-free HTTPS URL" \
     "$script_dir/verify-macos-release.sh" \
@@ -406,6 +461,28 @@ assert_refused \
     --download-url "$clean_url" \
     --approved-origin "https://downloads.example.com" \
     --output "${fixture_root}/clean/mac-release.json"
+
+ln -s "${fixture_root}/clean/release.json" "${fixture_root}/clean/website-output-symlink.json"
+assert_refused \
+    "regular, non-symlink file" \
+    "$script_dir/prepare-website-mac-release.py" \
+        --metadata "${fixture_root}/clean/release.json" \
+        --verified-artifact "${fixture_root}/clean/FoundersOffice-1.2.3-build-4-macOS.zip" \
+        --clean-mac-acceptance "$clean_acceptance" \
+        --download-url "$clean_url" \
+        --approved-origin "https://downloads.example.com" \
+        --output "${fixture_root}/clean/website-output-symlink.json"
+
+cp "${fixture_root}/clean/release.json" "${fixture_root}/clean/alias-release.json"
+assert_refused \
+    "must not replace release evidence input" \
+    "$script_dir/prepare-website-mac-release.py" \
+        --metadata "${fixture_root}/clean/alias-release.json" \
+        --verified-artifact "${fixture_root}/clean/FoundersOffice-1.2.3-build-4-macOS.zip" \
+        --clean-mac-acceptance "$clean_acceptance" \
+        --download-url "$clean_url" \
+        --approved-origin "https://downloads.example.com" \
+        --output "${fixture_root}/clean/alias-release.json"
 python3 - "${fixture_root}/clean/mac-release.json" <<'PY'
 import json
 import sys
@@ -417,8 +494,10 @@ if (
     or not manifest.get("available")
     or not manifest.get("verifiedFromCanonicalManifest")
     or not manifest.get("cleanMacAccepted")
+    or manifest.get("acceptanceAttestation") != "operator-confirmed"
     or not isinstance(manifest.get("acceptanceRecordSHA256"), str)
     or len(manifest["acceptanceRecordSHA256"]) != 64
+    or not manifest.get("canonicalManifestURL", "").endswith("/release.json")
 ):
     raise SystemExit("generated website release manifest is not clean-Mac accepted and verified")
 PY
