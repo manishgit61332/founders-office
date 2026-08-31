@@ -139,14 +139,22 @@ final class PersonalizationStore: ObservableObject {
         guard canEdit else { return }
         let cleanValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
         document.preferredName = cleanValue.isEmpty ? nil : cleanValue
-        persist()
+        persist(
+            entityKind: "profile",
+            entityID: "profile",
+            changedFields: ["preferredName", "updatedAt"]
+        )
     }
 
     func updateWorkspaceName(_ value: String) {
         guard canEdit else { return }
         let cleanValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
         document.workspaceName = cleanValue.isEmpty ? "Founder's Office" : cleanValue
-        persist()
+        persist(
+            entityKind: "workspace",
+            entityID: "workspace",
+            changedFields: ["workspaceName", "updatedAt"]
+        )
     }
 
     func updateAccent(_ accent: AccentPalette) {
@@ -322,7 +330,11 @@ final class PersonalizationStore: ObservableObject {
     func updateIconStyle(_ style: IconStyle) {
         guard canEdit else { return }
         document.iconStyle = style
-        persist()
+        persist(
+            entityKind: "profile",
+            entityID: "profile",
+            changedFields: ["iconStyle", "updatedAt"]
+        )
     }
 
     func choosePhoto(onCompletion: @escaping () -> Void = {}) {
@@ -432,10 +444,20 @@ final class PersonalizationStore: ObservableObject {
         let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleanTitle.isEmpty else { return }
         let now = Date()
-        document.milestones.append(
-            Milestone(id: UUID(), title: cleanTitle, dueAt: dueAt, createdAt: now, updatedAt: now)
+        let milestone = Milestone(
+            id: UUID(),
+            title: cleanTitle,
+            dueAt: dueAt,
+            createdAt: now,
+            updatedAt: now
         )
-        persist()
+        document.milestones.append(milestone)
+        persist(
+            entityKind: "milestone",
+            entityID: milestone.id.uuidString.lowercased(),
+            changedFields: ["title", "dueAt", "createdAt", "updatedAt"],
+            at: now
+        )
     }
 
     func deleteMilestone(_ milestone: Milestone) {
@@ -444,7 +466,12 @@ final class PersonalizationStore: ObservableObject {
         let now = Date()
         document.milestones[index].updatedAt = now
         document.milestones[index].deletedAt = now
-        persist()
+        persist(
+            entityKind: "milestone",
+            entityID: milestone.id.uuidString.lowercased(),
+            changedFields: ["updatedAt", "deletedAt"],
+            at: now
+        )
     }
 
     func setPrimaryGoal(
@@ -462,7 +489,7 @@ final class PersonalizationStore: ObservableObject {
 
         let now = Date()
         let existing = document.primaryGoal
-        document.primaryGoal = PrimaryGoal(
+        let goal = PrimaryGoal(
             id: existing?.id ?? UUID(),
             title: cleanTitle,
             metric: cleanMetric,
@@ -474,7 +501,16 @@ final class PersonalizationStore: ObservableObject {
             updatedAt: now,
             deletedAt: nil
         )
-        persist()
+        document.primaryGoal = goal
+        persist(
+            entityKind: "primary_goal",
+            entityID: goal.id.uuidString.lowercased(),
+            changedFields: [
+                "title", "metric", "currentValue", "targetValue", "unit", "dueAt",
+                "createdAt", "updatedAt", "deletedAt"
+            ],
+            at: now
+        )
     }
 
     func clearPrimaryGoal() {
@@ -484,7 +520,12 @@ final class PersonalizationStore: ObservableObject {
         goal.updatedAt = now
         goal.deletedAt = now
         document.primaryGoal = goal
-        persist()
+        persist(
+            entityKind: "primary_goal",
+            entityID: goal.id.uuidString.lowercased(),
+            changedFields: ["updatedAt", "deletedAt"],
+            at: now
+        )
     }
 
     func importPhotoFromSelectedURL(_ sourceURL: URL) async {
@@ -570,7 +611,7 @@ final class PersonalizationStore: ObservableObject {
         let result = await persist(
             candidate,
             entityKind: "asset",
-            entityID: "vision-photo",
+            entityID: expectedAsset?.id.uuidString.lowercased() ?? "vision-photo",
             changedFields: ["photoFileName", "visionImageAsset", "updatedAt"],
             at: date,
             precondition: .none
@@ -598,18 +639,24 @@ final class PersonalizationStore: ObservableObject {
         }
     }
 
-    private func persist() {
+    private func persist(
+        entityKind: String,
+        entityID: String,
+        changedFields: [String],
+        at date: Date = Date()
+    ) {
         guard canEdit else { return }
-        let now = Date()
         document.schemaVersion = max(document.schemaVersion, 6)
-        document.updatedAt = now
+        document.updatedAt = date
         enqueue(
             PendingWrite(
                 document: document,
-                entityKind: "personalization",
-                entityID: "personalization",
-                changedFields: ["personalization", "updatedAt"],
-                fieldClocks: ["personalization": now, "updatedAt": now],
+                entityKind: entityKind,
+                entityID: entityID,
+                changedFields: changedFields,
+                fieldClocks: Dictionary(
+                    uniqueKeysWithValues: changedFields.map { ($0, date) }
+                ),
                 precondition: .none,
                 completion: nil
             )

@@ -120,6 +120,15 @@ public actor SQLiteWorkspaceRepository: WorkspaceRepository {
         try database.acknowledgeOperations(operationIDs: operationIDs)
     }
 
+    /// Removes legacy whole-snapshot rows only after a sync coordinator has
+    /// durably bootstrapped the exact current canonical revision. Ordinary
+    /// entity acknowledgements can never delete these compatibility rows.
+    public func acknowledgeLegacyOperationsAfterBootstrap(
+        revision: WorkspaceRevision
+    ) throws {
+        try database.acknowledgeLegacyOperationsAfterBootstrap(revision: revision)
+    }
+
     /// Writes a revision-consistent, immutable projection. The destination
     /// must not exist; exports never replace canonical or previously exported
     /// customer data.
@@ -314,7 +323,22 @@ private struct LegacyWorkspaceImport {
 
 private struct WorkspaceOperationReceipt {
     var fingerprint: Data
+    var fingerprintVersion: Int
     var resultRevision: WorkspaceRevision
+}
+
+private struct StoredWorkspaceState {
+    var workspaceID: UUID
+    var writerID: WorkspaceWriterID
+    var revision: WorkspaceRevision
+    var snapshotData: Data
+}
+
+private struct LegacyOutboxUpgrade {
+    var operationID: String
+    var entityKind: String
+    var entityID: String
+    var payload: Data
 }
 
 private struct ValidatedWorkspaceMutation {
@@ -332,7 +356,7 @@ private enum SQLiteWorkspaceValue {
 }
 
 private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
-    static let currentSchemaVersion = 1
+    static let currentSchemaVersion = 2
     static let applicationID: Int64 = 1_179_600_454 // ASCII "FOFF"
     static let supportedOpenLoopsSchemaVersion = 3
     static let supportedPersonalizationSchemaVersion = 6
@@ -437,15 +461,27 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
     ) throws -> SQLiteWorkspaceTransactionResult {
         let validated = try validate(mutation, expectedRevision: expectedRevision)
         let result: SQLiteWorkspaceTransactionResult = try transaction {
-            guard let current = try readState() else {
+            guard let current = try readStoredState() else {
                 throw WorkspaceRepositoryError.invalidDatabase
             }
 
             if let receipt = try receipt(for: mutation.idempotencyKey) {
-                guard receipt.fingerprint == validated.fingerprint else {
+                let expectedFingerprint: Data
+                switch receipt.fingerprintVersion {
+                case 1:
+                    expectedFingerprint = try legacyFingerprint(
+                        mutation: validated.mutation,
+                        expectedRevision: expectedRevision
+                    )
+                case 2:
+                    expectedFingerprint = validated.fingerprint
+                default:
+                    throw WorkspaceRepositoryError.invalidDatabase
+                }
+                guard receipt.fingerprint == expectedFingerprint else {
                     throw WorkspaceRepositoryError.idempotencyKeyReused
                 }
-                return .replayed(current, receipt.resultRevision)
+                return .replayed(try decodeState(current), receipt.resultRevision)
             }
 
             if try receiptExists(operationID: mutation.operationID) {
@@ -459,15 +495,21 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
                 )
             }
 
-            let currentData = try codec.encode(current.content)
-            if currentData == validated.snapshotData {
+            if current.snapshotData == validated.snapshotData {
                 try insertReceipt(
                     mutation: mutation,
                     fingerprint: validated.fingerprint,
                     resultRevision: current.revision,
                     producedChange: false
                 )
-                return .unchanged(current)
+                return .unchanged(
+                    WorkspaceRepositorySnapshot(
+                        workspaceID: current.workspaceID,
+                        writerID: current.writerID,
+                        revision: current.revision,
+                        content: validated.mutation.replacement
+                    )
+                )
             }
 
             let committedRevision = WorkspaceRevision(rawValue: current.revision.rawValue + 1)
@@ -477,6 +519,31 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
                 revision: committedRevision,
                 content: validated.mutation.replacement
             )
+            let localEnvelope: WorkspaceLocalOperationEnvelopeV2
+            let outboxPayload: Data
+            do {
+                localEnvelope = try WorkspaceLocalOperationBuilder.makeEnvelope(
+                    entityKind: validated.mutation.entityKind,
+                    entityID: validated.mutation.entityID,
+                    changedFields: validated.mutation.changedFields,
+                    snapshot: validated.mutation.replacement,
+                    createdAt: validated.mutation.createdAt
+                )
+                outboxPayload = try WorkspaceLocalOperationBuilder.encode(localEnvelope)
+            } catch let error as WorkspaceLocalOperationError {
+                let reason: String
+                switch error {
+                case .unsupportedEntityKind:
+                    reason = "entity kind is unsupported"
+                case .missingEntity:
+                    reason = "entity metadata does not identify one record"
+                case .payloadTooLarge:
+                    reason = "entity operation exceeds the local safety limit"
+                case .unsupportedFormat, .invalidMetadata, .invalidRecord:
+                    reason = "entity operation metadata is invalid"
+                }
+                throw WorkspaceRepositoryError.invalidMutation(reason: reason)
+            }
             let operation = WorkspaceOutboxOperation(
                 operationID: mutation.operationID,
                 idempotencyKey: mutation.idempotencyKey,
@@ -484,11 +551,11 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
                 writerID: current.writerID,
                 baseRevision: current.revision,
                 committedRevision: committedRevision,
-                entityKind: validated.mutation.entityKind,
-                entityID: validated.mutation.entityID,
+                entityKind: localEnvelope.entityKind.rawValue,
+                entityID: localEnvelope.entityID,
                 changedFields: validated.mutation.changedFields,
                 fieldClocks: validated.mutation.fieldClocks,
-                payload: validated.snapshotData,
+                payload: outboxPayload,
                 createdAt: validated.mutation.createdAt
             )
 
@@ -499,7 +566,11 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
                 producedChange: true
             )
             try insertOutbox(operation)
-            try updateState(nextSnapshot, expectedRevision: current.revision)
+            try updateState(
+                nextSnapshot,
+                snapshotData: validated.snapshotData,
+                expectedRevision: current.revision
+            )
             let change = WorkspaceChange(snapshot: nextSnapshot, operation: operation)
             return .committed(change)
         }
@@ -548,24 +619,39 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
                 throw WorkspaceRepositoryError.invalidDatabase
             }
 
-            operations.append(
-                WorkspaceOutboxOperation(
-                    operationID: operationID,
-                    idempotencyKey: WorkspaceIdempotencyKey(rawValue: idempotencyUUID),
-                    workspaceID: workspaceID,
-                    writerID: WorkspaceWriterID(rawValue: writerUUID),
-                    baseRevision: WorkspaceRevision(rawValue: statement.integer(at: 4)),
-                    committedRevision: WorkspaceRevision(rawValue: statement.integer(at: 5)),
-                    entityKind: try statement.requiredText(at: 6, operation: "read_outbox"),
-                    entityID: try statement.requiredText(at: 7, operation: "read_outbox"),
-                    changedFields: changedFields,
-                    fieldClocks: fieldClocks,
-                    payloadFormatVersion: Int(statement.integer(at: 10)),
-                    payload: try statement.requiredBlob(at: 11, operation: "read_outbox"),
-                    createdAt: Date(timeIntervalSince1970: statement.double(at: 12)),
-                    deliveryAttempts: Int(statement.integer(at: 13))
-                )
+            let operation = WorkspaceOutboxOperation(
+                operationID: operationID,
+                idempotencyKey: WorkspaceIdempotencyKey(rawValue: idempotencyUUID),
+                workspaceID: workspaceID,
+                writerID: WorkspaceWriterID(rawValue: writerUUID),
+                baseRevision: WorkspaceRevision(rawValue: statement.integer(at: 4)),
+                committedRevision: WorkspaceRevision(rawValue: statement.integer(at: 5)),
+                entityKind: try statement.requiredText(at: 6, operation: "read_outbox"),
+                entityID: try statement.requiredText(at: 7, operation: "read_outbox"),
+                changedFields: changedFields,
+                fieldClocks: fieldClocks,
+                payloadFormatVersion: Int(statement.integer(at: 10)),
+                payload: try statement.requiredBlob(at: 11, operation: "read_outbox"),
+                createdAt: Date(timeIntervalSince1970: statement.double(at: 12)),
+                deliveryAttempts: Int(statement.integer(at: 13))
             )
+            guard operation.baseRevision.rawValue >= 0,
+                  operation.committedRevision.rawValue > operation.baseRevision.rawValue,
+                  operation.createdAt.timeIntervalSinceReferenceDate.isFinite,
+                  operation.deliveryAttempts >= 0,
+                  operation.changedFields == Array(Set(operation.changedFields)).sorted(),
+                  Set(operation.fieldClocks.keys).isSubset(of: Set(operation.changedFields)),
+                  operation.fieldClocks.values.allSatisfy({
+                      $0.timeIntervalSinceReferenceDate.isFinite
+                  }) else {
+                throw WorkspaceRepositoryError.invalidDatabase
+            }
+            do {
+                _ = try operation.decodedLocalPayload()
+            } catch {
+                throw WorkspaceRepositoryError.invalidDatabase
+            }
+            operations.append(operation)
         }
         return operations
     }
@@ -578,9 +664,12 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
                     """
                     UPDATE operation_outbox
                     SET delivery_attempts = delivery_attempts + 1
-                    WHERE operation_id = ?
+                    WHERE operation_id = ? AND payload_format_version = ?
                     """,
-                    bindings: [.text(operationID.uuidString.lowercased())],
+                    bindings: [
+                        .text(operationID.uuidString.lowercased()),
+                        .integer(Int64(WorkspaceLocalOperationEnvelopeV2.formatVersion))
+                    ],
                     operation: "record_delivery_attempt"
                 )
             }
@@ -592,15 +681,52 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
         try transaction {
             for operationID in Set(operationIDs) {
                 try execute(
-                    "DELETE FROM operation_outbox WHERE operation_id = ?",
-                    bindings: [.text(operationID.uuidString.lowercased())],
+                    """
+                    DELETE FROM operation_outbox
+                    WHERE operation_id = ? AND payload_format_version = ?
+                    """,
+                    bindings: [
+                        .text(operationID.uuidString.lowercased()),
+                        .integer(Int64(WorkspaceLocalOperationEnvelopeV2.formatVersion))
+                    ],
                     operation: "acknowledge_outbox"
                 )
             }
         }
     }
 
+    func acknowledgeLegacyOperationsAfterBootstrap(
+        revision: WorkspaceRevision
+    ) throws {
+        guard revision.rawValue >= 0 else {
+            throw WorkspaceRepositoryError.invalidMutation(
+                reason: "bootstrap revision cannot be negative"
+            )
+        }
+        try transaction {
+            let current = try loadSnapshot()
+            guard revision == current.revision else {
+                throw WorkspaceRepositoryError.revisionConflict(
+                    expected: revision,
+                    actual: current.revision
+                )
+            }
+            try execute(
+                """
+                DELETE FROM operation_outbox
+                WHERE payload_format_version = ? AND committed_revision <= ?
+                """,
+                bindings: [
+                    .integer(Int64(WorkspaceOutboxOperation.legacySnapshotPayloadFormatVersion)),
+                    .integer(revision.rawValue)
+                ],
+                operation: "acknowledge_legacy_outbox_bootstrap"
+            )
+        }
+    }
+
     private func configureConnection() throws {
+        _ = sqlite3_limit(connection, SQLITE_LIMIT_LENGTH, 72 * 1_024 * 1_024)
         try execute("PRAGMA foreign_keys = ON", operation: "configure_database")
         try execute("PRAGMA busy_timeout = 5000", operation: "configure_database")
     }
@@ -651,6 +777,7 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
                         idempotency_key TEXT PRIMARY KEY NOT NULL,
                         operation_id TEXT NOT NULL UNIQUE,
                         request_fingerprint BLOB NOT NULL,
+                        fingerprint_version INTEGER NOT NULL CHECK (fingerprint_version IN (1, 2)),
                         result_revision INTEGER NOT NULL CHECK (result_revision >= 0),
                         produced_change INTEGER NOT NULL CHECK (produced_change IN (0, 1)),
                         created_at REAL NOT NULL
@@ -702,6 +829,118 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
             }
         } else if applicationID != Self.applicationID {
             throw WorkspaceRepositoryError.invalidDatabase
+        } else if schemaVersion == 1 {
+            try migrateVersionOneOutbox()
+        }
+    }
+
+    /// Converts only legacy rows whose snapshot and metadata identify one
+    /// bounded entity without ambiguity. Broad historical personalization rows
+    /// stay at format 1 and require an explicit full bootstrap acknowledgement;
+    /// they are never disguised as normal entity operations.
+    private func migrateVersionOneOutbox() throws {
+        try transaction {
+            if try !table("operation_receipts", hasColumn: "fingerprint_version") {
+                try execute(
+                    """
+                    ALTER TABLE operation_receipts
+                    ADD COLUMN fingerprint_version INTEGER NOT NULL DEFAULT 1
+                        CHECK (fingerprint_version IN (1, 2))
+                    """,
+                    operation: "migrate_outbox_v2"
+                )
+            }
+            let statement = try prepare(
+                """
+                SELECT operation_id, entity_kind, entity_id, changed_fields,
+                       payload_format_version, payload, created_at
+                FROM operation_outbox
+                ORDER BY committed_revision ASC, operation_id ASC
+                """,
+                operation: "migrate_outbox_v2"
+            )
+            var upgrades: [LegacyOutboxUpgrade] = []
+            while try statement.step(operation: "migrate_outbox_v2") {
+                let payloadFormatVersion = Int(statement.integer(at: 4))
+                guard payloadFormatVersion == WorkspaceOutboxOperation.legacySnapshotPayloadFormatVersion
+                        || payloadFormatVersion == WorkspaceLocalOperationEnvelopeV2.formatVersion else {
+                    throw WorkspaceRepositoryError.invalidDatabase
+                }
+                guard payloadFormatVersion == WorkspaceOutboxOperation.legacySnapshotPayloadFormatVersion else {
+                    continue
+                }
+
+                let payload = try statement.requiredBlob(at: 5, operation: "migrate_outbox_v2")
+                guard !payload.isEmpty,
+                      payload.count <= WorkspaceOutboxOperation.maximumLegacySnapshotPayloadByteCount else {
+                    throw WorkspaceRepositoryError.invalidDatabase
+                }
+                let snapshot: FounderOfficeSnapshot
+                let changedFields: [String]
+                do {
+                    snapshot = try codec.normalized(
+                        codec.decoder.decode(FounderOfficeSnapshot.self, from: payload)
+                    )
+                    changedFields = try codec.decoder.decode(
+                        [String].self,
+                        from: try statement.requiredBlob(at: 3, operation: "migrate_outbox_v2")
+                    )
+                } catch let error as WorkspaceRepositoryError {
+                    throw error
+                } catch {
+                    throw WorkspaceRepositoryError.invalidDatabase
+                }
+
+                do {
+                    let envelope = try WorkspaceLocalOperationBuilder.makeEnvelope(
+                        entityKind: try statement.requiredText(at: 1, operation: "migrate_outbox_v2"),
+                        entityID: try statement.requiredText(at: 2, operation: "migrate_outbox_v2"),
+                        changedFields: Array(Set(changedFields)).sorted(),
+                        snapshot: snapshot,
+                        createdAt: Date(timeIntervalSince1970: statement.double(at: 6))
+                    )
+                    upgrades.append(
+                        LegacyOutboxUpgrade(
+                            operationID: try statement.requiredText(at: 0, operation: "migrate_outbox_v2"),
+                            entityKind: envelope.entityKind.rawValue,
+                            entityID: envelope.entityID,
+                            payload: try WorkspaceLocalOperationBuilder.encode(envelope)
+                        )
+                    )
+                } catch is WorkspaceLocalOperationError {
+                    // A decoded schema-1 row that cannot be represented by the
+                    // stricter bounded shape stays byte-for-byte intact for a
+                    // future canonical bootstrap. Never approximate it or turn
+                    // a compatibility limitation into a launch failure.
+                    continue
+                }
+            }
+
+            for upgrade in upgrades {
+                try execute(
+                    """
+                    UPDATE operation_outbox
+                    SET entity_kind = ?, entity_id = ?, payload_format_version = ?, payload = ?
+                    WHERE operation_id = ? AND payload_format_version = ?
+                    """,
+                    bindings: [
+                        .text(upgrade.entityKind),
+                        .text(upgrade.entityID),
+                        .integer(Int64(WorkspaceLocalOperationEnvelopeV2.formatVersion)),
+                        .blob(upgrade.payload),
+                        .text(upgrade.operationID),
+                        .integer(Int64(WorkspaceOutboxOperation.legacySnapshotPayloadFormatVersion))
+                    ],
+                    operation: "migrate_outbox_v2"
+                )
+                guard sqlite3_changes(connection) == 1 else {
+                    throw WorkspaceRepositoryError.invalidDatabase
+                }
+            }
+            try execute(
+                "PRAGMA user_version = \(Self.currentSchemaVersion)",
+                operation: "migrate_outbox_v2"
+            )
         }
     }
 
@@ -748,6 +987,14 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
     }
 
     private func readState() throws -> WorkspaceRepositorySnapshot? {
+        guard let stored = try readStoredState() else { return nil }
+        return try decodeState(stored)
+    }
+
+    /// Reads the exact canonical bytes without decoding the full workspace.
+    /// A changed transaction already carries a canonical replacement, so this
+    /// avoids another 10,000-Move decode and encode cycle on its hot path.
+    private func readStoredState() throws -> StoredWorkspaceState? {
         let statement = try prepare(
             """
             SELECT workspace_id, writer_id, revision, snapshot
@@ -770,18 +1017,34 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
         }
 
         let data = try statement.requiredBlob(at: 3, operation: "read_snapshot")
+        guard !data.isEmpty, data.count <= 64 * 1_024 * 1_024 else {
+            throw WorkspaceRepositoryError.invalidDatabase
+        }
+        return StoredWorkspaceState(
+            workspaceID: workspaceID,
+            writerID: WorkspaceWriterID(rawValue: writerUUID),
+            revision: WorkspaceRevision(rawValue: revisionValue),
+            snapshotData: data
+        )
+    }
+
+    private func decodeState(
+        _ stored: StoredWorkspaceState
+    ) throws -> WorkspaceRepositorySnapshot {
         let content: FounderOfficeSnapshot
         do {
-            content = try codec.normalized(codec.decoder.decode(FounderOfficeSnapshot.self, from: data))
+            content = try codec.normalized(
+                codec.decoder.decode(FounderOfficeSnapshot.self, from: stored.snapshotData)
+            )
         } catch let error as WorkspaceRepositoryError {
             throw error
         } catch {
             throw WorkspaceRepositoryError.invalidDatabase
         }
         return WorkspaceRepositorySnapshot(
-            workspaceID: workspaceID,
-            writerID: WorkspaceWriterID(rawValue: writerUUID),
-            revision: WorkspaceRevision(rawValue: revisionValue),
+            workspaceID: stored.workspaceID,
+            writerID: stored.writerID,
+            revision: stored.revision,
             content: content
         )
     }
@@ -826,7 +1089,8 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
             throw WorkspaceRepositoryError.invalidMutation(reason: "a field clock is invalid")
         }
 
-        let normalizedSnapshot = try codec.canonicalized(mutation.replacement)
+        let canonical = try codec.canonicalizedWithData(mutation.replacement)
+        let normalizedSnapshot = canonical.snapshot
         let normalizedMutation = WorkspaceMutation(
             operationID: mutation.operationID,
             idempotencyKey: mutation.idempotencyKey,
@@ -837,17 +1101,34 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
             replacement: normalizedSnapshot,
             createdAt: mutation.createdAt
         )
-        let snapshotData = try codec.encode(normalizedSnapshot)
+        let snapshotData = canonical.data
         guard snapshotData.count <= 64 * 1_024 * 1_024 else {
             throw WorkspaceRepositoryError.invalidMutation(reason: "snapshot exceeds the local safety limit")
         }
 
         struct FingerprintEnvelope: Codable {
             var expectedRevision: WorkspaceRevision
-            var mutation: WorkspaceMutation
+            var operationID: UUID
+            var idempotencyKey: WorkspaceIdempotencyKey
+            var entityKind: String
+            var entityID: String
+            var changedFields: [String]
+            var fieldClocks: [String: Date]
+            var snapshotDigest: Data
+            var createdAt: Date
         }
         let fingerprintInput = try codec.encode(
-            FingerprintEnvelope(expectedRevision: expectedRevision, mutation: normalizedMutation)
+            FingerprintEnvelope(
+                expectedRevision: expectedRevision,
+                operationID: normalizedMutation.operationID,
+                idempotencyKey: normalizedMutation.idempotencyKey,
+                entityKind: normalizedMutation.entityKind,
+                entityID: normalizedMutation.entityID,
+                changedFields: normalizedMutation.changedFields,
+                fieldClocks: normalizedMutation.fieldClocks,
+                snapshotDigest: Data(SHA256.hash(data: snapshotData)),
+                createdAt: normalizedMutation.createdAt
+            )
         )
         let fingerprint = Data(SHA256.hash(data: fingerprintInput))
         return ValidatedWorkspaceMutation(
@@ -859,6 +1140,7 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
 
     private func updateState(
         _ snapshot: WorkspaceRepositorySnapshot,
+        snapshotData: Data,
         expectedRevision: WorkspaceRevision
     ) throws {
         try execute(
@@ -869,7 +1151,7 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
             """,
             bindings: [
                 .integer(snapshot.revision.rawValue),
-                .blob(try codec.encode(snapshot.content)),
+                .blob(snapshotData),
                 .real(Date().timeIntervalSince1970),
                 .integer(expectedRevision.rawValue)
             ],
@@ -887,7 +1169,7 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
     private func receipt(for key: WorkspaceIdempotencyKey) throws -> WorkspaceOperationReceipt? {
         let statement = try prepare(
             """
-            SELECT request_fingerprint, result_revision
+            SELECT request_fingerprint, fingerprint_version, result_revision
             FROM operation_receipts
             WHERE idempotency_key = ?
             """,
@@ -897,8 +1179,25 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
         guard try statement.step(operation: "read_idempotency_receipt") else { return nil }
         return WorkspaceOperationReceipt(
             fingerprint: try statement.requiredBlob(at: 0, operation: "read_idempotency_receipt"),
-            resultRevision: WorkspaceRevision(rawValue: statement.integer(at: 1))
+            fingerprintVersion: Int(statement.integer(at: 1)),
+            resultRevision: WorkspaceRevision(rawValue: statement.integer(at: 2))
         )
+    }
+
+    /// Reproduces the schema-1 fingerprint exactly so retries written by a
+    /// previous app build remain idempotent after the outbox migration.
+    private func legacyFingerprint(
+        mutation: WorkspaceMutation,
+        expectedRevision: WorkspaceRevision
+    ) throws -> Data {
+        struct FingerprintEnvelope: Codable {
+            var expectedRevision: WorkspaceRevision
+            var mutation: WorkspaceMutation
+        }
+        let input = try codec.encode(
+            FingerprintEnvelope(expectedRevision: expectedRevision, mutation: mutation)
+        )
+        return Data(SHA256.hash(data: input))
     }
 
     private func receiptExists(operationID: UUID) throws -> Bool {
@@ -923,13 +1222,14 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
             """
             INSERT INTO operation_receipts (
                 idempotency_key, operation_id, request_fingerprint,
-                result_revision, produced_change, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?)
+                fingerprint_version, result_revision, produced_change, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             bindings: [
                 .text(mutation.idempotencyKey.description),
                 .text(mutation.operationID.uuidString.lowercased()),
                 .blob(fingerprint),
+                .integer(2),
                 .integer(resultRevision.rawValue),
                 .integer(producedChange ? 1 : 0),
                 .real(mutation.createdAt.timeIntervalSince1970)
@@ -1037,6 +1337,22 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
             operation: "inspect_database"
         )
         return try statement.step(operation: "inspect_database")
+    }
+
+    private func table(_ tableName: String, hasColumn columnName: String) throws -> Bool {
+        guard tableName == "operation_receipts", columnName == "fingerprint_version" else {
+            throw WorkspaceRepositoryError.invalidDatabase
+        }
+        let statement = try prepare(
+            "PRAGMA table_info(operation_receipts)",
+            operation: "inspect_database"
+        )
+        while try statement.step(operation: "inspect_database") {
+            if try statement.requiredText(at: 1, operation: "inspect_database") == columnName {
+                return true
+            }
+        }
+        return false
     }
 
     private func pragmaInteger(_ name: String) throws -> Int64 {
@@ -1248,11 +1564,21 @@ private final class WorkspaceJSONCodec {
     /// produce. This avoids exposing sub-second Date values that the existing
     /// ISO-8601 documents intentionally normalize during durable encoding.
     func canonicalized(_ snapshot: FounderOfficeSnapshot) throws -> FounderOfficeSnapshot {
+        try canonicalizedWithData(snapshot).snapshot
+    }
+
+    /// Canonical content and the exact bytes persisted for it. Keeping these
+    /// together avoids re-encoding a 10,000-Move workspace when one entity is
+    /// committed to the bounded operation outbox.
+    func canonicalizedWithData(
+        _ snapshot: FounderOfficeSnapshot
+    ) throws -> (snapshot: FounderOfficeSnapshot, data: Data) {
         let normalizedSnapshot = try normalized(snapshot)
         do {
-            return try decoder.decode(
-                FounderOfficeSnapshot.self,
-                from: encoder.encode(normalizedSnapshot)
+            let data = try encoder.encode(normalizedSnapshot)
+            return (
+                try decoder.decode(FounderOfficeSnapshot.self, from: data),
+                data
             )
         } catch let error as WorkspaceRepositoryError {
             throw error
