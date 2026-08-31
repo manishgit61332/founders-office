@@ -580,6 +580,7 @@ final class FoundersOfficeAppDelegate: NSObject, NSApplicationDelegate {
 
     private func showStatusMenu() {
         let menu = NSMenu()
+        menu.identifier = TransientPresentationCoordinator.statusMenuIdentifier
 
         if isSafeMode {
             let status = NSMenuItem(title: "Safe Mode Active", action: nil, keyEquivalent: "")

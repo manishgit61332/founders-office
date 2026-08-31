@@ -4,14 +4,17 @@
 
 `FoundersOfficeMacUITests` exercises the release-gate paths that require a real AppKit/SwiftUI process:
 
-- Appearance edit → Save Changes → relaunch;
-- Discard and Escape with an unsaved Appearance draft;
+- Appearance edit → Save Changes → relaunch, plus forced relaunch without
+  saving to prove that a draft never leaks into durable state;
+- Discard, in-notch Escape, and explicit-notch-close Cancel with an unsaved
+  Appearance draft;
 - Move priority and deadline editing;
 - Calendar event creation in the top-layer editor;
-- native colour-panel close → notch restoration; and
+- native colour-panel close or Escape → notch restoration, including with
+  Reduce Motion and Reduce Transparency enabled; and
 - preview of every redacted support-report field before Save.
 
-The non-distribution `--ui-testing` launch hook uses a caller-provided temporary workspace, bypasses onboarding and cloud transport, activates a deterministic synthetic Calendar, and opens the notch as an interactive window. `OPENLOOPS_UI_TEST_FIXTURE=1` creates one synthetic Move only inside that temporary workspace. `FOUNDER_OFFICE_DISTRIBUTION` compiles these environment overrides out of the customer build.
+The non-distribution `--ui-testing` launch hook uses a caller-provided temporary workspace, bypasses onboarding and cloud transport, activates a deterministic synthetic Calendar, and opens the notch as an interactive window. `OPENLOOPS_UI_TEST_FIXTURE=1` creates one synthetic Move only inside that temporary workspace. The reduced-effects scenarios use `OPENLOOPS_UI_TEST_REDUCE_MOTION` and `OPENLOOPS_UI_TEST_REDUCE_TRANSPARENCY`; `FOUNDER_OFFICE_DISTRIBUTION` compiles all of these environment overrides out of the customer build.
 
 ## Generate and run
 

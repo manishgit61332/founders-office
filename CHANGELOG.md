@@ -63,7 +63,9 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 - Rapid Mac mutations now serialize through component-scoped repository patches instead of racing whole-workspace JSON writes, and failed Appearance commits retain both the retryable draft and untouched committed value.
 
 - Appearance controls no longer write personalization data or advance modification timestamps before Save Changes succeeds.
+- Explicit close and quit now require a Save, Discard, or Cancel outcome for an unsaved Appearance draft; popup Escape and automatic hover dismissal preserve the draft and restore the notch only after the final popup closes.
 - Native colour, date, menu, and file-picker surfaces now remain above the physical notch instead of falling outside its hover lifecycle.
+- Status-menu submenus no longer suspend the notch, and display changes wait for an active native panel to finish before repositioning the expanded surface.
 - Buttons and selected priority controls now calculate black-or-white foreground contrast from the customer’s exact accent colour instead of assuming white text will remain readable.
 - Dark custom accents used as functional text now fall back to a readable neutral while retaining the chosen colour in markers, borders, and fills.
 - Corrupt canonical data can no longer be silently replaced with an empty default workspace.

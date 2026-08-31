@@ -138,6 +138,56 @@ struct WorkspaceSessionIntegrationTests {
     }
 
     @Test
+    func appearancePreviewAndDiscardDoNotWriteOrAdvanceTimestamps() async throws {
+        let fixture = try MacStorageFixture()
+        defer { fixture.remove() }
+        let session = try await WorkspaceSession.open(
+            rootURL: fixture.root,
+            workspaceID: UUID(),
+            initialSnapshot: fixture.snapshot(moveCount: 1)
+        )
+        let store = PersonalizationStore(session: session)
+        let baselineSnapshot = session.snapshot
+        let baselineDocument = store.document
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let baselineDocumentData = try encoder.encode(baselineDocument)
+        let baselineDatabase = try fixture.databaseDurableBytes(at: session.databaseURL)
+        #expect(try await session.repository.pendingOperations().isEmpty)
+
+        store.beginAppearanceEditing()
+        store.updateAccentColor(RGB24Color(red: 16, green: 170, blue: 220), stopIndex: 0)
+        store.updateAccentAngle(142)
+        store.updateDisplayFont(.monospaced)
+        store.updateInterfaceFont(.rounded)
+        store.updateNodeStyle(.pixel)
+        store.updateSurfaceStyle(.solidBlack)
+        try await Task.sleep(for: .milliseconds(40))
+
+        #expect(store.hasUnsavedAppearanceChanges)
+        let previewDocumentData = try encoder.encode(store.document)
+        #expect(previewDocumentData == baselineDocumentData)
+        #expect(store.appearanceDraftSession?.draft.updatedAt
+            == baselineDocument.resolvedAppearance.updatedAt)
+        #expect(session.snapshot.revision == baselineSnapshot.revision)
+        #expect(session.snapshot.content.personalization.updatedAt
+            == baselineSnapshot.content.personalization.updatedAt)
+        #expect(try await session.repository.pendingOperations().isEmpty)
+        #expect(try fixture.databaseDurableBytes(at: session.databaseURL) == baselineDatabase)
+
+        store.discardAppearanceChanges()
+        #expect(!store.hasUnsavedAppearanceChanges)
+        #expect(store.appearance == baselineDocument.resolvedAppearance)
+        let discardedDocumentData = try encoder.encode(store.document)
+        #expect(discardedDocumentData == baselineDocumentData)
+        #expect(session.snapshot.revision == baselineSnapshot.revision)
+        #expect(try await session.repository.pendingOperations().isEmpty)
+        #expect(try fixture.databaseDurableBytes(at: session.databaseURL) == baselineDatabase)
+        store.stop()
+        session.stop()
+    }
+
+    @Test
     func appearanceDraftCommitsOnceAndDetectsSameFieldConflict() async throws {
         let fixture = try MacStorageFixture()
         defer { fixture.remove() }
@@ -229,6 +279,15 @@ struct WorkspaceSessionIntegrationTests {
         #expect(store.appearanceSaveError != nil)
         #expect(session.snapshot.content.personalization.resolvedAppearance == committed)
         #expect(try await session.repository.pendingOperations().isEmpty)
+
+        try fixture.removeFailingWorkspaceUpdateTrigger(at: session.databaseURL)
+        let retry = await store.saveAppearanceChanges()
+        #expect(retry == .saved)
+        #expect(!store.hasUnsavedAppearanceChanges)
+        #expect(store.appearanceSaveError == nil)
+        #expect(session.snapshot.revision == WorkspaceRevision(rawValue: 1))
+        #expect(session.snapshot.content.personalization.resolvedAppearance.accent.primaryColor
+            == RGB24Color(red: 240, green: 40, blue: 90))
         store.stop()
         session.stop()
     }
@@ -391,6 +450,28 @@ private struct MacStorageFixture {
         guard sqlite3_exec(database, sql, nil, nil, nil) == SQLITE_OK else {
             throw CocoaError(.fileWriteUnknown)
         }
+    }
+
+    func removeFailingWorkspaceUpdateTrigger(at databaseURL: URL) throws {
+        var database: OpaquePointer?
+        guard sqlite3_open_v2(databaseURL.path, &database, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK,
+              let database else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        defer { sqlite3_close_v2(database) }
+        guard sqlite3_exec(database, "DROP TRIGGER fail_workspace_update", nil, nil, nil) == SQLITE_OK else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+    }
+
+    func databaseDurableBytes(at databaseURL: URL) throws -> [String: Data] {
+        var bytes: [String: Data] = [:]
+        for suffix in ["", "-wal"] {
+            let url = URL(fileURLWithPath: databaseURL.path + suffix)
+            guard FileManager.default.fileExists(atPath: url.path) else { continue }
+            bytes[suffix] = try Data(contentsOf: url)
+        }
+        return bytes
     }
 
     func writeJPEG(width: Int, height: Int, to url: URL, red: UInt8 = 80) throws {

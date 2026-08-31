@@ -257,6 +257,14 @@ final class PersonalizationStore: ObservableObject {
 
     @discardableResult
     func saveAppearanceChanges(overwritingConflict: Bool = false) async -> AppearanceSaveResult {
+        guard !isSavingAppearance else {
+            let failure = "A save is already in progress"
+            if var activeSession = appearanceDraftSession {
+                activeSession.markFailed(failure)
+                appearanceDraftSession = activeSession
+            }
+            return .failed(failure)
+        }
         guard var session = appearanceDraftSession, session.isDirty else {
             return .unchanged
         }
@@ -325,7 +333,10 @@ final class PersonalizationStore: ObservableObject {
         persist()
     }
 
-    func choosePhoto(onCompletion: @escaping () -> Void = {}) {
+    func choosePhoto(
+        onPresent: @escaping (NSOpenPanel) -> Void = { _ in },
+        onCompletion: @escaping (NSOpenPanel) -> Void = { _ in }
+    ) {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.image]
         panel.allowsMultipleSelection = false
@@ -333,8 +344,9 @@ final class PersonalizationStore: ObservableObject {
         panel.message = "Choose a photo that reminds you what you’re building toward."
         panel.prompt = "Use Photo"
 
+        onPresent(panel)
         panel.begin { [weak self] response in
-            defer { onCompletion() }
+            defer { onCompletion(panel) }
             guard response == .OK, let sourceURL = panel.url else { return }
             let isAccessing = sourceURL.startAccessingSecurityScopedResource()
             Task { @MainActor in
@@ -346,10 +358,12 @@ final class PersonalizationStore: ObservableObject {
         }
     }
 
-    func exportOriginalPhoto(onCompletion: @escaping () -> Void = {}) {
+    func exportOriginalPhoto(
+        onPresent: @escaping (NSSavePanel) -> Void = { _ in },
+        onCompletion: @escaping (NSSavePanel) -> Void = { _ in }
+    ) {
         guard let asset = document.visionImageAsset else {
             message = "Original isn’t available on this Mac"
-            onCompletion()
             return
         }
         let panel = NSSavePanel()
@@ -358,8 +372,9 @@ final class PersonalizationStore: ObservableObject {
         panel.message = "Export the exact photo you originally chose."
         panel.prompt = "Export Original"
 
+        onPresent(panel)
         panel.begin { [weak self] response in
-            defer { onCompletion() }
+            defer { onCompletion(panel) }
             guard response == .OK, let destinationURL = panel.url else { return }
             let isAccessing = destinationURL.startAccessingSecurityScopedResource()
             Task { @MainActor in
