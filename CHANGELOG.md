@@ -6,6 +6,7 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Added
 
+- Bounded personal-image assets with separate 1,600-pixel display and 960-pixel sync variants, plus an explicit **Export original…** action that preserves the exact customer-selected file.
 - A compact Mac Health page for local data, sync, Calendar, startup, and assistant execution, with content-free last-success signals and only bounded, reversible retry or settings actions.
 - A preview-first redacted support report that shows every allow-listed field before saving and excludes Moves, events, names, paths, prompts, credentials, and log payloads by construction.
 - An XcodeGen macOS UI-test target with deterministic scenarios for transactional Appearance, Move planning, Calendar creation, popup restoration, and support-report preview.
@@ -19,7 +20,7 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 - A durable workspace identity that prevents missing or partially restored cloud data from being replaced with newly seeded defaults.
 - A privacy-safe crash-loop detector, MetricKit runtime-health foundation, and a minimal safe mode with an incident identifier and explicit retry.
 - A hardened Developer ID release and independent verification pipeline for signing, notarization, stapling, entitlements, architectures, checksums, and archive safety.
-- Ninety-four automated Swift tests with code coverage, release-archive attack fixtures, plus website build, lint, release-policy, security-header, and dependency-audit gates in CI.
+- More than one hundred automated Swift tests with code coverage, release-archive attack fixtures, plus website build, lint, release-policy, security-header, and dependency-audit gates in CI.
 - Architecture records for primary account identity, connector authorization, safe auto-remediation, and the Mac → iOS → Windows → Android platform sequence.
 - A complete macOS application icon set and bundled Instrument Serif license notice.
 - Privacy, support, security, and license surfaces on the private website, with restrictive browser security headers.
@@ -37,6 +38,7 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Changed
 
+- The Mac personal-image widget now renders only a bounded ImageIO thumbnail; file copies, thumbnail generation, export, and cleanup run outside the main actor.
 - The Mac app now uses one transactional SQLite workspace for Moves, personalization, goals, Appearance, tombstones, revisions, idempotency receipts, and sync outbox operations. Legacy JSON and Recovery files remain byte-for-byte migration inputs; JSON and Markdown are generated as immutable revision projections.
 - The legacy polling-based Mac CloudKit JSON bridge has been removed so it cannot compete with the canonical workspace. Cross-device sync remains unavailable until the new authenticated sync contract passes its release gate.
 - Provider-supplied account names are now non-authoritative onboarding suggestions; only an explicitly reviewed, NFC-normalized display-name value can cross a durable identity update boundary.
@@ -54,6 +56,8 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Fixed
 
+- Failed photo commits immediately roll back newly prepared files, successful replacement/removal retires prior owned variants only after the canonical SQLite commit, and launch reconciliation safely retries interrupted cleanup.
+- Photo import now rebases onto the latest personalization state so a concurrent name, Appearance, goal, or milestone edit is not overwritten by slow image preparation.
 - Rapid Mac mutations now serialize through component-scoped repository patches instead of racing whole-workspace JSON writes, and failed Appearance commits retain both the retryable draft and untouched committed value.
 
 - Appearance controls no longer write personalization data or advance modification timestamps before Save Changes succeeds.
@@ -76,6 +80,7 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Security
 
+- Exact vision-image originals remain local and are never used by the notch or sync path; strict UUID-derived filenames, source/decompression/output bounds, private permissions, and path-safe cleanup prevent traversal and unbounded image handling.
 - Support export is a local-only 16-field allow list; it never scrapes logs or workspace files and requires an exact on-screen preview before Save.
 - Product-auth callbacks now use an explicit provisional-custom-scheme or HTTPS universal-link allowlist, rejecting executable, file, data, insecure HTTP, credential-bearing, and route-mismatched URLs.
 - Production identity configuration accepts only HTTPS endpoints and Supabase publishable/legacy-anon keys; secret and service-role credentials are rejected before the client is created.

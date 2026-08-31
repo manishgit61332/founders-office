@@ -26,7 +26,7 @@ Founder's Office is a native Apple focus surface that turns the MacBook notch in
 - Customer Release builds compile external Codex CLI execution out until the scoped-helper and consent launch gates pass.
 - Commits Moves, personalization, goals, Appearance, tombstones, revisions, and pending sync operations through one serialized SQLite workspace.
 - Generates bounded read-only JSON and Markdown projections after committed changes without rewriting the legacy migration files.
-- Saves a workspace name, accent colour, chosen local photo, and one measurable primary goal in the same transaction authority.
+- Saves a workspace name, accent colour, chosen local photo, and one measurable primary goal in the same transaction authority. Photos use separate bounded display and sync variants; exact original bytes stay local until **Export original…** is explicitly chosen.
 - Shows the primary goal as a target, current progress, and days left; it can also work as a deadline-only finish line when no numeric target is entered.
 - Uses native SF Symbols and macOS-style hover, selected, and pressed states throughout navigation.
 - Reads the next 30 days from every calendar enabled in macOS Internet Accounts—including iCloud and multiple Google accounts—after the user grants calendar access.
@@ -104,5 +104,7 @@ Scripts/ci-checks.sh
 The app must be running for notch hover to work. In development builds, Codex runs are local, review-gated jobs: they can create task artifacts in `Codex Runs`, but they cannot send messages, publish, book calls, purchase, use private credentials, or mark a task done. External CLI execution is compiled out of customer Release builds until a separately scoped helper, consent review, cancellation, retention, and cost controls are proven.
 
 Local photo selection works now. Google Photos is deliberately not presented as connected until a Google Cloud project and OAuth client are configured; the current Photos Picker requires explicit user sign-in and selection.
+
+Selected photos are copied without decoding the original, screened for file and decompression limits, and rendered through bounded ImageIO thumbnail APIs off the main actor. The notch never loads the retained original. A failed SQLite commit rolls back the new files, while replacement and removal delete prior owned variants only after the canonical commit succeeds.
 
 Google Calendar does not need a separate OAuth flow inside Founder's Office. Add each Google account in System Settings → Internet Accounts, enable Calendar for each account, then grant Founder's Office Calendar access once. EventKit exposes those Google calendars and iCloud calendars through the same native store while keeping account names visible on events.

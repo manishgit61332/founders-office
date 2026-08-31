@@ -1912,6 +1912,10 @@ struct NotchBoardView: View {
                     HStack(spacing: 8) {
                         Button(personalization.photoURL == nil ? "Choose photo…" : "Replace…", action: choosePhotoWithLease)
                             .buttonStyle(HeaderActionButtonStyle())
+                        if personalization.hasExportableOriginalPhoto {
+                            Button("Export original…", action: exportOriginalPhotoWithLease)
+                                .buttonStyle(HeaderActionButtonStyle())
+                        }
                         if personalization.photoURL != nil {
                             Button("Remove", action: personalization.removePhoto)
                                 .buttonStyle(HeaderActionButtonStyle())
@@ -2592,6 +2596,19 @@ struct NotchBoardView: View {
             photoInteractionLease = presentation.beginInteraction("photo-picker")
         }
         personalization.choosePhoto {
+            Task { @MainActor in
+                guard let lease = photoInteractionLease else { return }
+                presentation.endInteraction(lease)
+                photoInteractionLease = nil
+            }
+        }
+    }
+
+    private func exportOriginalPhotoWithLease() {
+        if photoInteractionLease == nil {
+            photoInteractionLease = presentation.beginInteraction("photo-export")
+        }
+        personalization.exportOriginalPhoto {
             Task { @MainActor in
                 guard let lease = photoInteractionLease else { return }
                 presentation.endInteraction(lease)

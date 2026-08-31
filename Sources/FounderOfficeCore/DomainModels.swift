@@ -251,6 +251,9 @@ public struct PersonalizationDocument: Codable, Sendable {
     public var milestones: [Milestone]
     public var updatedAt: Date?
     public var appearance: AppearancePreferences?
+    /// Bounded image metadata. `photoFileName` remains a display-variant
+    /// compatibility field for older clients.
+    public var visionImageAsset: PersonalizationImageAsset?
 
     public init(
         schemaVersion: Int,
@@ -263,7 +266,8 @@ public struct PersonalizationDocument: Codable, Sendable {
         updatedAt: Date? = nil,
         preferredName: String? = nil,
         workspaceName: String? = nil,
-        appearance: AppearancePreferences? = nil
+        appearance: AppearancePreferences? = nil,
+        visionImageAsset: PersonalizationImageAsset? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.displayName = displayName
@@ -276,6 +280,7 @@ public struct PersonalizationDocument: Codable, Sendable {
         self.milestones = milestones
         self.updatedAt = updatedAt
         self.appearance = appearance
+        self.visionImageAsset = visionImageAsset
     }
 
     public var resolvedPreferredName: String? {
@@ -296,6 +301,20 @@ public struct PersonalizationDocument: Codable, Sendable {
 
     public var resolvedAppearance: AppearancePreferences {
         appearance ?? .manish(accent: accent.rgb24)
+    }
+
+    public var resolvedPhotoFileName: String? {
+        if let visionImageAsset {
+            return AssetFileName.validated(visionImageAsset.displayFileName)
+        }
+        return photoFileName.flatMap(AssetFileName.validated)
+    }
+
+    public var resolvedSyncPhotoFileName: String? {
+        if let visionImageAsset {
+            return AssetFileName.validated(visionImageAsset.syncFileName)
+        }
+        return photoFileName.flatMap(AssetFileName.validated)
     }
 
     private static func clean(_ value: String?) -> String? {

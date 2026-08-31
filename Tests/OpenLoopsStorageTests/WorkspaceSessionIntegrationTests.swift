@@ -1,6 +1,9 @@
+import CoreGraphics
 import Foundation
+import ImageIO
 import SQLite3
 import Testing
+import UniformTypeIdentifiers
 @testable import FounderOfficeCore
 @testable import OpenLoops
 
@@ -229,6 +232,126 @@ struct WorkspaceSessionIntegrationTests {
         store.stop()
         session.stop()
     }
+
+    @Test
+    func slowPhotoPreparationRebasesOntoConcurrentPersonalizationThenSurvivesRelaunchAndRemoval() async throws {
+        let fixture = try MacStorageFixture()
+        defer { fixture.remove() }
+        let sourceURL = fixture.root.appendingPathComponent("selected.jpg")
+        try fixture.writeJPEG(width: 2_048, height: 1_024, to: sourceURL)
+        let session = try await WorkspaceSession.open(
+            rootURL: fixture.root,
+            workspaceID: UUID(),
+            initialSnapshot: fixture.snapshot(moveCount: 1)
+        )
+        let gate = ImageCommitGate()
+        let imageStore = PersonalizationImageStore(
+            rootURL: fixture.root.appendingPathComponent("Personalization", isDirectory: true),
+            testingBeforeCommit: { await gate.pause() }
+        )
+        let store = PersonalizationStore(session: session, imageStore: imageStore)
+
+        let importTask = Task { @MainActor in
+            await store.importPhotoFromSelectedURL(sourceURL)
+        }
+        await gate.waitUntilPaused()
+        store.updatePreferredName("Latest local name")
+        #expect(await store.waitForPendingWrites())
+        await gate.release()
+        await importTask.value
+
+        let committed = try await session.repository.snapshot()
+        let asset = try #require(committed.content.personalization.visionImageAsset)
+        #expect(committed.content.personalization.resolvedPreferredName == "Latest local name")
+        #expect(committed.content.personalization.photoFileName == asset.displayFileName)
+        for name in asset.ownedFileNames {
+            #expect(FileManager.default.fileExists(
+                atPath: fixture.root
+                    .appendingPathComponent("Personalization", isDirectory: true)
+                    .appendingPathComponent(name)
+                    .path
+            ))
+        }
+
+        store.stop()
+        session.stop()
+        let reopened = try await WorkspaceSession.open(
+            rootURL: fixture.root,
+            workspaceID: committed.workspaceID,
+            initialSnapshot: WorkspaceSession.freshSnapshot
+        )
+        let reopenedStore = PersonalizationStore(session: reopened)
+        #expect(reopenedStore.document.visionImageAsset == asset)
+        #expect(reopenedStore.photoURL?.lastPathComponent == asset.displayFileName)
+
+        await reopenedStore.performPhotoRemoval()
+        let removed = try await reopened.repository.snapshot()
+        #expect(removed.content.personalization.visionImageAsset == nil)
+        #expect(removed.content.personalization.photoFileName == nil)
+        for name in asset.ownedFileNames {
+            #expect(!FileManager.default.fileExists(
+                atPath: fixture.root
+                    .appendingPathComponent("Personalization", isDirectory: true)
+                    .appendingPathComponent(name)
+                    .path
+            ))
+        }
+        reopenedStore.stop()
+        reopened.stop()
+    }
+
+    @Test
+    func sqlitePhotoCommitFailureRollsBackNewVariantsAndKeepsPreviousImage() async throws {
+        let fixture = try MacStorageFixture()
+        defer { fixture.remove() }
+        let firstURL = fixture.root.appendingPathComponent("first.jpg")
+        let secondURL = fixture.root.appendingPathComponent("second.jpg")
+        try fixture.writeJPEG(width: 800, height: 600, to: firstURL, red: 30)
+        try fixture.writeJPEG(width: 900, height: 600, to: secondURL, red: 190)
+        let session = try await WorkspaceSession.open(
+            rootURL: fixture.root,
+            workspaceID: UUID(),
+            initialSnapshot: fixture.snapshot(moveCount: 1)
+        )
+        let store = PersonalizationStore(session: session)
+        await store.importPhotoFromSelectedURL(firstURL)
+        let firstAsset = try #require(session.snapshot.content.personalization.visionImageAsset)
+        let assetsURL = fixture.root.appendingPathComponent("Personalization", isDirectory: true)
+
+        try fixture.installFailingWorkspaceUpdateTrigger(at: session.databaseURL)
+        await store.importPhotoFromSelectedURL(secondURL)
+
+        #expect(store.document.visionImageAsset == firstAsset)
+        #expect(session.snapshot.content.personalization.visionImageAsset == firstAsset)
+        #expect(store.message == "Couldn’t save that photo")
+        let ownedFiles = try FileManager.default.contentsOfDirectory(atPath: assetsURL.path)
+            .filter(PersonalizationImageStore.isOwnedVariantFileName)
+        #expect(Set(ownedFiles) == Set(firstAsset.ownedFileNames))
+        store.stop()
+        session.stop()
+    }
+}
+
+private actor ImageCommitGate {
+    private var paused = false
+    private var released = false
+
+    func pause() async {
+        paused = true
+        while !released {
+            try? await Task.sleep(for: .milliseconds(2))
+        }
+    }
+
+    func waitUntilPaused() async {
+        while !paused {
+            try? await Task.sleep(for: .milliseconds(2))
+        }
+    }
+
+    func release() {
+        released = true
+    }
 }
 
 private struct MacStorageFixture {
@@ -266,6 +389,41 @@ private struct MacStorageFixture {
         END;
         """
         guard sqlite3_exec(database, sql, nil, nil, nil) == SQLITE_OK else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+    }
+
+    func writeJPEG(width: Int, height: Int, to url: URL, red: UInt8 = 80) throws {
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        guard let context = CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        context.setFillColor(CGColor(
+            colorSpace: colorSpace,
+            components: [CGFloat(red) / 255, 0.3, 0.6, 1]
+        )!)
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        guard let image = context.makeImage(),
+              let destination = CGImageDestinationCreateWithURL(
+                url as CFURL,
+                UTType.jpeg.identifier as CFString,
+                1,
+                nil
+              ) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        CGImageDestinationAddImage(destination, image, [
+            kCGImageDestinationLossyCompressionQuality: 0.9
+        ] as CFDictionary)
+        guard CGImageDestinationFinalize(destination) else {
             throw CocoaError(.fileWriteUnknown)
         }
     }

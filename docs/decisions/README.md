@@ -16,3 +16,4 @@ Each ADR records status, date, context, decision, consequences, privacy/security
 - [0011 — Transactional appearance drafts and owned transient presentation](0011-transactional-appearance-and-transients.md)
 - [0012 — Redacted Health surface and preview-first support export](0012-redacted-health-and-support-export.md)
 - [0013 — Adopt SQLite as the Mac workspace authority](0013-adopt-sqlite-as-mac-workspace-authority.md)
+- [0016 — Bounded personalization image assets](0016-bounded-personalization-image-assets.md)

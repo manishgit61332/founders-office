@@ -61,4 +61,14 @@ struct AssetFileNameTests {
         #expect(AssetFileName.validated(maximumLength) == maximumLength)
         #expect(AssetFileName.validated(tooLong) == nil)
     }
+
+    @Test
+    func legacyCleanupAcceptsOnlyTheExactFormerAppOwnedPattern() {
+        let id = "00000000-0000-0000-0000-000000000000"
+        #expect(AssetFileName.validatedLegacyVisionAsset("vision-\(id).jpg") == "vision-\(id).jpg")
+        #expect(AssetFileName.validatedLegacyVisionAsset("vision-\(id).HEIC") == "vision-\(id).HEIC")
+        #expect(AssetFileName.validatedLegacyVisionAsset("vision-\(id)-display.jpg") == nil)
+        #expect(AssetFileName.validatedLegacyVisionAsset("portrait.jpg") == nil)
+        #expect(AssetFileName.validatedLegacyVisionAsset("../vision-\(id).jpg") == nil)
+    }
 }

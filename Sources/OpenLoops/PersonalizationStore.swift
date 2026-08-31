@@ -2,7 +2,6 @@ import AppKit
 import Combine
 import Foundation
 import FounderOfficeCore
-import ImageIO
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -35,6 +34,8 @@ final class PersonalizationStore: ObservableObject {
     private var writes: [PendingWrite] = []
     private var isWriting = false
     private var lastWriteSucceeded = true
+    private let imageStore: PersonalizationImageStore
+    private var imageReconciliationTask: Task<Void, Never>?
 
     private struct PendingWrite {
         var document: PersonalizationDocument
@@ -46,10 +47,14 @@ final class PersonalizationStore: ObservableObject {
         var completion: ((Result<WorkspaceTransactionResult, Error>) -> Void)?
     }
 
-    init(session: WorkspaceSession) {
+    init(
+        session: WorkspaceSession,
+        imageStore: PersonalizationImageStore? = nil
+    ) {
         self.session = session
         rootURL = session.rootURL
         assetsURL = rootURL.appendingPathComponent("Personalization", isDirectory: true)
+        self.imageStore = imageStore ?? PersonalizationImageStore(rootURL: assetsURL)
 
         document = session.snapshot.content.personalization
         appearanceDraftSession = nil
@@ -62,6 +67,7 @@ final class PersonalizationStore: ObservableObject {
         #if !FOUNDER_OFFICE_DISTRIBUTION
         applyPreviewOverrides()
         #endif
+        reconcileImageFiles()
     }
 
     func stop() {
@@ -71,6 +77,8 @@ final class PersonalizationStore: ObservableObject {
         writes.removeAll()
         cancellable?.cancel()
         cancellable = nil
+        imageReconciliationTask?.cancel()
+        imageReconciliationTask = nil
         appearanceDraftSession = nil
     }
 
@@ -119,8 +127,12 @@ final class PersonalizationStore: ObservableObject {
 
     var photoURL: URL? {
         if let previewPhotoURL { return previewPhotoURL }
-        guard let fileName = document.photoFileName.flatMap(AssetFileName.validated) else { return nil }
+        guard let fileName = document.resolvedPhotoFileName else { return nil }
         return assetsURL.appendingPathComponent(fileName)
+    }
+
+    var hasExportableOriginalPhoto: Bool {
+        document.visionImageAsset != nil
     }
 
     func updatePreferredName(_ value: String) {
@@ -324,35 +336,94 @@ final class PersonalizationStore: ObservableObject {
         panel.begin { [weak self] response in
             defer { onCompletion() }
             guard response == .OK, let sourceURL = panel.url else { return }
+            let isAccessing = sourceURL.startAccessingSecurityScopedResource()
             Task { @MainActor in
-                await self?.importPhoto(from: sourceURL)
+                defer {
+                    if isAccessing { sourceURL.stopAccessingSecurityScopedResource() }
+                }
+                await self?.importPhotoFromSelectedURL(sourceURL)
+            }
+        }
+    }
+
+    func exportOriginalPhoto(onCompletion: @escaping () -> Void = {}) {
+        guard let asset = document.visionImageAsset else {
+            message = "Original isn’t available on this Mac"
+            onCompletion()
+            return
+        }
+        let panel = NSSavePanel()
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = "vision-original.\(asset.originalFileExtension)"
+        panel.message = "Export the exact photo you originally chose."
+        panel.prompt = "Export Original"
+
+        panel.begin { [weak self] response in
+            defer { onCompletion() }
+            guard response == .OK, let destinationURL = panel.url else { return }
+            let isAccessing = destinationURL.startAccessingSecurityScopedResource()
+            Task { @MainActor in
+                defer {
+                    if isAccessing { destinationURL.stopAccessingSecurityScopedResource() }
+                }
+                guard let self else { return }
+                do {
+                    try await self.imageStore.exportOriginal(asset: asset, to: destinationURL)
+                    self.message = "Original exported"
+                    AppDiagnostics.event(
+                        .personalizationPhotoExport,
+                        category: .storage,
+                        outcome: .success
+                    )
+                } catch {
+                    self.message = "Couldn’t export the original"
+                    AppDiagnostics.failure(
+                        .personalizationPhotoExport,
+                        category: .storage,
+                        error: error
+                    )
+                }
             }
         }
     }
 
     func removePhoto() {
-        guard canEdit else { return }
-        let previousURL = photoURL
-        previewPhotoURL = nil
-        var candidate = document
-        let now = Date()
-        candidate.photoFileName = nil
-        candidate.updatedAt = now
         Task { [weak self] in
-            guard let self else { return }
-            let result = await persist(
-                candidate,
-                entityKind: "asset",
-                entityID: "vision-photo",
-                changedFields: ["photoFileName", "updatedAt"],
-                at: now,
-                precondition: .none
-            )
-            guard case .success = result else { return }
-            document = candidate
-            if let previousURL, previousURL.path.hasPrefix(assetsURL.path) {
-                try? await Task.detached { try FileManager.default.removeItem(at: previousURL) }.value
+            await self?.performPhotoRemoval()
+        }
+    }
+
+    func performPhotoRemoval() async {
+        guard canEdit else { return }
+        await imageReconciliationTask?.value
+        let previousAsset = document.visionImageAsset
+        let previousLegacyFileName = document.photoFileName
+        previewPhotoURL = nil
+        let now = Date()
+        do {
+            let removal = try await imageStore.remove(
+                currentAsset: previousAsset,
+                currentLegacyFileName: previousLegacyFileName
+            ) {
+                try await self.commitPhotoRemoval(
+                    expectedAsset: previousAsset,
+                    expectedLegacyFileName: previousLegacyFileName,
+                    at: now
+                )
             }
+            document = removal.commitValue.snapshot.content.personalization
+            message = "Photo removed"
+            if removal.cleanupNeeded {
+                AppDiagnostics.failure(
+                    .personalizationPhotoCleanup,
+                    category: .storage,
+                    domain: "FounderOfficeImageCleanup",
+                    code: 1
+                )
+            }
+        } catch {
+            message = "Couldn’t remove that photo"
+            AppDiagnostics.failure(.personalizationPhotoImport, category: .storage, error: error)
         }
     }
 
@@ -416,49 +487,114 @@ final class PersonalizationStore: ObservableObject {
         persist()
     }
 
-    private func importPhoto(from sourceURL: URL) async {
+    func importPhotoFromSelectedURL(_ sourceURL: URL) async {
         guard canEdit else { return }
+        await imageReconciliationTask?.value
+        let previousAsset = document.visionImageAsset
+        let previousLegacyFileName = document.photoFileName
         do {
-            let fileExtension = sourceURL.pathExtension.isEmpty ? "jpg" : sourceURL.pathExtension.lowercased()
-            let fileName = "vision-\(UUID().uuidString.lowercased()).\(fileExtension)"
-            let destinationURL = assetsURL.appendingPathComponent(fileName)
-            let assetsURL = assetsURL
-            try await Task.detached(priority: .userInitiated) {
-                guard let source = CGImageSourceCreateWithURL(sourceURL as CFURL, nil),
-                      CGImageSourceGetCount(source) > 0 else {
-                    throw CocoaError(.fileReadCorruptFile)
-                }
-                try FileManager.default.createDirectory(at: assetsURL, withIntermediateDirectories: true)
-                try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
-            }.value
-
-            let previousURL = photoURL
-            var candidate = document
             let now = Date()
-            candidate.photoFileName = fileName
-            candidate.schemaVersion = max(candidate.schemaVersion, 6)
-            candidate.updatedAt = now
-            let result = await persist(
-                candidate,
-                entityKind: "asset",
-                entityID: fileName,
-                changedFields: ["photoFileName", "updatedAt"],
-                at: now,
-                precondition: .none
-            )
-            guard case .success = result else {
-                try? await Task.detached { try FileManager.default.removeItem(at: destinationURL) }.value
-                throw CocoaError(.fileWriteUnknown)
+            let replacement = try await imageStore.replace(
+                sourceURL: sourceURL,
+                currentAsset: previousAsset,
+                currentLegacyFileName: previousLegacyFileName,
+                importedAt: now
+            ) { asset in
+                try await self.commitImportedPhoto(
+                    asset,
+                    expectedAsset: previousAsset,
+                    expectedLegacyFileName: previousLegacyFileName,
+                    at: now
+                )
             }
-            document = candidate
-
-            if let previousURL, previousURL.path.hasPrefix(assetsURL.path), previousURL != destinationURL {
-                try? await Task.detached { try FileManager.default.removeItem(at: previousURL) }.value
-            }
+            document = replacement.commitValue.snapshot.content.personalization
             message = "Photo updated"
+            AppDiagnostics.event(
+                .personalizationPhotoImport,
+                category: .storage,
+                outcome: .success
+            )
+            if replacement.cleanupNeeded {
+                AppDiagnostics.failure(
+                    .personalizationPhotoCleanup,
+                    category: .storage,
+                    domain: "FounderOfficeImageCleanup",
+                    code: 1
+                )
+            }
         } catch {
             message = "Couldn’t save that photo"
             AppDiagnostics.failure(.personalizationPhotoImport, category: .storage, error: error)
+        }
+    }
+
+    private func commitImportedPhoto(
+        _ asset: PersonalizationImageAsset,
+        expectedAsset: PersonalizationImageAsset?,
+        expectedLegacyFileName: String?,
+        at date: Date
+    ) async throws -> WorkspaceTransactionResult {
+        guard document.visionImageAsset == expectedAsset,
+              document.photoFileName == expectedLegacyFileName else {
+            throw PersonalizationImageStoreError.canonicalChanged
+        }
+        var candidate = document
+        candidate.photoFileName = asset.displayFileName
+        candidate.visionImageAsset = asset
+        candidate.schemaVersion = max(candidate.schemaVersion, 6)
+        candidate.updatedAt = date
+        let result = await persist(
+            candidate,
+            entityKind: "asset",
+            entityID: asset.id.uuidString.lowercased(),
+            changedFields: ["photoFileName", "visionImageAsset", "updatedAt"],
+            at: date,
+            precondition: .none
+        )
+        return try result.get()
+    }
+
+    private func commitPhotoRemoval(
+        expectedAsset: PersonalizationImageAsset?,
+        expectedLegacyFileName: String?,
+        at date: Date
+    ) async throws -> WorkspaceTransactionResult {
+        guard document.visionImageAsset == expectedAsset,
+              document.photoFileName == expectedLegacyFileName else {
+            throw PersonalizationImageStoreError.canonicalChanged
+        }
+        var candidate = document
+        candidate.photoFileName = nil
+        candidate.visionImageAsset = nil
+        candidate.updatedAt = date
+        let result = await persist(
+            candidate,
+            entityKind: "asset",
+            entityID: "vision-photo",
+            changedFields: ["photoFileName", "visionImageAsset", "updatedAt"],
+            at: date,
+            precondition: .none
+        )
+        return try result.get()
+    }
+
+    private func reconcileImageFiles() {
+        imageReconciliationTask = Task { [weak self] in
+            guard let self else { return }
+            let referencedAsset = document.visionImageAsset
+            let referencedLegacyFileName = document.photoFileName
+            let reconciliation = await imageStore.reconcile(
+                referencedAsset: referencedAsset,
+                referencedLegacyFileName: referencedLegacyFileName
+            )
+            if reconciliation.failureCount > 0 {
+                AppDiagnostics.failure(
+                    .personalizationPhotoCleanup,
+                    category: .storage,
+                    domain: "FounderOfficeImageCleanup",
+                    code: 2
+                )
+            }
         }
     }
 
