@@ -19,6 +19,7 @@ A website build is publishable only when all of these statements are true:
 11. The customer executable has no external Codex runner, workspace override, or preview/capture hook.
 12. The privacy manifest exactly matches the committed, reviewed privacy policy.
 13. The final ZIP matches the SHA-256 and sealed `release.json` record.
+14. The app embeds the independently reviewed HTTPS update-feed URL and Ed25519 public key, and its sandbox includes outbound network access without temporary exceptions.
 
 `Scripts/release-macos.sh` enforces this contract. It stops at the first failed condition and does not leave a publishable directory.
 
@@ -39,6 +40,7 @@ Complete these steps before the first external beta:
    - `CloudKit` in `com.apple.developer.icloud-services`;
    - `com.apple.security.personal-information.calendars` set to `true`;
    - `com.apple.security.files.user-selected.read-only` set to `true` so a customer can explicitly choose a vision image without broad file access.
+   - `com.apple.security.network.client` set to `true` for the signed update feed and production sync transport.
 
    Debug, JIT, unsigned-memory, library-validation bypass, and temporary-exception entitlements are release blockers.
 7. Store notarization credentials in Keychain. Do not put an Apple password, private key, issuer ID, or notary token in the repository.
@@ -70,6 +72,9 @@ export FOUNDER_OFFICE_ICLOUD_CONTAINER="iCloud.FINAL_ORGANIZATION_CONTAINER"
 export FOUNDER_OFFICE_DEVELOPER_ID_APPLICATION="Developer ID Application: ORGANIZATION (TEAM_ID)"
 export FOUNDER_OFFICE_PROVISIONING_PROFILE_SPECIFIER="PRODUCTION_PROFILE_NAME"
 export FOUNDER_OFFICE_NOTARY_PROFILE="founders-office-notary"
+export FOUNDER_OFFICE_UPDATE_FEED_URL="https://DOWNLOAD_ORIGIN/channel/macos-beta-v1.json"
+export FOUNDER_OFFICE_UPDATE_CHANNEL="beta"
+export FOUNDER_OFFICE_UPDATE_PUBLIC_KEY="REVIEWED_ED25519_PUBLIC_KEY"
 ```
 
 Do not copy the example values. The script validates the installed certificate, provisioning choice, bundle, signature, and effective entitlements.
@@ -97,6 +102,7 @@ The script performs an Xcode archive and Developer ID export, then:
 - requires a passing Gatekeeper assessment;
 - creates the final ZIP and SHA-256;
 - creates strict-schema `release.json` metadata and copies the release record and verification evidence;
+- embeds and verifies the exact signed-update feed URL and Ed25519 public key;
 - runs an independent extraction-and-verification pass;
 - writes a new read-only directory under `dist/releases/macos/`.
 
@@ -122,6 +128,9 @@ Scripts/verify-macos-release.sh \
   --expected-team-id TEAM_ID \
   --expected-bundle-id FINAL_ORGANIZATION_BUNDLE_ID \
   --expected-icloud-container iCloud.FINAL_ORGANIZATION_CONTAINER \
+  --expected-update-feed-url https://DOWNLOAD_ORIGIN/channel/macos-beta-v1.json \
+  --expected-update-channel beta \
+  --expected-update-public-key REVIEWED_ED25519_PUBLIC_KEY \
   --expected-archs "arm64 x86_64"
 ```
 
@@ -138,6 +147,8 @@ python3 Scripts/prepare-website-mac-release.py \
 
 Set `FOUNDER_OFFICE_APPROVED_DOWNLOAD_ORIGIN` to that same bare HTTPS origin in the website deployment. CI exercises deny fixtures so a malformed or manually loosened manifest stays closed.
 
+After the public artifact and evidence pass this verification, create the signed staged feed with `FounderOfficeUpdateSigner` and the process in [Signed Mac update channel](MAC_SIGNED_UPDATE_CHANNEL.md). Publishing an unsigned, hand-edited, redirected, or cross-origin feed does not open a download in the app.
+
 Publish the final Team ID, bundle ID, iCloud container, and supported architectures on the release page. Pass them to the verifier independently; do not trust identity values read only from the downloaded metadata.
 
 ## Clean-Mac acceptance
@@ -152,6 +163,7 @@ Use a macOS account that has never installed Founder's Office. It must not have 
 6. Repeat with iCloud sync enabled and confirm production CloudKit behavior.
 7. Restart the Mac and verify the launch-at-login choice.
 8. Install the next signed build and verify preferences and user data survive the upgrade.
+9. Verify a staged signed feed offers the exact immutable URL, a paused feed offers nothing, and a higher corrective build carries rollback evidence without attempting a downgrade.
 
 Record the Mac model, macOS version, artifact SHA-256, and results in the release record. A test on the development Mac is not sufficient evidence.
 

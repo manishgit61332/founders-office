@@ -7,6 +7,8 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 ### Added
 
 - Bounded personal-image assets with separate 1,600-pixel display and 960-pixel sync variants, plus an explicit **Export original…** action that preserves the exact customer-selected file.
+- An Ed25519-signed Mac update channel with bounded exact-URL checks, deterministic staged rollout, pause and rollback evidence, a manual status-menu check, and an automatic check limited to once per day after onboarding.
+- An offline update-feed signer that reads its private key only from a non-synchronizing macOS Keychain item or bounded standard input and refuses to replace existing output.
 - A compact Mac Health page for local data, sync, Calendar, startup, and assistant execution, with content-free last-success signals and only bounded, reversible retry or settings actions.
 - A preview-first redacted support report that shows every allow-listed field before saving and excludes Moves, events, names, paths, prompts, credentials, and log payloads by construction.
 - An XcodeGen macOS UI-test target with deterministic scenarios for transactional Appearance, Move planning, Calendar creation, popup restoration, and support-report preview.
@@ -20,7 +22,7 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 - A durable workspace identity that prevents missing or partially restored cloud data from being replaced with newly seeded defaults.
 - A privacy-safe crash-loop detector, MetricKit runtime-health foundation, and a minimal safe mode with an incident identifier and explicit retry.
 - A hardened Developer ID release and independent verification pipeline for signing, notarization, stapling, entitlements, architectures, checksums, and archive safety.
-- More than one hundred automated Swift tests with code coverage, release-archive attack fixtures, plus website build, lint, release-policy, security-header, and dependency-audit gates in CI.
+- More than one hundred automated Swift tests with code coverage, release-archive and signed-update attack fixtures, plus website build, lint, release-policy, security-header, and dependency-audit gates in CI.
 - Architecture records for primary account identity, connector authorization, safe auto-remediation, and the Mac → iOS → Windows → Android platform sequence.
 - A complete macOS application icon set and bundled Instrument Serif license notice.
 - Privacy, support, security, and license surfaces on the private website, with restrictive browser security headers.
@@ -81,6 +83,7 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 ### Security
 
 - Exact vision-image originals remain local and are never used by the notch or sync path; strict UUID-derived filenames, source/decompression/output bounds, private permissions, and path-safe cleanup prevent traversal and unbounded image handling.
+- Direct Mac releases now require an independently reviewed update-feed URL, Ed25519 public key, and sandbox network-client entitlement; the app opens only a signed immutable download URL and never installs code itself.
 - Support export is a local-only 16-field allow list; it never scrapes logs or workspace files and requires an exact on-screen preview before Save.
 - Product-auth callbacks now use an explicit provisional-custom-scheme or HTTPS universal-link allowlist, rejecting executable, file, data, insecure HTTP, credential-bearing, and route-mismatched URLs.
 - Production identity configuration accepts only HTTPS endpoints and Supabase publishable/legacy-anon keys; secret and service-role credentials are rejected before the client is created.
