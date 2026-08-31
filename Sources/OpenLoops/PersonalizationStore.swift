@@ -18,7 +18,7 @@ extension AccentPalette {
 }
 
 @MainActor
-final class PersonalizationStore: ObservableObject {
+final class PersonalizationStore: ObservableObject, AppearanceDraftCommitBoundary {
     @Published private(set) var document: PersonalizationDocument
     @Published private(set) var appearanceDraftSession: AppearanceDraftSession?
     @Published private(set) var isSavingAppearance = false
@@ -255,7 +255,9 @@ final class PersonalizationStore: ObservableObject {
 
     func useLatestAppearance() {
         guard var session = appearanceDraftSession else { return }
-        session.useLatest(document.resolvedAppearance)
+        if !session.useLatest() {
+            session.useLatest(document.resolvedAppearance)
+        }
         appearanceDraftSession = session
     }
 
@@ -283,15 +285,25 @@ final class PersonalizationStore: ObservableObject {
             appearanceDraftSession = session
             return .failed(failure)
         }
-        guard overwritingConflict || !session.hasConflict else {
-            return .conflict
-        }
-        if overwritingConflict {
-            session.resolveConflictKeepingDraft()
-        }
 
+        isSavingAppearance = true
+        defer { isSavingAppearance = false }
+        let result = await session.save(
+            policy: overwritingConflict ? .overwriteLatest : .requireBaseline,
+            using: self
+        )
+        appearanceDraftSession = session
+        return result
+    }
+
+    func commit(
+        _ request: AppearanceDraftCommitRequest
+    ) async -> AppearanceDraftCommitResult {
+        guard canEdit else {
+            return .failed(recoveryState.message)
+        }
         let now = Date()
-        var committedAppearance = session.draft
+        var committedAppearance = request.appearance
         committedAppearance.updatedAt = now
 
         var candidate = document
@@ -300,36 +312,32 @@ final class PersonalizationStore: ObservableObject {
         candidate.accent = Self.nearestLegacyAccent(to: committedAppearance.accent.primaryColor)
         candidate.updatedAt = now
 
-        isSavingAppearance = true
-        defer { isSavingAppearance = false }
         let result = await persist(
             candidate,
             entityKind: "appearance",
             entityID: "appearance",
             changedFields: ["appearance", "accent", "updatedAt"],
             at: now,
-            precondition: overwritingConflict ? .none : .appearanceRevision(session.baselineRevision)
+            precondition: request.policy == .overwriteLatest
+                ? .none
+                : .appearanceRevision(request.baselineRevision)
         )
 
         switch result {
         case .success:
             lastWriteSucceeded = true
             document = candidate
-            session.markSaved(committedAppearance)
-            appearanceDraftSession = session
             message = "Saved locally"
-            return .saved
+            return .saved(committedRevision: now)
         case let .failure(error):
             lastWriteSucceeded = false
             if let repositoryError = error as? WorkspaceRepositoryError,
                case .componentConflict = repositoryError {
-                session.observeCommitted(self.session.snapshot.content.personalization.resolvedAppearance)
-                appearanceDraftSession = session
-                return .conflict
+                return .conflict(
+                    latest: session.snapshot.content.personalization.resolvedAppearance
+                )
             }
             let failure = "Couldn’t save changes"
-            session.markFailed(failure)
-            appearanceDraftSession = session
             message = "Save failed"
             AppDiagnostics.failure(.personalizationSave, category: .storage, error: error)
             return .failed(failure)

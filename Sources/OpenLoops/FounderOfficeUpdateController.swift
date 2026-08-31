@@ -252,7 +252,7 @@ final class FounderOfficeUpdateController {
 
     private func present(_ alert: NSAlert) -> NSApplication.ModalResponse {
         if let notchController {
-            return notchController.runSystemAlert(alert, reason: "update-channel")
+            return notchController.runSystemAlert(alert)
         }
         return alert.runModal()
     }

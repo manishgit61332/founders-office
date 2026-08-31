@@ -6,18 +6,25 @@ final class TransientPresentationCoordinator {
     nonisolated static let statusMenuIdentifier = NSUserInterfaceItemIdentifier(
         "foundersOffice.status-menu"
     )
+    nonisolated static let nativeColorPanelIdentifier = NSUserInterfaceItemIdentifier(
+        "foundersOffice.native-color-panel"
+    )
 
     @MainActor
     private final class TrackedWindow {
         let window: NSWindow
         let originalLevel: NSWindow.Level
         let originalCollectionBehavior: NSWindow.CollectionBehavior
+        let originalIdentifier: NSUserInterfaceItemIdentifier?
+        let originalAccessibilityIdentifier: String
         let wasChildOfHost: Bool
 
         init(window: NSWindow, hostWindow: NSWindow) {
             self.window = window
             originalLevel = window.level
             originalCollectionBehavior = window.collectionBehavior
+            originalIdentifier = window.identifier
+            originalAccessibilityIdentifier = window.accessibilityIdentifier()
             wasChildOfHost = window.parent === hostWindow
         }
     }
@@ -68,6 +75,16 @@ final class TransientPresentationCoordinator {
         return lease
     }
 
+    /// Starts an unscoped portable presentation request. The caller owns the
+    /// returned lease and must balance it with `end(_:)`.
+    @discardableResult
+    func present(request: TransientPresentationRequest) -> UUID {
+        begin(
+            "transient.\(request.kind.rawValue)",
+            suspendsHost: request.hostDisposition == .suspendExpandedHost
+        )
+    }
+
     func end(_ lease: UUID) {
         guard session.end(lease) else { return }
         restoreAfterLastPresentation()
@@ -98,6 +115,28 @@ final class TransientPresentationCoordinator {
         return lease
     }
 
+    /// Starts a portable request whose lifetime is scoped to one native owner.
+    @discardableResult
+    func present(
+        request: TransientPresentationRequest,
+        scopedTo object: AnyObject
+    ) -> UUID {
+        present(request: request, scopedTo: ObjectIdentifier(object))
+    }
+
+    /// Starts a portable request whose lifetime is scoped to an existing
+    /// AppKit object identity without putting that identity in FounderOfficeCore.
+    @discardableResult
+    func present(
+        request: TransientPresentationRequest,
+        scopedTo key: ObjectIdentifier
+    ) -> UUID {
+        if let existing = objectLeases[key] { return existing }
+        let lease = present(request: request)
+        objectLeases[key] = lease
+        return lease
+    }
+
     func endScoped(to object: AnyObject) {
         endScoped(key: ObjectIdentifier(object))
     }
@@ -110,18 +149,22 @@ final class TransientPresentationCoordinator {
         end(lease)
     }
 
-    func present(_ window: NSWindow, reason: String) {
+    func present(_ window: NSWindow, request: TransientPresentationRequest) {
         let key = ObjectIdentifier(window)
         guard trackedWindows[key] == nil else {
             elevate(window)
             return
         }
-        _ = beginScoped(to: window, reason: reason, suspendsHost: true)
+        _ = present(request: request, scopedTo: window)
         guard let hostWindow else {
             endScoped(key: key)
             return
         }
         trackedWindows[key] = TrackedWindow(window: window, hostWindow: hostWindow)
+        if window is NSColorPanel {
+            window.identifier = Self.nativeColorPanelIdentifier
+            window.setAccessibilityIdentifier(Self.nativeColorPanelIdentifier.rawValue)
+        }
         elevate(window)
     }
 
@@ -273,6 +316,8 @@ final class TransientPresentationCoordinator {
         }
         tracked.window.level = tracked.originalLevel
         tracked.window.collectionBehavior = tracked.originalCollectionBehavior
+        tracked.window.identifier = tracked.originalIdentifier
+        tracked.window.setAccessibilityIdentifier(tracked.originalAccessibilityIdentifier)
     }
 
     private func owns(_ window: NSWindow) -> Bool {

@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.founders-office.test/client-interfaces/draft-v1/schemas/transient-presentation.schema.json",
+  "title": "Founder’s Office transient presentation request draft v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "kind", "hostDisposition"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "kind": {
+      "enum": [
+        "colorPanel",
+        "datePicker",
+        "menu",
+        "fileChooser",
+        "popover",
+        "inNotchEditor",
+        "systemAlert"
+      ]
+    },
+    "hostDisposition": {
+      "enum": ["retainExpandedHost", "suspendExpandedHost"]
+    }
+  }
+}

@@ -20,7 +20,8 @@ The non-distribution `--ui-testing` launch hook uses a caller-provided temporary
 
 ## Generate and run
 
-Use full Xcode and the pinned XcodeGen version from CI:
+Use a logged-in Mac with full Xcode, then generate the project with XcodeGen
+2.46.0 and run the same serial suite that CI runs:
 
 ```sh
 xcodegen generate --spec project.yml
@@ -29,10 +30,36 @@ xcodebuild \
   -scheme FoundersOfficeMac \
   -configuration Debug \
   -destination 'platform=macOS' \
+  -derivedDataPath /tmp/FoundersOffice-DerivedData-UI \
+  -resultBundlePath /tmp/FoundersOfficeMacUITests.xcresult \
+  -parallel-testing-enabled NO \
+  -maximum-parallel-testing-workers 1 \
   test
 ```
 
-For a compile-only gate:
+Choose a result-bundle path that does not already exist.
+
+That command uses the developer signing configured by Xcode. The credential-free
+GitHub runner overrides the debug app to an ad-hoc signature and removes the
+provisional product entitlements for this deterministic synthetic-data suite:
+
+```sh
+xcodebuild \
+  -project FoundersOffice.xcodeproj \
+  -scheme FoundersOfficeMac \
+  -configuration Debug \
+  -destination 'platform=macOS' \
+  -derivedDataPath /tmp/FoundersOffice-DerivedData-UI \
+  -resultBundlePath /tmp/FoundersOfficeMacUITests.xcresult \
+  -parallel-testing-enabled NO \
+  -maximum-parallel-testing-workers 1 \
+  CODE_SIGN_STYLE=Manual \
+  CODE_SIGN_IDENTITY='-' \
+  CODE_SIGN_ENTITLEMENTS='' \
+  test
+```
+
+For a compile-only diagnostic that is **not** a release gate:
 
 ```sh
 xcodebuild \
@@ -44,8 +71,19 @@ xcodebuild \
   build-for-testing
 ```
 
-The tests need an unlocked interactive macOS session with Accessibility permission for the Xcode test runner. The native colour-panel scenario skips, with a reason, when the SDK does not expose `NSColorPanel` as an accessibility window.
+The tests need an unlocked interactive macOS session with Accessibility
+permission for the Xcode test runner. Founder’s Office assigns the owned native
+colour panel a stable accessibility identifier while it is presented. If the
+panel is not exposed, both required colour-panel scenarios fail; they never skip
+or silently reduce the release gate to a compile check. GitHub Actions uploads
+the failed `.xcresult` bundle for inspection.
 
 ## Current local verification gap
 
-This repository was implemented on a host whose active developer directory is Command Line Tools, not full Xcode. SwiftPM builds, strict-concurrency checks, release builds, source parsing, and pure model tests run locally. The pinned XcodeGen binary generated the project locally and the generated Mac scheme includes `FoundersOfficeMacUITests`. The `XCTest` module, `xcodebuild build-for-testing`, and XCUITest execution are unavailable without full Xcode. They must run on the full-Xcode CI runner or a development Mac before the Mac beta gate is accepted. No local XCUITest pass is claimed.
+This repository was implemented on a host whose active developer directory is
+Command Line Tools, not full Xcode. SwiftPM builds, strict-concurrency checks,
+release builds, source parsing, and pure model tests run locally. XCUITest
+execution is unavailable on that host. The workflow now invokes `xcodebuild
+test` on its full-Xcode runner, but that runner result must exist and be green
+before the Mac beta gate is accepted. Editing the workflow is not execution
+evidence, and no local XCUITest pass is claimed.

@@ -2794,7 +2794,13 @@ struct NotchBoardView: View {
     private func choosePhotoWithLease() {
         personalization.choosePhoto(
             onPresent: { panel in
-                presentation.transients.present(panel, reason: "photo-picker")
+                presentation.transients.present(
+                    panel,
+                    request: TransientPresentationRequest(
+                        kind: .fileChooser,
+                        hostDisposition: .suspendExpandedHost
+                    )
+                )
             },
             onCompletion: { panel in
                 Task { @MainActor in
@@ -2807,7 +2813,13 @@ struct NotchBoardView: View {
     private func exportOriginalPhotoWithLease() {
         personalization.exportOriginalPhoto(
             onPresent: { panel in
-                presentation.transients.present(panel, reason: "photo-export")
+                presentation.transients.present(
+                    panel,
+                    request: TransientPresentationRequest(
+                        kind: .fileChooser,
+                        hostDisposition: .suspendExpandedHost
+                    )
+                )
             },
             onCompletion: { panel in
                 Task { @MainActor in
@@ -3268,7 +3280,13 @@ struct NotchBoardView: View {
         panel.canCreateDirectories = true
         panel.nameFieldStringValue = "founders-office-support.json"
         panel.message = "Save the exact redacted fields shown in the preview."
-        presentation.transients.present(panel, reason: "support-report-save")
+        presentation.transients.present(
+            panel,
+            request: TransientPresentationRequest(
+                kind: .fileChooser,
+                hostDisposition: .suspendExpandedHost
+            )
+        )
         panel.begin { response in
             Task { @MainActor in
                 defer { presentation.transients.endScoped(to: panel) }
