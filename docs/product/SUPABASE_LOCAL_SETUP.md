@@ -102,6 +102,14 @@ transport, and an event-driven coordinator. These components are exercised only
 by tests. The customer Mac binary does not construct the transport or enable a
 cloud-sync UI, so their presence is not a claim that production sync is live.
 
+The test-only provisioning boundary also separates a new local claim from a
+returning-account attachment. Attachment calls `bootstrap_workspace` without a
+local UUID, validates the account/provider/device, reads the complete bounded
+feed from cursor zero, and atomically establishes the replacement snapshot,
+binding, cursor, remote revisions, and dedupe evidence. Customer-authored local
+data requires an immutable export before that transaction. This does not enable
+the Account & Sync controls in a distribution build.
+
 Runtime enablement requires an explicit local workspace claim, matching restored
 product session, approved production endpoint and publishable key, deployed and
 integration-tested RPC contract, RLS evidence, revocation decision, migration
