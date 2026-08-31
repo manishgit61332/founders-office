@@ -24,15 +24,15 @@ Founder's Office is a native Apple focus surface that turns the MacBook notch in
 - Adds new moves from an action inside the Moves screen, separate from global navigation.
 - Development builds can run research, writing, analysis, code, and local file work through Codex.
 - Customer Release builds compile external Codex CLI execution out until the scoped-helper and consent launch gates pass.
-- Watches `openloops.json` for external changes.
-- Regenerates `OPEN_LOOPS_CONTEXT.md` after every change.
-- Saves a workspace name, accent colour, chosen local photo, and one measurable primary goal in `personalization.json`.
+- Commits Moves, personalization, goals, Appearance, tombstones, revisions, and pending sync operations through one serialized SQLite workspace.
+- Generates bounded read-only JSON and Markdown projections after committed changes without rewriting the legacy migration files.
+- Saves a workspace name, accent colour, chosen local photo, and one measurable primary goal in the same transaction authority.
 - Shows the primary goal as a target, current progress, and days left; it can also work as a deadline-only finish line when no numeric target is entered.
 - Uses native SF Symbols and macOS-style hover, selected, and pressed states throughout navigation.
 - Reads the next 30 days from every calendar enabled in macOS Internet Accounts—including iCloud and multiple Google accounts—after the user grants calendar access.
 - Refetches events when EventKit reports a database change, when the app becomes active, whenever the notch opens, and on a 60-second safety interval.
 
-The local JSON file is the canonical runtime state. The generated Markdown file is readable local context for the user and Codex. Both are intentionally excluded from Git.
+`founders-office.sqlite3` is the canonical runtime state. JSON and Markdown under `Generated/revision-*` are bounded read-only projections for the user and local tools. The exact legacy JSON pair and Recovery data remain untouched migration inputs. All runtime data is intentionally excluded from Git.
 
 Each workspace also has a local `workspace-identity.json`. First-run storage consent is bound to that durable identifier. If a previously known workspace is missing either canonical document, the app enters recovery before it can create defaults or start iCloud sync.
 
@@ -65,14 +65,15 @@ python3 Scripts/openloops.py delete "Approve new homepage"
 python3 Scripts/openloops.py restore "Approve new homepage"
 ```
 
-The open panel reloads the JSON file automatically. The legacy filenames remain stable so existing workspaces continue to decode while the customer-facing product uses “Moves.”
+`list` reads the newest generated projection after SQLite migration. Mutating commands are supported only for an unmigrated legacy workspace; the script refuses to edit generated JSON once the database exists. Use the app for post-migration changes so the revision, receipt, and outbox remain atomic.
 
 ## Useful files
 
-- `openloops.json`: canonical structured state.
+- `founders-office.sqlite3`: canonical transactional workspace state.
+- `openloops.json` and `personalization.json`: preserved one-time migration inputs in legacy workspaces.
+- `Generated/revision-*`: bounded read-only JSON and Markdown projections.
 - `workspace-identity.json`: durable local workspace identity used to bind storage consent and fail closed during partial restores.
-- `OPEN_LOOPS_CONTEXT.md`: generated human-readable state.
-- `Scripts/openloops.py`: safe interface for Codex and terminal updates.
+- `Scripts/openloops.py`: read interface for migrated projections and mutation interface only for unmigrated legacy workspaces.
 - `Scripts/validate-notch-geometry.swift`: verifies top-edge attachment and hardware-notch-safe header regions on the current display.
 - `Resources/Info.plist`: contains the shared workspace path.
 - `MOTION_SPEC.md`: documents the reveal, retraction, and reversal physics.

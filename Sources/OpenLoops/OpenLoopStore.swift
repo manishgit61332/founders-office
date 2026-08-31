@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import Foundation
 import FounderOfficeCore
 
@@ -21,42 +22,74 @@ enum PlanningUpdateResult {
 
 @MainActor
 final class OpenLoopStore: ObservableObject {
-    @Published private(set) var items: [OpenLoop] = []
+    @Published private(set) var items: [OpenLoop]
     @Published private(set) var lastSavedAt: Date?
-    @Published private(set) var syncMessage = "Loading…"
+    @Published private(set) var syncMessage = "Loaded"
     @Published private(set) var recentlyDeleted: OpenLoop?
     @Published private(set) var recoveryState: WorkspaceRecoveryState = .ready
 
+    let session: WorkspaceSession
     let rootURL: URL
-    let jsonURL: URL
-    let contextURL: URL
 
-    private var watcher: Timer?
-    private var lastKnownModificationDate: Date?
-    private let encoder: JSONEncoder
-    private let decoder: JSONDecoder
+    var jsonURL: URL {
+        (session.projectionURL ?? session.projectionsRootURL)
+            .appendingPathComponent("openloops.json")
+    }
 
-    init(rootURL: URL = WorkspaceLocator.openLoopsRoot) {
-        self.rootURL = rootURL
-        self.jsonURL = rootURL.appendingPathComponent("openloops.json")
-        self.contextURL = rootURL.appendingPathComponent("OPEN_LOOPS_CONTEXT.md")
+    var contextURL: URL {
+        (session.projectionURL ?? session.projectionsRootURL)
+            .appendingPathComponent("OPEN_LOOPS_CONTEXT.md")
+    }
 
-        encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-        encoder.dateEncodingStrategy = .iso8601
-        decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
+    private struct PendingWrite {
+        var document: OpenLoopsDocument
+        var entityKind: String
+        var entityID: String
+        var changedFields: [String]
+        var fieldClocks: [String: Date]
+        var completion: ((Result<Void, Error>) -> Void)?
+    }
 
-        loadFromDisk()
+    private var writes: [PendingWrite] = []
+    private var isWriting = false
+    private var lastWriteSucceeded = true
+    private var cancellable: AnyCancellable?
+
+    init(session: WorkspaceSession) {
+        self.session = session
+        rootURL = session.rootURL
+        let document = session.snapshot.content.openLoops
+        items = document.items
+        lastSavedAt = document.updatedAt
+
+        cancellable = session.$snapshot
+            .dropFirst()
+            .sink { [weak self] snapshot in
+                guard let self, self.writes.isEmpty, !self.isWriting else { return }
+                self.apply(snapshot.content.openLoops)
+            }
+
         #if !FOUNDER_OFFICE_DISTRIBUTION
         applyPreviewOverrides()
         #endif
-        startWatching()
     }
 
     func stop() {
-        watcher?.invalidate()
-        watcher = nil
+        for write in writes {
+            write.completion?(.failure(CancellationError()))
+        }
+        writes.removeAll()
+        cancellable?.cancel()
+        cancellable = nil
+    }
+
+    var hasPendingWrites: Bool { isWriting || !writes.isEmpty }
+
+    func waitForPendingWrites() async -> Bool {
+        for _ in 0..<500 where hasPendingWrites {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return !hasPendingWrites && lastWriteSucceeded
     }
 
     var activeCount: Int {
@@ -74,30 +107,35 @@ final class OpenLoopStore: ObservableObject {
     }
 
     func toggleCompletion(_ item: OpenLoop) {
-        guard canEdit else { return }
-        guard let index = items.firstIndex(where: { $0.id == item.id }) else { return }
-        items[index] = OpenLoopRules.toggledCompletion(items[index], at: Date())
-        persist()
+        guard canEdit, let index = items.firstIndex(where: { $0.id == item.id }) else { return }
+        let now = Date()
+        items[index] = OpenLoopRules.toggledCompletion(items[index], at: now)
+        enqueueCurrentDocument(
+            entityKind: "move",
+            entityID: item.id.uuidString.lowercased(),
+            changedFields: ["status", "previousStatus", "completedAt", "updatedAt"],
+            at: now
+        )
     }
 
     func move(_ item: OpenLoop, to status: LoopStatus) {
-        guard canEdit else { return }
-        guard let index = items.firstIndex(where: { $0.id == item.id }) else { return }
-        items[index] = OpenLoopRules.moved(items[index], to: status, at: Date())
-        persist()
+        guard canEdit, let index = items.firstIndex(where: { $0.id == item.id }) else { return }
+        let now = Date()
+        items[index] = OpenLoopRules.moved(items[index], to: status, at: now)
+        enqueueCurrentDocument(
+            entityKind: "move",
+            entityID: item.id.uuidString.lowercased(),
+            changedFields: ["status", "previousStatus", "completedAt", "updatedAt"],
+            at: now
+        )
     }
 
     func updatePlanning(
         id: UUID,
         priorityChange: PlanningPriorityChange,
         deadlineChange: PlanningDeadlineChange
-    ) -> PlanningUpdateResult {
-        // Pull in a CLI or cloud write that may have landed since the watcher
-        // last fired, then apply only the fields this editor actually changed.
-        loadFromDisk(force: true)
-        guard canEdit else {
-            return .failed(recoveryState.message)
-        }
+    ) async -> PlanningUpdateResult {
+        guard canEdit else { return .failed(recoveryState.message) }
         guard let index = items.firstIndex(where: { $0.id == id && $0.deletedAt == nil }) else {
             return .failed("This task is no longer available.")
         }
@@ -105,10 +143,8 @@ final class OpenLoopStore: ObservableObject {
         let current = items[index]
         let resolvedPriority: LoopPriority
         switch priorityChange {
-        case .unchanged:
-            resolvedPriority = current.priority
-        case let .set(priority):
-            resolvedPriority = priority
+        case .unchanged: resolvedPriority = current.priority
+        case let .set(priority): resolvedPriority = priority
         }
 
         let currentPlanningDay = current.dueAt.map(PlanningDate.day(fromStored:))
@@ -118,8 +154,6 @@ final class OpenLoopStore: ObservableObject {
             resolvedDueAt = current.dueAt
         case let .set(date):
             let selectedDay = PlanningDate.day(fromLocal: date)
-            // Preserve a legacy time component when the calendar day did not change.
-            // Deadlines are all-day values, so a priority-only edit must not rewrite one.
             resolvedDueAt = currentPlanningDay == selectedDay
                 ? current.dueAt
                 : PlanningDate.storedDate(for: selectedDay)
@@ -131,30 +165,51 @@ final class OpenLoopStore: ObservableObject {
             return .unchanged
         }
 
-        let updated = OpenLoopRules.updatedPlanning(
+        let now = Date()
+        items[index] = OpenLoopRules.updatedPlanning(
             current,
             priority: resolvedPriority,
             dueAt: resolvedDueAt,
-            at: Date()
+            at: now
         )
+        let changedFields = [
+            current.priority == resolvedPriority ? nil : "priority",
+            current.priority == resolvedPriority ? nil : "priorityUpdatedAt",
+            current.dueAt == resolvedDueAt ? nil : "dueAt",
+            current.dueAt == resolvedDueAt ? nil : "dueAtUpdatedAt",
+            "updatedAt"
+        ].compactMap { $0 }
 
-        items[index] = updated
-        guard persist() else {
-            items[index] = current
+        let result = await persistCurrentDocument(
+            entityKind: "move",
+            entityID: id.uuidString.lowercased(),
+            changedFields: changedFields,
+            at: now
+        )
+        switch result {
+        case .success:
+            lastWriteSucceeded = true
+            return .saved
+        case .failure:
             return .failed("Couldn’t save those changes. Check the workspace and try again.")
         }
-        return .saved
     }
 
-    func add(title: String, details: String = "", status: LoopStatus, priority: LoopPriority, dueAt: Date?) {
+    func add(
+        title: String,
+        details: String = "",
+        status: LoopStatus,
+        priority: LoopPriority,
+        dueAt: Date?
+    ) {
         guard canEdit else { return }
         let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleanTitle.isEmpty else { return }
         let now = Date()
-
+        let id = UUID()
         items.append(
             OpenLoop(
-                id: UUID(),
+                id: id,
                 title: cleanTitle,
                 details: details.trimmingCharacters(in: .whitespacesAndNewlines),
                 status: status,
@@ -170,86 +225,178 @@ final class OpenLoopStore: ObservableObject {
                 dueAtUpdatedAt: now
             )
         )
-        persist()
+        enqueueCurrentDocument(
+            entityKind: "move",
+            entityID: id.uuidString.lowercased(),
+            changedFields: ["title", "details", "status", "priority", "dueAt", "createdAt", "updatedAt"],
+            at: now
+        )
     }
 
     func delete(_ item: OpenLoop) {
-        guard canEdit else { return }
-        guard let index = items.firstIndex(where: { $0.id == item.id && $0.deletedAt == nil }) else { return }
-        items[index] = OpenLoopRules.softDeleted(items[index], at: Date())
+        guard canEdit,
+              let index = items.firstIndex(where: { $0.id == item.id && $0.deletedAt == nil }) else { return }
+        let now = Date()
+        items[index] = OpenLoopRules.softDeleted(items[index], at: now)
         recentlyDeleted = items[index]
-        persist()
+        enqueueCurrentDocument(
+            entityKind: "move",
+            entityID: item.id.uuidString.lowercased(),
+            changedFields: ["deletedAt", "updatedAt"],
+            at: now
+        )
     }
 
     func undoLastDelete() {
-        guard canEdit else { return }
-        guard let deleted = recentlyDeleted,
+        guard canEdit,
+              let deleted = recentlyDeleted,
               let index = items.firstIndex(where: { $0.id == deleted.id }) else { return }
-        items[index] = OpenLoopRules.restored(items[index], at: Date())
+        let now = Date()
+        items[index] = OpenLoopRules.restored(items[index], at: now)
         recentlyDeleted = nil
-        persist()
+        enqueueCurrentDocument(
+            entityKind: "move",
+            entityID: deleted.id.uuidString.lowercased(),
+            changedFields: ["deletedAt", "updatedAt"],
+            at: now
+        )
     }
 
     func reload() {
-        loadFromDisk(force: true)
+        Task { [weak self] in
+            guard let self else { return }
+            _ = await session.refresh()
+            guard writes.isEmpty, !isWriting else { return }
+            apply(session.snapshot.content.openLoops)
+        }
     }
 
     func openContextFile() {
-        NSWorkspace.shared.open(contextURL)
+        Task { [weak self] in
+            guard let self, await session.refreshProjectionNow() else { return }
+            NSWorkspace.shared.open(contextURL)
+        }
     }
 
     func revealDataFolder() {
-        NSWorkspace.shared.activateFileViewerSelecting([jsonURL])
+        NSWorkspace.shared.activateFileViewerSelecting([session.databaseURL])
     }
 
-    private func loadFromDisk(force: Bool = false) {
-        do {
-            try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+    private func enqueueCurrentDocument(
+        entityKind: String,
+        entityID: String,
+        changedFields: [String],
+        at date: Date
+    ) {
+        let document = OpenLoopsDocument(schemaVersion: 3, updatedAt: date, items: items)
+        enqueue(
+            PendingWrite(
+                document: document,
+                entityKind: entityKind,
+                entityID: entityID,
+                changedFields: changedFields,
+                fieldClocks: Dictionary(uniqueKeysWithValues: changedFields.map { ($0, date) }),
+                completion: nil
+            )
+        )
+    }
 
-            guard FileManager.default.fileExists(atPath: jsonURL.path) else {
-                guard !recoveryState.requiresRecovery else {
-                    syncMessage = recoveryState.message
-                    return
-                }
-                items = Self.seedItems
-                persist()
-                return
-            }
-
-            let modificationDate = fileModificationDate()
-            if !force, modificationDate == lastKnownModificationDate, !items.isEmpty { return }
-
-            let data: Data
-            do {
-                data = try Data(contentsOf: jsonURL)
-            } catch {
-                requireRecovery(preservedCopyName: nil, error: error)
-                return
-            }
-
-            let decodedDocument: OpenLoopsDocument
-            do {
-                decodedDocument = try decoder.decode(OpenLoopsDocument.self, from: data)
-            } catch {
-                let preservedCopyName = (try? CorruptFileQuarantine.preserve(jsonURL))?.lastPathComponent
-                requireRecovery(preservedCopyName: preservedCopyName, error: error)
-                return
-            }
-            let document = OpenLoopsMigration.upgradingPlanningSchema(decodedDocument)
-
-            items = document.items
-            lastSavedAt = document.updatedAt
-            lastKnownModificationDate = modificationDate
-            recoveryState = .ready
-            syncMessage = "Synced"
-
-            if !FileManager.default.fileExists(atPath: contextURL.path) {
-                try writeContext(updatedAt: document.updatedAt)
-            }
-        } catch {
-            syncMessage = "Sync error"
-            AppDiagnostics.failure(.moveStoreLoad, category: .storage, error: error)
+    private func persistCurrentDocument(
+        entityKind: String,
+        entityID: String,
+        changedFields: [String],
+        at date: Date
+    ) async -> Result<Void, Error> {
+        let document = OpenLoopsDocument(schemaVersion: 3, updatedAt: date, items: items)
+        return await withCheckedContinuation { continuation in
+            enqueue(
+                PendingWrite(
+                    document: document,
+                    entityKind: entityKind,
+                    entityID: entityID,
+                    changedFields: changedFields,
+                    fieldClocks: Dictionary(uniqueKeysWithValues: changedFields.map { ($0, date) }),
+                    completion: { continuation.resume(returning: $0) }
+                )
+            )
         }
+    }
+
+    private func enqueue(_ write: PendingWrite) {
+        writes.append(write)
+        processNextWriteIfNeeded()
+    }
+
+    private func processNextWriteIfNeeded() {
+        guard !isWriting, let write = writes.first else { return }
+        isWriting = true
+        syncMessage = "Saving…"
+
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let result = try await session.commit(
+                    WorkspacePatchMutation(
+                        entityKind: write.entityKind,
+                        entityID: write.entityID,
+                        changedFields: write.changedFields,
+                        fieldClocks: write.fieldClocks,
+                        patch: .openLoops(write.document),
+                        createdAt: write.document.updatedAt
+                    )
+                )
+                finish(write: write, result: .success(()), snapshot: result.snapshot)
+            } catch {
+                finish(write: write, result: .failure(error), snapshot: session.snapshot)
+            }
+        }
+    }
+
+    private func finish(
+        write: PendingWrite,
+        result: Result<Void, Error>,
+        snapshot: WorkspaceRepositorySnapshot
+    ) {
+        if !writes.isEmpty { writes.removeFirst() }
+        isWriting = false
+
+        switch result {
+        case .success:
+            lastWriteSucceeded = true
+            lastSavedAt = snapshot.content.openLoops.updatedAt
+            syncMessage = "Saved"
+            write.completion?(.success(()))
+        case let .failure(error):
+            lastWriteSucceeded = false
+            let abandoned = writes
+            writes.removeAll()
+            apply(snapshot.content.openLoops)
+            syncMessage = "Save failed"
+            write.completion?(.failure(error))
+            for pending in abandoned {
+                pending.completion?(.failure(error))
+            }
+            AppDiagnostics.failure(.moveStoreSave, category: .storage, error: error)
+        }
+
+        if writes.isEmpty {
+            apply(session.snapshot.content.openLoops)
+        }
+        processNextWriteIfNeeded()
+    }
+
+    private func apply(_ document: OpenLoopsDocument) {
+        items = document.items
+        lastSavedAt = document.updatedAt
+        recoveryState = .ready
+    }
+
+    private var canEdit: Bool {
+        guard !recoveryState.requiresRecovery else {
+            syncMessage = recoveryState.message
+            return false
+        }
+        return true
     }
 
     #if !FOUNDER_OFFICE_DISTRIBUTION
@@ -261,118 +408,6 @@ final class OpenLoopStore: ObservableObject {
         recentlyDeleted = items[index]
     }
     #endif
-
-    @discardableResult
-    private func persist() -> Bool {
-        guard canEdit else { return false }
-        let now = Date()
-        let document = OpenLoopsDocument(schemaVersion: 3, updatedAt: now, items: items)
-
-        do {
-            try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
-            let data = try encoder.encode(document)
-            try data.write(to: jsonURL, options: .atomic)
-            lastSavedAt = now
-            lastKnownModificationDate = fileModificationDate()
-            syncMessage = "Saved"
-        } catch {
-            syncMessage = "Save failed"
-            AppDiagnostics.failure(.moveStoreSave, category: .storage, error: error)
-            return false
-        }
-
-        // The JSON document is canonical. A derived Markdown refresh must never
-        // turn a successful task save into an apparent failure.
-        do {
-            try writeContext(updatedAt: now)
-        } catch {
-            AppDiagnostics.failure(.moveStoreSave, category: .storage, error: error)
-        }
-        return true
-    }
-
-    private func startWatching() {
-        watcher = Timer.scheduledTimer(withTimeInterval: 1.25, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                self?.reloadIfChanged()
-            }
-        }
-        watcher?.tolerance = 0.25
-    }
-
-    private func reloadIfChanged() {
-        guard let modificationDate = fileModificationDate() else { return }
-        guard modificationDate != lastKnownModificationDate else { return }
-        loadFromDisk(force: true)
-    }
-
-    private func fileModificationDate() -> Date? {
-        let attributes = try? FileManager.default.attributesOfItem(atPath: jsonURL.path)
-        return attributes?[.modificationDate] as? Date
-    }
-
-    private var canEdit: Bool {
-        guard !recoveryState.requiresRecovery else {
-            syncMessage = recoveryState.message
-            return false
-        }
-        return true
-    }
-
-    private func requireRecovery(preservedCopyName: String?, error: Error) {
-        lastKnownModificationDate = fileModificationDate()
-        recoveryState = WorkspaceRecoveryState(
-            affectedComponents: [.openLoops],
-            preservedCopyNames: preservedCopyName.map { [$0] } ?? []
-        )
-        syncMessage = recoveryState.message
-        AppDiagnostics.failure(.moveStoreLoad, category: .storage, error: error)
-    }
-
-    private func writeContext(updatedAt: Date) throws {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_GB")
-        formatter.timeZone = .current
-        formatter.dateFormat = "d MMMM yyyy, HH:mm zzz"
-
-        var markdown = "# Founder's Office Moves\n\n"
-        markdown += "Updated: \(formatter.string(from: updatedAt))\n\n"
-        markdown += "> This file is generated from `openloops.json`. Use the widget or `Scripts/openloops.py` to make changes.\n\n"
-
-        for status in LoopStatus.allCases {
-            let sectionItems = items(in: status)
-            markdown += "## \(status.title) (\(sectionItems.count))\n\n"
-
-            if sectionItems.isEmpty {
-                markdown += "_None._\n\n"
-                continue
-            }
-
-            for item in sectionItems {
-                let checkbox = status == .done ? "x" : " "
-                markdown += "- [\(checkbox)] **\(item.priority.rawValue)** — \(item.title)"
-                if let dueAt = item.dueAt {
-                    let dueFormatter = DateFormatter()
-                    dueFormatter.locale = Locale(identifier: "en_GB")
-                    dueFormatter.dateFormat = "d MMM yyyy"
-                    let displayDate = PlanningDate.localDate(fromStored: dueAt)
-                    markdown += " · Due \(dueFormatter.string(from: displayDate))"
-                }
-                markdown += "\n"
-                if !item.details.isEmpty {
-                    markdown += "  - \(item.details)\n"
-                }
-                markdown += "  - ID: `\(item.id.uuidString.lowercased())`\n"
-            }
-            markdown += "\n"
-        }
-
-        try markdown.write(to: contextURL, atomically: true, encoding: .utf8)
-    }
-
-    private static var seedItems: [OpenLoop] {
-        []
-    }
 }
 
 enum WorkspaceLocator {

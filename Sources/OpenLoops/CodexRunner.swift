@@ -170,7 +170,7 @@ final class CodexRunner: ObservableObject {
         - You may read existing workspace material and create or update task-specific deliverables.
         - Do not send messages, publish content, schedule calls, make purchases, use private credentials, or make other irreversible external changes.
         - Do not delete existing files.
-        - Do not edit openloops.json or OPEN_LOOPS_CONTEXT.md and do not mark the task done. The user will review the result first.
+        - Do not edit founders-office.sqlite3, generated workspace projections, or mark the task done. The user will review the result first.
         - Finish with a concise summary of what you completed and the exact files to review.
         """
     }
