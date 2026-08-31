@@ -14,6 +14,7 @@ const expectedKeys = new Set([
   'verifiedFromCanonicalManifest',
   'signedAndNotarized',
   'cleanMacAccepted',
+  'acceptanceAttestation',
   'version',
   'build',
   'teamID',
@@ -23,6 +24,7 @@ const expectedKeys = new Set([
   'releaseCommit',
   'sourceManifestSHA256',
   'acceptanceRecordSHA256',
+  'canonicalManifestURL',
   'acceptanceRecordURL',
   'downloadURL',
 ]);
@@ -30,6 +32,31 @@ const expectedKeys = new Set([
 /** @param {unknown} value */
 function isRecord(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** @param {string} value */
+function canonicalHTTPSOrigin(value) {
+  try {
+    const origin = new URL(value);
+    const labels = origin.hostname.split('.');
+    if (
+      value !== origin.origin ||
+      origin.protocol !== 'https:' ||
+      origin.username !== '' ||
+      origin.password !== '' ||
+      origin.pathname !== '/' ||
+      origin.search !== '' ||
+      origin.hash !== '' ||
+      labels.some(
+        (label) => !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label),
+      )
+    ) {
+      return null;
+    }
+    return origin.origin;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -53,6 +80,7 @@ export function validateMacReleaseManifest(candidate, approvedOrigin) {
     candidate.verifiedFromCanonicalManifest !== true ||
     candidate.signedAndNotarized !== true ||
     candidate.cleanMacAccepted !== true ||
+    candidate.acceptanceAttestation !== 'operator-confirmed' ||
     typeof candidate.version !== 'string' ||
     !/^\d+\.\d+\.\d+$/.test(candidate.version) ||
     !Number.isSafeInteger(candidate.build) ||
@@ -65,6 +93,7 @@ export function validateMacReleaseManifest(candidate, approvedOrigin) {
     !/^[a-f0-9]{64}$/.test(candidate.sourceManifestSHA256) ||
     typeof candidate.acceptanceRecordSHA256 !== 'string' ||
     !/^[a-f0-9]{64}$/.test(candidate.acceptanceRecordSHA256) ||
+    typeof candidate.canonicalManifestURL !== 'string' ||
     typeof candidate.acceptanceRecordURL !== 'string' ||
     typeof candidate.releaseCommit !== 'string' ||
     !/^[a-f0-9]{40}$/.test(candidate.releaseCommit) ||
@@ -81,47 +110,25 @@ export function validateMacReleaseManifest(candidate, approvedOrigin) {
     return null;
   }
 
-  try {
-    const downloadURL = new URL(candidate.downloadURL);
-    const acceptanceRecordURL = new URL(candidate.acceptanceRecordURL);
-    const origin = new URL(approvedOrigin);
-    const expectedPath = `/releases/macos/v${candidate.version}/build-${candidate.build}/${candidate.releaseCommit}/${expectedFileName}`;
-    const expectedAcceptancePath = `/releases/macos/v${candidate.version}/build-${candidate.build}/${candidate.releaseCommit}/clean-mac-acceptance.json`;
-
-    if (
-      downloadURL.protocol !== 'https:' ||
-      origin.protocol !== 'https:' ||
-      origin.username !== '' ||
-      origin.password !== '' ||
-      origin.pathname !== '/' ||
-      origin.search !== '' ||
-      origin.hash !== '' ||
-      downloadURL.username !== '' ||
-      downloadURL.password !== '' ||
-      downloadURL.origin !== origin.origin ||
-      downloadURL.pathname !== expectedPath ||
-      downloadURL.search !== '' ||
-      downloadURL.hash !== '' ||
-      acceptanceRecordURL.protocol !== 'https:' ||
-      acceptanceRecordURL.username !== '' ||
-      acceptanceRecordURL.password !== '' ||
-      acceptanceRecordURL.origin !== origin.origin ||
-      acceptanceRecordURL.pathname !== expectedAcceptancePath ||
-      acceptanceRecordURL.search !== '' ||
-      acceptanceRecordURL.hash !== ''
-    ) {
-      return null;
-    }
-
-    return {
-      downloadURL: downloadURL.toString(),
-      version: candidate.version,
-      build: candidate.build,
-      sha256: candidate.sha256,
-      teamID: candidate.teamID,
-      sizeBytes: candidate.artifactSizeBytes,
-    };
-  } catch {
+  const origin = canonicalHTTPSOrigin(approvedOrigin);
+  if (origin === null) {
     return null;
   }
+  const releaseBase = `${origin}/releases/macos/v${candidate.version}/build-${candidate.build}/${candidate.releaseCommit}`;
+  if (
+    candidate.downloadURL !== `${releaseBase}/${expectedFileName}` ||
+    candidate.canonicalManifestURL !== `${releaseBase}/release.json` ||
+    candidate.acceptanceRecordURL !== `${releaseBase}/clean-mac-acceptance.json`
+  ) {
+    return null;
+  }
+
+  return {
+    downloadURL: candidate.downloadURL,
+    version: candidate.version,
+    build: candidate.build,
+    sha256: candidate.sha256,
+    teamID: candidate.teamID,
+    sizeBytes: candidate.artifactSizeBytes,
+  };
 }

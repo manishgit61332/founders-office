@@ -137,7 +137,7 @@ Scripts/verify-macos-release.sh \
 
 That verification does not enable the website. Complete the clean-Mac gate below first.
 
-After the clean-Mac record is uploaded at its exact immutable path, generate the website gate from the same canonical metadata, verified downloaded ZIP, and acceptance bytes. The artifact and acceptance URLs must use the same immutable version/build/commit path; `latest` aliases, redirects, query aliases, and a hand-edited website manifest are rejected:
+After the clean-Mac record is uploaded at its exact immutable path, generate the website gate from the same canonical metadata, verified downloaded ZIP, and acceptance bytes. The artifact, manifest, and acceptance URLs must use the same immutable version/build/commit path and one canonical lowercase HTTPS origin without an explicit default port. `latest` aliases, redirects, query aliases, and parser-normalized URL aliases are rejected:
 
 ```bash
 python3 Scripts/prepare-website-mac-release.py \
@@ -202,7 +202,7 @@ python3 Scripts/record-macos-clean-acceptance.py \
   --output /path/to/clean-mac-acceptance.json
 ```
 
-Upload this file once at the declared acceptance-record URL, download it again, and use those downloaded bytes when preparing the website gate. A test on the development Mac is not sufficient evidence. Passing confirmations without performing the tests is a release-process violation, not acceptance.
+Upload this file once at the declared acceptance-record URL, download it again, and use those downloaded bytes when preparing the website gate. A test on the development Mac is not sufficient evidence. Passing confirmations without performing the tests is a release-process violation, not acceptance. The file is labeled as operator-confirmed evidence; it is not a cryptographic attestation. The command refuses to overwrite an existing acceptance file, so a correction requires a new release evidence path rather than replacing prior evidence.
 
 ## Failure and rollback
 

@@ -4,6 +4,7 @@
   "verifiedFromCanonicalManifest": false,
   "signedAndNotarized": false,
   "cleanMacAccepted": false,
+  "acceptanceAttestation": "",
   "version": "",
   "build": 0,
   "teamID": "",
@@ -13,6 +14,7 @@
   "releaseCommit": "",
   "sourceManifestSHA256": "",
   "acceptanceRecordSHA256": "",
+  "canonicalManifestURL": "",
   "acceptanceRecordURL": "",
   "downloadURL": ""
 }
