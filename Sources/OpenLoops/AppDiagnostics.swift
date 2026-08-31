@@ -33,6 +33,8 @@ enum AppDiagnostics {
         case moveStoreSave = "move_store.save"
         case personalizationLoad = "personalization.load"
         case personalizationPhotoImport = "personalization.photo.import"
+        case personalizationPhotoExport = "personalization.photo.export"
+        case personalizationPhotoCleanup = "personalization.photo.cleanup"
         case personalizationSave = "personalization.save"
         case reversalCaptureDirectoryCreate = "reversal_capture.directory.create"
         case safeModeEnter = "safe_mode.enter"
