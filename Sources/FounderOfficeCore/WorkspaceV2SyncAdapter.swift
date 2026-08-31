@@ -9,7 +9,6 @@ public enum WorkspaceV2SyncAdapterError: Error, Equatable, Sendable {
     case invalidValue(String)
     case emptyWireMutation
     case profileRequiresReviewedBootstrap
-    case primaryGoalRequiresDecimalMigration
     case assetTransferDisabled
 }
 
@@ -39,44 +38,11 @@ public enum WorkspaceV2SyncAdapter {
             throw WorkspaceLocalOperationError.invalidMetadata
         }
 
-        let mapped: MappedMutation
-        switch envelope.record {
-        case let .move(move):
-            mapped = try mapMove(
-                move,
-                action: envelope.action,
-                localFields: envelope.changedFields,
-                localClocks: operation.fieldClocks
-            )
-        case let .appearance(appearance):
-            mapped = try mapAppearance(
-                appearance,
-                workspaceID: workspaceID,
-                localFields: envelope.changedFields,
-                localClocks: operation.fieldClocks
-            )
-        case .profile:
-            throw WorkspaceV2SyncAdapterError.profileRequiresReviewedBootstrap
-        case let .workspace(workspace):
-            mapped = try mapWorkspace(
-                workspace,
-                workspaceID: workspaceID,
-                localFields: envelope.changedFields,
-                localClocks: operation.fieldClocks
-            )
-        case let .primaryGoal(goal):
-            _ = goal
-            throw WorkspaceV2SyncAdapterError.primaryGoalRequiresDecimalMigration
-        case let .milestone(milestone):
-            mapped = try mapMilestone(
-                milestone,
-                action: envelope.action,
-                localFields: envelope.changedFields,
-                localClocks: operation.fieldClocks
-            )
-        case .asset:
-            throw WorkspaceV2SyncAdapterError.assetTransferDisabled
-        }
+        let mapped = try mappedMutation(
+            envelope: envelope,
+            localClocks: operation.fieldClocks,
+            workspaceID: workspaceID
+        )
 
         return try SyncOperation(
             operationID: SyncOperationID(rawValue: operation.operationID),
@@ -95,30 +61,17 @@ public enum WorkspaceV2SyncAdapter {
         snapshot: WorkspaceRepositorySnapshot,
         remoteWorkspaceID: WorkspaceID
     ) throws -> WorkspaceCanonicalBootstrapPlan {
-        if snapshot.content.personalization.visionImageAsset != nil {
+        if snapshot.content.personalization.visionImageAsset != nil
+            || snapshot.content.personalization.resolvedPhotoFileName != nil {
             throw WorkspaceV2SyncAdapterError.assetTransferDisabled
         }
 
         let workspaceID = remoteWorkspaceID
         var operations: [SyncOperation] = []
 
-        if let name = snapshot.content.personalization.workspaceName {
-            let clock = safeClock(
-                snapshot.content.personalization.updatedAt,
-                fallback: Date(timeIntervalSince1970: 0)
-            )
-            operations.append(
-                try bootstrapOperation(
-                    workspaceID: workspaceID,
-                    localRevision: snapshot.revision,
-                    entityType: .workspace,
-                    entityID: workspaceID.rawValue,
-                    changedFields: ["name"],
-                    payload: ["name": .string(name)],
-                    clock: clock
-                )
-            )
-        }
+        // bootstrap_workspace creates (or returns) the singleton workspace and
+        // its authoritative revision. Sending the name again as a base-0
+        // operation would conflict with the record that the RPC just created.
         for move in snapshot.content.openLoops.items where move.deletedAt == nil {
             let fields = [
                 "title", "details", "status", "previousStatus", "priority", "dueOn",
@@ -158,11 +111,24 @@ public enum WorkspaceV2SyncAdapter {
             )
         )
 
-        if snapshot.content.personalization.primaryGoal != nil {
-            // This branch base predates integration's canonical GoalDecimal.
-            // Fail closed here; the integration follow-up must map its exact
-            // decimalValue to SyncJSONValue.number without a Double bridge.
-            throw WorkspaceV2SyncAdapterError.primaryGoalRequiresDecimalMigration
+        if let goal = snapshot.content.personalization.primaryGoal,
+           goal.deletedAt == nil {
+            let fields = [
+                "title", "metric", "currentValue", "targetValue", "unit", "dueOn",
+                "deletedAt",
+            ]
+            let clock = safeClock(goal.updatedAt, fallback: goal.createdAt)
+            operations.append(
+                try bootstrapOperation(
+                    workspaceID: workspaceID,
+                    localRevision: snapshot.revision,
+                    entityType: .primaryGoal,
+                    entityID: goal.id,
+                    changedFields: fields,
+                    payload: primaryGoalPayload(goal, fields: Set(fields)),
+                    clock: clock
+                )
+            )
         }
 
         for milestone in snapshot.content.personalization.milestones where milestone.deletedAt == nil {
@@ -212,13 +178,61 @@ public enum WorkspaceV2SyncAdapter {
         )
     }
 
-    private struct MappedMutation {
+    struct MappedMutation {
         let entityType: SyncEntityType
         let entityID: UUID
         let action: SyncMutationAction
         let changedFields: [String]
         let fieldClocks: [String: Date]
         let payload: [String: SyncJSONValue]?
+    }
+
+    static func mappedMutation(
+        envelope: WorkspaceLocalOperationEnvelopeV2,
+        localClocks: [String: Date],
+        workspaceID: WorkspaceID
+    ) throws -> MappedMutation {
+        switch envelope.record {
+        case let .move(move):
+            return try mapMove(
+                move,
+                action: envelope.action,
+                localFields: envelope.changedFields,
+                localClocks: localClocks
+            )
+        case let .appearance(appearance):
+            return try mapAppearance(
+                appearance,
+                workspaceID: workspaceID,
+                localFields: envelope.changedFields,
+                localClocks: localClocks
+            )
+        case .profile:
+            throw WorkspaceV2SyncAdapterError.profileRequiresReviewedBootstrap
+        case let .workspace(workspace):
+            return try mapWorkspace(
+                workspace,
+                workspaceID: workspaceID,
+                localFields: envelope.changedFields,
+                localClocks: localClocks
+            )
+        case let .primaryGoal(goal):
+            return try mapPrimaryGoal(
+                goal,
+                action: envelope.action,
+                localFields: envelope.changedFields,
+                localClocks: localClocks
+            )
+        case let .milestone(milestone):
+            return try mapMilestone(
+                milestone,
+                action: envelope.action,
+                localFields: envelope.changedFields,
+                localClocks: localClocks
+            )
+        case .asset:
+            throw WorkspaceV2SyncAdapterError.assetTransferDisabled
+        }
     }
 
     private static func mapMove(
@@ -354,6 +368,44 @@ public enum WorkspaceV2SyncAdapter {
         )
     }
 
+    private static func mapPrimaryGoal(
+        _ goal: PrimaryGoal,
+        action: WorkspaceLocalOperationAction,
+        localFields: [String],
+        localClocks: [String: Date]
+    ) throws -> MappedMutation {
+        if action == .tombstone {
+            let clock = try requiredClock(for: "deletedAt", localClocks: localClocks)
+            return MappedMutation(
+                entityType: .primaryGoal,
+                entityID: goal.id,
+                action: .delete,
+                changedFields: ["deletedAt"],
+                fieldClocks: ["deletedAt": clock],
+                payload: nil
+            )
+        }
+        let mapped = try mappedFields(
+            localFields,
+            translations: [
+                "title": "title", "metric": "metric", "currentValue": "currentValue",
+                "targetValue": "targetValue", "unit": "unit", "dueAt": "dueOn",
+                "deletedAt": "deletedAt",
+            ],
+            ignored: ["createdAt", "updatedAt"],
+            entity: "primaryGoal",
+            localClocks: localClocks
+        )
+        return MappedMutation(
+            entityType: .primaryGoal,
+            entityID: goal.id,
+            action: .upsert,
+            changedFields: mapped.fields,
+            fieldClocks: mapped.clocks,
+            payload: primaryGoalPayload(goal, fields: Set(mapped.fields))
+        )
+    }
+
     private static func mappedFields(
         _ localFields: [String],
         translations: [String: String],
@@ -423,6 +475,29 @@ public enum WorkspaceV2SyncAdapter {
             case "dueAt": values[field] = .string(timestamp(milestone.dueAt))
             case "deletedAt": values[field] = milestone.deletedAt.map { .string(timestamp($0)) } ?? .null
             case "createdAt": values[field] = .string(timestamp(milestone.createdAt))
+            default: break
+            }
+        }
+        return values
+    }
+
+    private static func primaryGoalPayload(
+        _ goal: PrimaryGoal,
+        fields: Set<String>
+    ) -> [String: SyncJSONValue] {
+        var values: [String: SyncJSONValue] = [:]
+        for field in fields {
+            switch field {
+            case "title": values[field] = .string(goal.title)
+            case "metric": values[field] = .string(goal.metric)
+            case "currentValue":
+                values[field] = goal.currentValue.map { .number($0.decimalValue) } ?? .null
+            case "targetValue":
+                values[field] = goal.targetValue.map { .number($0.decimalValue) } ?? .null
+            case "unit": values[field] = .string(goal.unit.rawValue)
+            case "dueOn": values[field] = .string(dateOnly(goal.dueAt))
+            case "deletedAt":
+                values[field] = goal.deletedAt.map { .string(timestamp($0)) } ?? .null
             default: break
             }
         }

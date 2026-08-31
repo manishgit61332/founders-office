@@ -535,6 +535,293 @@ struct WorkspaceSyncRepositoryBoundaryTests {
         #expect(try await repository.syncCursor() == SyncCursor(value: 0))
         #expect(try await repository.snapshot().content.openLoops.items[0].title == "A")
     }
+
+    @Test
+    func bootstrapAttemptSurvivesPartialAcceptanceLocalRenameAndRelaunch() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.remove() }
+        var initial = fixture.snapshot(title: "Before")
+        initial.personalization.workspaceName = "Studio"
+        let repository = try await fixture.open(initial: initial)
+        let binding = try fixture.syncBinding()
+        try await repository.bindSync(binding)
+
+        let pinned = try await repository.canonicalBootstrapPlan()
+        #expect(pinned.workspaceName == "Studio")
+        #expect(!pinned.operations.contains { $0.entityType == .workspace })
+        let acceptedBootstrap = try makeBootstrapResponse(
+            binding: binding,
+            plan: pinned,
+            latestCursor: 0
+        )
+        let firstAcceptedChunk = try makePushResponse(
+            workspaceID: binding.workspaceID,
+            operations: Array(pinned.operations.prefix(1)),
+            startingCursor: 1,
+            revisionOffset: 10
+        )
+        #expect(
+            await captureSyncError {
+                try await repository.acknowledgeCanonicalBootstrap(
+                    plan: pinned,
+                    bootstrap: acceptedBootstrap,
+                    responses: [firstAcceptedChunk]
+                )
+            } == .bootstrapResponseMismatch
+        )
+        #expect(try await repository.canonicalBootstrapPlan() == pinned)
+        #expect(try await repository.pendingSyncBatch().requiresCanonicalBootstrap)
+
+        let acceptedOperations = try makePushResponse(
+            workspaceID: binding.workspaceID,
+            operations: pinned.operations,
+            startingCursor: 1,
+            revisionOffset: 10,
+            statuses: [.duplicate] + Array(
+                repeating: .accepted,
+                count: max(0, pinned.operations.count - 1)
+            )
+        )
+
+        let baseline = try await repository.snapshot()
+        var renamed = baseline.content
+        renamed.personalization.workspaceName = "Renamed after send"
+        renamed.personalization.updatedAt = fixture.date(30)
+        _ = try await repository.transact(
+            expectedRevision: baseline.revision,
+            mutation: WorkspaceMutation(
+                entityKind: "workspace",
+                entityID: "workspace",
+                changedFields: ["updatedAt", "workspaceName"],
+                fieldClocks: [
+                    "updatedAt": fixture.date(30),
+                    "workspaceName": fixture.date(30),
+                ],
+                replacement: renamed,
+                createdAt: fixture.date(30)
+            )
+        )
+
+        let reopened = try await fixture.open(initial: nil)
+        #expect(try await reopened.canonicalBootstrapPlan() == pinned)
+        _ = try await reopened.acknowledgeCanonicalBootstrap(
+            plan: pinned,
+            bootstrap: acceptedBootstrap,
+            responses: [acceptedOperations]
+        )
+
+        #expect(
+            try await reopened.remoteRevision(
+                entityType: .workspace,
+                entityID: binding.workspaceID.rawValue
+            ) == 1
+        )
+        let pending = try #require(try await reopened.pendingSyncBatch().operations.first)
+        guard case let .localEntity(envelope) = try pending.decodedLocalPayload() else {
+            Issue.record("Expected retained workspace rename")
+            return
+        }
+        let rename = try WorkspaceV2SyncAdapter.adapt(
+            operation: pending,
+            envelope: envelope,
+            remoteBaseRevision: try await reopened.remoteRevision(
+                entityType: .workspace,
+                entityID: binding.workspaceID.rawValue
+            ),
+            workspaceID: binding.workspaceID
+        )
+        #expect(rename.baseRevision == 1)
+        #expect(rename.payload?["name"] == .string("Renamed after send"))
+    }
+
+    @Test
+    func acceptedOlderLocalValueCannotOverwriteNewerPendingSameField() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.remove() }
+        let repository = try await fixture.open(initial: fixture.snapshot(title: "Before"))
+        let binding = try fixture.syncBinding()
+        try await repository.bindSync(binding)
+        try await completeBootstrap(repository: repository, binding: binding)
+
+        let initial = try await repository.snapshot()
+        var sentA = initial.content
+        sentA.openLoops.items[0].title = "Sent A"
+        sentA.openLoops.items[0].updatedAt = fixture.date(20)
+        sentA.openLoops.updatedAt = fixture.date(20)
+        _ = try await repository.transact(
+            expectedRevision: initial.revision,
+            mutation: WorkspaceMutation(
+                entityKind: "move",
+                entityID: sentA.openLoops.items[0].id.uuidString.lowercased(),
+                changedFields: ["title", "updatedAt"],
+                fieldClocks: ["title": fixture.date(20), "updatedAt": fixture.date(20)],
+                replacement: sentA,
+                createdAt: fixture.date(20)
+            )
+        )
+        let operationA = try #require(try await repository.pendingOperations().first)
+        guard case let .localEntity(envelopeA) = try operationA.decodedLocalPayload() else {
+            Issue.record("Expected operation A")
+            return
+        }
+        let baseA = try await repository.remoteRevision(
+            entityType: .move,
+            entityID: sentA.openLoops.items[0].id
+        )
+        let wireA = try WorkspaceV2SyncAdapter.adapt(
+            operation: operationA,
+            envelope: envelopeA,
+            remoteBaseRevision: baseA,
+            workspaceID: binding.workspaceID
+        )
+
+        let afterA = try await repository.snapshot()
+        var pendingB = afterA.content
+        pendingB.openLoops.items[0].title = "Pending B"
+        pendingB.openLoops.items[0].updatedAt = fixture.date(30)
+        pendingB.openLoops.updatedAt = fixture.date(30)
+        _ = try await repository.transact(
+            expectedRevision: afterA.revision,
+            mutation: WorkspaceMutation(
+                entityKind: "move",
+                entityID: pendingB.openLoops.items[0].id.uuidString.lowercased(),
+                changedFields: ["title", "updatedAt"],
+                fieldClocks: ["title": fixture.date(30), "updatedAt": fixture.date(30)],
+                replacement: pendingB,
+                createdAt: fixture.date(30)
+            )
+        )
+
+        try await repository.acknowledgeRemoteOperations(
+            [
+                try WorkspaceRemoteOperationAcknowledgement(
+                    localOperationID: operationA.operationID,
+                    entityType: .move,
+                    entityID: wireA.entityID,
+                    remoteRevision: baseA + 1,
+                    fieldClocks: wireA.fieldClocks
+                )
+            ],
+            conflicts: []
+        )
+        let acceptedA = try makeMoveChange(
+            cursor: 1,
+            operationID: operationA.operationID,
+            moveID: wireA.entityID,
+            revision: baseA + 1,
+            changedFields: ["title"],
+            title: "Sent A",
+            details: "",
+            priority: .p1,
+            dueOn: nil,
+            clock: fixture.date(20)
+        )
+        try await repository.applyRemotePage(
+            try makePullResponse(
+                workspaceID: binding.workspaceID,
+                from: 0,
+                changes: [acceptedA]
+            )
+        )
+
+        #expect(try await repository.snapshot().content.openLoops.items[0].title == "Pending B")
+        #expect(try await repository.pendingOperations().count == 1)
+        let reopened = try await fixture.open(initial: nil)
+        #expect(try await reopened.snapshot().content.openLoops.items[0].title == "Pending B")
+        let operationB = try #require(try await reopened.pendingOperations().first)
+        guard case let .localEntity(envelopeB) = try operationB.decodedLocalPayload() else {
+            Issue.record("Expected operation B")
+            return
+        }
+        let wireB = try WorkspaceV2SyncAdapter.adapt(
+            operation: operationB,
+            envelope: envelopeB,
+            remoteBaseRevision: try await reopened.remoteRevision(
+                entityType: .move,
+                entityID: wireA.entityID
+            ),
+            workspaceID: binding.workspaceID
+        )
+        try await reopened.acknowledgeRemoteOperations(
+            [
+                try WorkspaceRemoteOperationAcknowledgement(
+                    localOperationID: operationB.operationID,
+                    entityType: .move,
+                    entityID: wireB.entityID,
+                    remoteRevision: baseA + 2,
+                    fieldClocks: wireB.fieldClocks
+                )
+            ],
+            conflicts: []
+        )
+        #expect(try await reopened.pendingOperations().isEmpty)
+        #expect(try await reopened.snapshot().content.openLoops.items[0].title == "Pending B")
+    }
+
+    @Test
+    func exactInboundPrimaryGoalAndTombstonePersistWithoutOutboxEcho() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.remove() }
+        let goalID = UUID()
+        var initial = fixture.snapshot(title: "Move")
+        initial.personalization.primaryGoal = PrimaryGoal(
+            id: goalID,
+            title: "Goal",
+            metric: "MRR",
+            currentValue: 1,
+            targetValue: 2,
+            unit: .usd,
+            dueAt: PlanningDate.storedDate(for: PlanningDay(year: 2026, month: 9, day: 10)!),
+            createdAt: fixture.date(10),
+            updatedAt: fixture.date(10)
+        )
+        let repository = try await fixture.open(initial: initial)
+        let binding = try fixture.syncBinding()
+        try await repository.bindSync(binding)
+
+        let exact = try makeGoalChange(
+            cursor: 1,
+            operationID: UUID(),
+            goalID: goalID,
+            revision: 1,
+            action: .upsert,
+            changedFields: ["currentValue", "targetValue", "dueOn"],
+            currentValue: try GoalDecimal(userInput: "123.12345678"),
+            targetValue: .maximum,
+            dueOn: "2026-12-31",
+            deletedAt: nil,
+            clock: fixture.date(40)
+        )
+        try await repository.applyRemotePage(
+            try makePullResponse(workspaceID: binding.workspaceID, from: 0, changes: [exact])
+        )
+        let reopened = try await fixture.open(initial: nil)
+        let durableGoal = try #require(try await reopened.snapshot().content.personalization.primaryGoal)
+        #expect(durableGoal.currentValue?.canonicalString == "123.12345678")
+        #expect(durableGoal.targetValue == .maximum)
+        #expect(WorkspaceV2SyncAdapter.dateOnly(durableGoal.dueAt) == "2026-12-31")
+        #expect(try await reopened.pendingOperations().isEmpty)
+
+        let tombstone = try makeGoalChange(
+            cursor: 2,
+            operationID: UUID(),
+            goalID: goalID,
+            revision: 2,
+            action: .delete,
+            changedFields: ["deletedAt"],
+            currentValue: try GoalDecimal(userInput: "123.12345678"),
+            targetValue: .maximum,
+            dueOn: "2026-12-31",
+            deletedAt: fixture.date(50),
+            clock: fixture.date(50)
+        )
+        try await reopened.applyRemotePage(
+            try makePullResponse(workspaceID: binding.workspaceID, from: 1, changes: [tombstone])
+        )
+        let afterDelete = try await fixture.open(initial: nil)
+        #expect(try await afterDelete.snapshot().content.personalization.primaryGoal?.deletedAt == fixture.date(50))
+        #expect(try await afterDelete.pendingOperations().isEmpty)
+    }
 }
 
 struct WorkspaceV2SyncAdapterTests {
@@ -613,6 +900,186 @@ struct WorkspaceV2SyncAdapterTests {
                 )
             } == .profileRequiresReviewedBootstrap
         )
+    }
+
+    @Test
+    func primaryGoalAdapterPreservesExactDecimalsNilsDatesAndTombstones() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.remove() }
+        let goalID = UUID()
+        var initial = fixture.snapshot(title: "Move")
+        initial.personalization.primaryGoal = PrimaryGoal(
+            id: goalID,
+            title: "Reach the finish line",
+            metric: "MRR",
+            currentValue: try GoalDecimal(userInput: "3000.12345678"),
+            targetValue: .maximum,
+            unit: .usd,
+            dueAt: PlanningDate.storedDate(for: PlanningDay(year: 2026, month: 10, day: 30)!),
+            createdAt: fixture.date(10),
+            updatedAt: fixture.date(10)
+        )
+        let repository = try await fixture.open(initial: initial)
+        let snapshot = try await repository.snapshot()
+        let bootstrap = try WorkspaceV2SyncAdapter.canonicalBootstrapPlan(
+            snapshot: snapshot,
+            remoteWorkspaceID: WorkspaceID(rawValue: fixture.workspaceID)
+        )
+        let bootstrapGoal = try #require(bootstrap.operations.first { $0.entityType == .primaryGoal })
+        let exactCurrent = try GoalDecimal(userInput: "3000.12345678")
+        #expect(bootstrapGoal.payload?["currentValue"] == .number(exactCurrent.decimalValue))
+        #expect(bootstrapGoal.payload?["targetValue"] == .number(GoalDecimal.maximum.decimalValue))
+        #expect(bootstrapGoal.payload?["dueOn"] == .string("2026-10-30"))
+
+        var nilBootstrapSnapshot = snapshot
+        nilBootstrapSnapshot.content.personalization.primaryGoal?.currentValue = nil
+        nilBootstrapSnapshot.content.personalization.primaryGoal?.targetValue = nil
+        let nilBootstrap = try WorkspaceV2SyncAdapter.canonicalBootstrapPlan(
+            snapshot: nilBootstrapSnapshot,
+            remoteWorkspaceID: WorkspaceID(rawValue: fixture.workspaceID)
+        )
+        let nilBootstrapGoal = try #require(
+            nilBootstrap.operations.first { $0.entityType == .primaryGoal }
+        )
+        #expect(nilBootstrapGoal.payload?["currentValue"] == .null)
+        #expect(nilBootstrapGoal.payload?["targetValue"] == .null)
+
+        var nilUpdate = snapshot.content
+        nilUpdate.personalization.primaryGoal?.currentValue = nil
+        nilUpdate.personalization.primaryGoal?.targetValue = nil
+        nilUpdate.personalization.primaryGoal?.updatedAt = fixture.date(20)
+        nilUpdate.personalization.updatedAt = fixture.date(20)
+        _ = try await repository.transact(
+            expectedRevision: snapshot.revision,
+            mutation: WorkspaceMutation(
+                entityKind: "primary_goal",
+                entityID: goalID.uuidString.lowercased(),
+                changedFields: ["currentValue", "targetValue", "updatedAt"],
+                fieldClocks: [
+                    "currentValue": fixture.date(20),
+                    "targetValue": fixture.date(20),
+                    "updatedAt": fixture.date(20),
+                ],
+                replacement: nilUpdate,
+                createdAt: fixture.date(20)
+            )
+        )
+        let nilOperation = try #require(try await repository.pendingOperations().first)
+        guard case let .localEntity(nilEnvelope) = try nilOperation.decodedLocalPayload() else {
+            Issue.record("Expected goal update")
+            return
+        }
+        let nilWire = try WorkspaceV2SyncAdapter.adapt(
+            operation: nilOperation,
+            envelope: nilEnvelope,
+            remoteBaseRevision: 4,
+            workspaceID: WorkspaceID(rawValue: fixture.workspaceID)
+        )
+        #expect(nilWire.payload?["currentValue"] == .null)
+        #expect(nilWire.payload?["targetValue"] == .null)
+
+        let afterNil = try await repository.snapshot()
+        var deleted = afterNil.content
+        deleted.personalization.primaryGoal?.deletedAt = fixture.date(30)
+        deleted.personalization.primaryGoal?.updatedAt = fixture.date(30)
+        deleted.personalization.updatedAt = fixture.date(30)
+        _ = try await repository.transact(
+            expectedRevision: afterNil.revision,
+            mutation: WorkspaceMutation(
+                entityKind: "primary_goal",
+                entityID: goalID.uuidString.lowercased(),
+                changedFields: ["deletedAt", "updatedAt"],
+                fieldClocks: ["deletedAt": fixture.date(30), "updatedAt": fixture.date(30)],
+                replacement: deleted,
+                createdAt: fixture.date(30)
+            )
+        )
+        let tombstoneOperation = try #require(try await repository.pendingOperations().last)
+        guard case let .localEntity(tombstoneEnvelope) = try tombstoneOperation.decodedLocalPayload() else {
+            Issue.record("Expected goal tombstone")
+            return
+        }
+        let tombstone = try WorkspaceV2SyncAdapter.adapt(
+            operation: tombstoneOperation,
+            envelope: tombstoneEnvelope,
+            remoteBaseRevision: 5,
+            workspaceID: WorkspaceID(rawValue: fixture.workspaceID)
+        )
+        #expect(tombstone.action == .delete)
+        #expect(tombstone.changedFields == ["deletedAt"])
+        #expect(tombstone.payload == nil)
+    }
+
+    @Test
+    func legacyResolvedPhotoBlocksBootstrapWithoutAssetMetadata() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.remove() }
+        var initial = fixture.snapshot(title: "Move")
+        initial.personalization.photoFileName = "legacy-photo.jpg"
+        let repository = try await fixture.open(initial: initial)
+        let binding = try fixture.syncBinding()
+        try await repository.bindSync(binding)
+        do {
+            _ = try await repository.canonicalBootstrapPlan()
+            Issue.record("Expected legacy photo bootstrap to remain disabled")
+        } catch let error as WorkspaceV2SyncAdapterError {
+            #expect(error == .assetTransferDisabled)
+        }
+    }
+
+    @Test
+    func responseSingletonEntityIDsMustMatchOuterWorkspace() throws {
+        let workspaceID = WorkspaceID(rawValue: UUID())
+        let wrongID = UUID()
+        let clock = Date(timeIntervalSince1970: 40)
+        let timestamp = WorkspaceV2SyncAdapter.timestamp(clock)
+        let workspace = try SyncChange(
+            cursor: SyncCursor(value: 1),
+            operationID: SyncOperationID(rawValue: UUID()),
+            entityType: .workspace,
+            entityID: wrongID,
+            action: .upsert,
+            revision: 1,
+            changedFields: ["name"],
+            changedAt: clock,
+            record: [
+                "id": .string(wrongID.uuidString.lowercased()),
+                "name": .string("Wrong singleton"),
+                "revision": .integer(1),
+                "fieldClocks": .object(["name": .string(timestamp)]),
+                "createdAt": .string(timestamp),
+                "updatedAt": .string(timestamp),
+            ]
+        )
+        #expect(throws: SyncContractValidationError.invalidResponse) {
+            try workspace.validate(for: workspaceID)
+        }
+
+        let appearance = try SyncChange(
+            cursor: SyncCursor(value: 1),
+            operationID: SyncOperationID(rawValue: UUID()),
+            entityType: .appearance,
+            entityID: wrongID,
+            action: .upsert,
+            revision: 1,
+            changedFields: ["preferences", "schemaVersion"],
+            changedAt: clock,
+            record: [
+                "id": .string(wrongID.uuidString.lowercased()),
+                "schemaVersion": .integer(6),
+                "preferences": .object([:]),
+                "revision": .integer(1),
+                "fieldClocks": .object([
+                    "preferences": .string(timestamp),
+                    "schemaVersion": .string(timestamp),
+                ]),
+                "createdAt": .string(timestamp),
+                "updatedAt": .string(timestamp),
+            ]
+        )
+        #expect(throws: SyncContractValidationError.invalidResponse) {
+            try appearance.validate(for: workspaceID)
+        }
     }
 }
 
@@ -1194,6 +1661,25 @@ private func captureAdapterError<Result>(
     }
 }
 
+private func completeBootstrap(
+    repository: SQLiteWorkspaceRepository,
+    binding: WorkspaceSyncBinding
+) async throws {
+    let plan = try await repository.canonicalBootstrapPlan()
+    _ = try await repository.acknowledgeCanonicalBootstrap(
+        plan: plan,
+        bootstrap: makeBootstrapResponse(binding: binding, plan: plan, latestCursor: 0),
+        responses: [
+            makePushResponse(
+                workspaceID: binding.workspaceID,
+                operations: plan.operations,
+                startingCursor: 1,
+                revisionOffset: 0
+            )
+        ]
+    )
+}
+
 private func makeMoveChange(
     cursor: Int64,
     operationID: UUID,
@@ -1225,6 +1711,48 @@ private func makeMoveChange(
             clockFields: changedFields,
             clock: clock
         )
+    )
+}
+
+private func makeGoalChange(
+    cursor: Int64,
+    operationID: UUID,
+    goalID: UUID,
+    revision: Int64,
+    action: SyncMutationAction,
+    changedFields: [String],
+    currentValue: GoalDecimal?,
+    targetValue: GoalDecimal?,
+    dueOn: String,
+    deletedAt: Date?,
+    clock: Date
+) throws -> SyncChange {
+    let timestamp = WorkspaceV2SyncAdapter.timestamp(clock)
+    return try SyncChange(
+        cursor: SyncCursor(value: cursor),
+        operationID: SyncOperationID(rawValue: operationID),
+        entityType: .primaryGoal,
+        entityID: goalID,
+        action: action,
+        revision: revision,
+        changedFields: changedFields,
+        changedAt: clock,
+        record: [
+            "id": .string(goalID.uuidString.lowercased()),
+            "title": .string("Exact goal"),
+            "metric": .string("MRR"),
+            "currentValue": currentValue.map { .number($0.decimalValue) } ?? .null,
+            "targetValue": targetValue.map { .number($0.decimalValue) } ?? .null,
+            "unit": .string("usd"),
+            "dueOn": .string(dueOn),
+            "deletedAt": deletedAt.map { .string(WorkspaceV2SyncAdapter.timestamp($0)) } ?? .null,
+            "revision": .integer(revision),
+            "fieldClocks": .object(
+                Dictionary(uniqueKeysWithValues: changedFields.map { ($0, .string(timestamp)) })
+            ),
+            "createdAt": .string(WorkspaceV2SyncAdapter.timestamp(Date(timeIntervalSince1970: 10))),
+            "updatedAt": .string(timestamp),
+        ]
     )
 }
 
@@ -1386,7 +1914,8 @@ private func makePushResponse(
     workspaceID: WorkspaceID,
     operations: [SyncOperation],
     startingCursor: Int64,
-    revisionOffset: Int64
+    revisionOffset: Int64,
+    statuses: [SyncOperationStatus]? = nil
 ) throws -> SyncPushResponse {
     struct Encoded: Encodable {
         let contractVersion: Int
@@ -1394,10 +1923,13 @@ private func makePushResponse(
         let latestCursor: SyncCursor
         let results: [SyncOperationResult]
     }
+    guard statuses == nil || statuses?.count == operations.count else {
+        throw WorkspaceSyncRepositoryError.bootstrapResponseMismatch
+    }
     let results = try operations.enumerated().map { index, operation in
         try SyncOperationResult(
             operationID: operation.operationID,
-            status: .accepted,
+            status: statuses?[index] ?? .accepted,
             revision: revisionOffset + Int64(index + 1),
             cursor: SyncCursor(value: startingCursor + Int64(index)),
             conflict: nil
