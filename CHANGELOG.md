@@ -19,7 +19,7 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 - Transactional Appearance editing with live preview, explicit Save Changes and Discard actions, conflict choices, retryable save errors, and an unsaved-quit guard.
 - A centralized transient-presentation lifecycle that collapses the expanded notch for native panels, menus, and popovers, keeps overlapping interactions balanced, and restores the notch and keyboard focus after the final popup closes.
 - A credential-free Supabase Auth and Postgres contract foundation for Google and Apple product identities, single-owner cross-platform sync, deterministic offline field merging, export, and erasure.
-- Durable immutable-operation receipts, pull-only device cursors, exact-decimal goals, and fail-closed private-asset export/erasure manifests for the sync contract.
+- Durable immutable-operation receipts, pull-only device cursors, exact-decimal goal values at the wire-contract boundary, and fail-closed private-asset export/erasure manifests for the sync contract.
 - First-class synced milestone/countdown records so personalization dates survive bootstrap, pull, and export.
 - A gated Founder’s Office download website whose Mac download remains unavailable until a signed and notarized release URL is configured.
 - A versioned, local-first Mac onboarding flow for the user’s reviewed name, optional Calendar access, optional launch at login, the first Move, and notch interaction rehearsal.
@@ -66,6 +66,7 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Fixed
 
+- Keyboard-opened colour panels now inherit the notch's interaction lease even when the pointer is elsewhere, and a failed Move or personalization write blocks quit until a later durable retry succeeds.
 - Automatic update throttling is now isolated by the reviewed feed URL, channel, and signing key, so a channel move or key rotation is checked immediately instead of inheriting another channel's delay.
 - Repeated mutations in large workspaces no longer amplify the SQLite outbox by one full canonical snapshot per edit, and multiline Move details remain valid during strict v2 validation and schema-1 migration.
 - Failed photo commits immediately roll back newly prepared files, successful replacement/removal retires prior owned variants only after the canonical SQLite commit, and launch reconciliation safely retries interrupted cleanup.

@@ -293,6 +293,37 @@ struct WorkspaceSessionIntegrationTests {
     }
 
     @Test
+    func genericPersonalizationWriteFailureBlocksQuitUntilASuccessfulRetry() async throws {
+        let fixture = try MacStorageFixture()
+        defer { fixture.remove() }
+        let session = try await WorkspaceSession.open(
+            rootURL: fixture.root,
+            workspaceID: UUID(),
+            initialSnapshot: fixture.snapshot(moveCount: 1)
+        )
+        let store = PersonalizationStore(session: session)
+        let committedName = store.preferredName
+        let committedResolvedName = session.snapshot.content.personalization.resolvedPreferredName
+
+        try fixture.installFailingWorkspaceUpdateTrigger(at: session.databaseURL)
+        store.updatePreferredName("A name that cannot commit")
+
+        #expect(!(await store.waitForPendingWrites()))
+        #expect(store.hasUnresolvedWriteFailure)
+        #expect(store.preferredName == committedName)
+        #expect(session.snapshot.content.personalization.resolvedPreferredName == committedResolvedName)
+
+        try fixture.removeFailingWorkspaceUpdateTrigger(at: session.databaseURL)
+        store.updatePreferredName("Durable Name")
+
+        #expect(await store.waitForPendingWrites())
+        #expect(!store.hasUnresolvedWriteFailure)
+        #expect(session.snapshot.content.personalization.resolvedPreferredName == "Durable Name")
+        store.stop()
+        session.stop()
+    }
+
+    @Test
     func slowPhotoPreparationRebasesOntoConcurrentPersonalizationThenSurvivesRelaunchAndRemoval() async throws {
         let fixture = try MacStorageFixture()
         defer { fixture.remove() }

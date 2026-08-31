@@ -92,6 +92,7 @@ final class PersonalizationStore: ObservableObject {
     }
 
     var hasPendingWrites: Bool { isWriting || !writes.isEmpty }
+    var hasUnresolvedWriteFailure: Bool { !lastWriteSucceeded }
 
     func waitForPendingWrites() async -> Bool {
         for _ in 0..<500 where hasPendingWrites {
@@ -745,6 +746,7 @@ final class PersonalizationStore: ObservableObject {
             message = "Saved locally"
             write.completion?(result)
         case let .failure(error):
+            lastWriteSucceeded = false
             let abandoned = writes
             writes.removeAll()
             apply(snapshot.content.personalization)

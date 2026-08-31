@@ -137,7 +137,12 @@ final class NotchWindowController {
 
     var isVisible: Bool { state != .hidden }
     var hasUnsavedAppearanceChanges: Bool { personalization.hasUnsavedAppearanceChanges }
-    var hasPendingWorkspaceWrites: Bool { store.hasPendingWrites || personalization.hasPendingWrites }
+    var hasPendingWorkspaceWrites: Bool {
+        store.hasPendingWrites
+            || personalization.hasPendingWrites
+            || store.hasUnresolvedWriteFailure
+            || personalization.hasUnresolvedWriteFailure
+    }
     private var shouldReduceMotion: Bool {
         #if FOUNDER_OFFICE_DISTRIBUTION
         NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
@@ -508,6 +513,18 @@ final class NotchWindowController {
                 guard let popover = notification.object as? NSPopover else { return }
                 MainActor.assumeIsolated {
                     self?.presentation.transients.endScoped(to: popover)
+                }
+            }
+        )
+        systemObservers.append(
+            center.addObserver(
+                forName: NSWindow.didResignKeyNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] notification in
+                guard let window = notification.object as? NSWindow else { return }
+                MainActor.assumeIsolated {
+                    self?.presentation.transients.noteKeyResignation(window)
                 }
             }
         )

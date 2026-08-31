@@ -84,6 +84,7 @@ final class OpenLoopStore: ObservableObject {
     }
 
     var hasPendingWrites: Bool { isWriting || !writes.isEmpty }
+    var hasUnresolvedWriteFailure: Bool { !lastWriteSucceeded }
 
     func waitForPendingWrites() async -> Bool {
         for _ in 0..<500 where hasPendingWrites {

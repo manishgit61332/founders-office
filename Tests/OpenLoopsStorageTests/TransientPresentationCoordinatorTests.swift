@@ -135,4 +135,48 @@ struct TransientPresentationCoordinatorTests {
         #expect(!coordinator.shouldTrack(submenu))
         #expect(!coordinator.shouldTrack(nestedSubmenu))
     }
+
+    @Test
+    func keyboardOpenedColourPanelUsesTheOriginatingNotchInsteadOfPointerPosition() {
+        let host = NSPanel(
+            contentRect: NSRect(x: 30_000, y: 30_000, width: 320, height: 180),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        let unrelated = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 200, height: 100),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        let colour = NSColorPanel()
+        defer {
+            colour.close()
+            unrelated.close()
+            host.close()
+        }
+        host.orderFrontRegardless()
+
+        let coordinator = TransientPresentationCoordinator()
+        coordinator.configure(
+            hostWindow: host,
+            isHostExpanded: { true },
+            suspendHost: {},
+            restoreHost: {}
+        )
+
+        #expect(coordinator.shouldTrack(colour, originatingWindow: host))
+        #expect(!coordinator.shouldTrack(colour, originatingWindow: unrelated))
+
+        coordinator.noteKeyResignation(host)
+        #expect(coordinator.shouldTrack(colour, originatingWindow: unrelated))
+        #expect(!coordinator.shouldTrack(colour, originatingWindow: unrelated))
+
+        coordinator.present(colour, reason: "keyboard-colour-panel")
+        #expect(coordinator.preventsAutoDismiss)
+        #expect(coordinator.isTracking(colour))
+        coordinator.endScoped(to: colour)
+        #expect(!coordinator.preventsAutoDismiss)
+    }
 }

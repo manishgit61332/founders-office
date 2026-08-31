@@ -30,6 +30,7 @@ final class TransientPresentationCoordinator {
     private var isHostExpanded: (() -> Bool)?
     private var objectLeases: [ObjectIdentifier: UUID] = [:]
     private var trackedWindows: [ObjectIdentifier: TrackedWindow] = [:]
+    private var pendingNativePanelOrigin: UUID?
 
     var phase: TransientPresentationPhase { session.phase }
     var preventsAutoDismiss: Bool { session.isActive }
@@ -176,13 +177,41 @@ final class TransientPresentationCoordinator {
 
     /// File panels are registered explicitly before they are shown. A native
     /// colour panel is owned only when it was already registered or when it was
-    /// opened directly from the visible notch hit area.
+    /// opened from the visible notch. `originatingWindow` preserves the old key
+    /// window so keyboard activation is not incorrectly reduced to the current
+    /// mouse position.
     func shouldTrack(_ window: NSWindow) -> Bool {
+        shouldTrack(window, originatingWindow: NSApp.keyWindow)
+    }
+
+    func shouldTrack(_ window: NSWindow, originatingWindow: NSWindow?) -> Bool {
         if owns(window) { return true }
         guard window is NSColorPanel, let hostWindow, hostWindow.isVisible else {
             return false
         }
+        if let originatingWindow,
+           originatingWindow === hostWindow || owns(originatingWindow) {
+            return true
+        }
+        if pendingNativePanelOrigin != nil {
+            pendingNativePanelOrigin = nil
+            return true
+        }
         return hostWindow.frame.insetBy(dx: -12, dy: -12).contains(NSEvent.mouseLocation)
+    }
+
+    /// AppKit announces the old key window before the new colour panel becomes
+    /// key. Retain that provenance for the next run-loop turn so a keyboard-
+    /// opened ColorPicker is scoped to the notch even when the pointer is far
+    /// away. The one-shot marker expires and cannot claim a later panel.
+    func noteKeyResignation(_ window: NSWindow) {
+        guard let hostWindow, window === hostWindow else { return }
+        let marker = UUID()
+        pendingNativePanelOrigin = marker
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            guard self?.pendingNativePanelOrigin == marker else { return }
+            self?.pendingNativePanelOrigin = nil
+        }
     }
 
     func isTracking(_ window: NSWindow) -> Bool {
@@ -215,6 +244,7 @@ final class TransientPresentationCoordinator {
         }
         trackedWindows.removeAll()
         objectLeases.removeAll()
+        pendingNativePanelOrigin = nil
         capturedFirstResponder = nil
         session.cancelAll()
     }
