@@ -73,6 +73,14 @@ path, mode = sys.argv[1:]
 sentinels = {
     "clean": "customer-release",
     "codex": "/opt/homebrew/bin/codex",
+    "codex-runner-type": "CodexRunner",
+    "codex-state-type": "CodexRunState",
+    "codex-action-type": "CodexTaskAction",
+    "codex-footer-type": "CodexRunFooter",
+    "codex-working-copy": "Codex is working on",
+    "codex-prepare-copy": "Prepare with Codex",
+    "codex-available-callback": "isCodexAvailable",
+    "codex-run-callback": "onRunWithCodex",
 }
 value = sentinels[mode]
 Path(path).write_text(
@@ -124,6 +132,24 @@ create_binary_fixture codex
 assert_refused \
     "/opt/homebrew/bin/codex" \
     "$script_dir/verify-customer-binary-policy.sh" "${fixture_root}/binary-codex/fixture" arm64
+
+for fixture in \
+    "codex-runner-type:CodexRunner" \
+    "codex-state-type:CodexRunState" \
+    "codex-action-type:CodexTaskAction" \
+    "codex-footer-type:CodexRunFooter" \
+    "codex-working-copy:Codex is working on" \
+    "codex-prepare-copy:Prepare with Codex" \
+    "codex-available-callback:isCodexAvailable" \
+    "codex-run-callback:onRunWithCodex"
+do
+    mode="${fixture%%:*}"
+    sentinel="${fixture#*:}"
+    create_binary_fixture "$mode"
+    assert_refused \
+        "$sentinel" \
+        "$script_dir/verify-customer-binary-policy.sh" "${fixture_root}/binary-${mode}/fixture" arm64
+done
 
 create_swift_binary_fixture workspace
 assert_refused \

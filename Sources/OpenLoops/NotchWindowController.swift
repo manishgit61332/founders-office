@@ -46,7 +46,9 @@ final class NotchWindowController {
     }
 
     private let store: OpenLoopStore
+    #if !FOUNDER_OFFICE_DISTRIBUTION
     private let codexRunner: CodexRunner
+    #endif
     private let personalization: PersonalizationStore
     private let calendarProvider: CalendarProvider
     private let account: FounderOfficeAccountController
@@ -74,11 +76,15 @@ final class NotchWindowController {
         personalization: PersonalizationStore? = nil,
         calendarMode: CalendarProvider.Mode = .live
     ) {
+        #if !FOUNDER_OFFICE_DISTRIBUTION
         let runner = CodexRunner(founderOfficeURL: store.rootURL)
+        #endif
         let personalizationStore = personalization ?? PersonalizationStore(session: store.session)
         let calendar = CalendarProvider(mode: calendarMode)
         self.store = store
+        #if !FOUNDER_OFFICE_DISTRIBUTION
         codexRunner = runner
+        #endif
         self.personalization = personalizationStore
         calendarProvider = calendar
         panel = NotchPanel(
@@ -127,6 +133,14 @@ final class NotchWindowController {
                 personalizationStore?.updatePreferredName(name)
             }
         )
+        #if FOUNDER_OFFICE_DISTRIBUTION
+        health = FounderOfficeHealthModel(
+            store: store,
+            personalization: personalizationStore,
+            calendar: calendar,
+            accountSync: account
+        )
+        #else
         health = FounderOfficeHealthModel(
             store: store,
             personalization: personalizationStore,
@@ -134,6 +148,19 @@ final class NotchWindowController {
             assistant: runner,
             accountSync: account
         )
+        #endif
+        #if FOUNDER_OFFICE_DISTRIBUTION
+        panel.contentViewController = NSHostingController(
+            rootView: NotchBoardView(
+                store: store,
+                personalization: self.personalization,
+                calendarProvider: calendarProvider,
+                account: account,
+                health: health,
+                presentation: presentation
+            ) { [weak self] in self?.requestExplicitClose() }
+        )
+        #else
         panel.contentViewController = NSHostingController(
             rootView: NotchBoardView(
                 store: store,
@@ -145,6 +172,7 @@ final class NotchWindowController {
                 presentation: presentation
             ) { [weak self] in self?.requestExplicitClose() }
         )
+        #endif
         presentation.transients.configure(
             hostWindow: panel,
             isHostExpanded: { [weak self] in
@@ -277,7 +305,9 @@ final class NotchWindowController {
     }
 
     func prepareForTermination() {
+        #if !FOUNDER_OFFICE_DISTRIBUTION
         codexRunner.prepareForTermination()
+        #endif
         account.stop()
         personalization.discardAppearanceChanges()
         presentation.clearInteractions()

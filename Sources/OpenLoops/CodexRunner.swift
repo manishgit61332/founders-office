@@ -2,6 +2,7 @@ import AppKit
 import Foundation
 import FounderOfficeCore
 
+#if !FOUNDER_OFFICE_DISTRIBUTION
 enum CodexTaskAction {
     case execute
     case prepare
@@ -36,9 +37,7 @@ final class CodexRunner: ObservableObject {
     @Published private(set) var lastSuccessfulRunAt: Date?
 
     let founderOfficeURL: URL
-#if !FOUNDER_OFFICE_DISTRIBUTION
     private var process: Process?
-#endif
 
     init(founderOfficeURL: URL) {
         self.founderOfficeURL = founderOfficeURL
@@ -50,11 +49,7 @@ final class CodexRunner: ObservableObject {
     }
 
     var isAvailable: Bool {
-#if FOUNDER_OFFICE_DISTRIBUTION
-        false
-#else
         true
-#endif
     }
 
     func action(for item: OpenLoop) -> CodexTaskAction {
@@ -67,12 +62,6 @@ final class CodexRunner: ObservableObject {
     }
 
     func run(_ item: OpenLoop) {
-#if FOUNDER_OFFICE_DISTRIBUTION
-        state = .failed(
-            title: item.title,
-            message: "Assistant execution is not included in this customer build."
-        )
-#else
         guard !isRunning else { return }
 
         let action = action(for: item)
@@ -142,18 +131,14 @@ final class CodexRunner: ObservableObject {
             state = .failed(title: item.title, message: "Couldn’t start Codex")
             AppDiagnostics.failure(.codexProcessStart, category: .automation, error: error)
         }
-#endif
     }
 
     func prepareForTermination() {
-#if !FOUNDER_OFFICE_DISTRIBUTION
         guard let process, process.isRunning else { return }
         process.terminate()
         self.process = nil
-#endif
     }
 
-#if !FOUNDER_OFFICE_DISTRIBUTION
     private func prompt(for item: OpenLoop, action: CodexTaskAction, runURL: URL) -> String {
         """
         Work on this Founder's Office move:
@@ -201,5 +186,5 @@ final class CodexRunner: ObservableObject {
         formatter.dateFormat = "yyyyMMdd-HHmmss"
         return formatter
     }()
-#endif
 }
+#endif

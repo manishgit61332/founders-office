@@ -164,7 +164,9 @@ private struct NotchMorphShape: InsettableShape {
 
 struct NotchBoardView: View {
     @ObservedObject var store: OpenLoopStore
+    #if !FOUNDER_OFFICE_DISTRIBUTION
     @ObservedObject var codexRunner: CodexRunner
+    #endif
     @ObservedObject var personalization: PersonalizationStore
     @ObservedObject var calendarProvider: CalendarProvider
     @ObservedObject var account: FounderOfficeAccountController
@@ -288,6 +290,7 @@ struct NotchBoardView: View {
     @State private var finishDateDraft = Calendar.current.date(byAdding: .day, value: 60, to: Date()) ?? Date()
     @Namespace private var statusSelection
     @FocusState private var addFieldFocused: Bool
+    private let supportReportStorage = SupportReportStorage()
 
     private var theme: FounderTheme {
         FounderTheme(
@@ -1457,6 +1460,20 @@ struct NotchBoardView: View {
     ) -> some View {
         LazyVStack(spacing: 0) {
             ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                #if FOUNDER_OFFICE_DISTRIBUTION
+                LoopRow(
+                    item: item,
+                    accent: accent,
+                    trailingLabel: showsCompletionDate ? completedLabel(for: item) : nil,
+                    showsPriorityBadge: showsPriorityBadge,
+                    onToggle: { store.toggleCompletion(item) },
+                    onMove: { status in store.move(item, to: status) },
+                    onSetPriority: { priority in updatePriority(of: item, to: priority) },
+                    onEditPlanning: { presentPlanningEditor(for: item) },
+                    onDelete: { deleteMove(item) }
+                )
+                .modifier(ConditionalMoveDragModifier(id: isDraggable ? item.id : nil))
+                #else
                 LoopRow(
                     item: item,
                     accent: accent,
@@ -1473,6 +1490,7 @@ struct NotchBoardView: View {
                     onDelete: { deleteMove(item) }
                 )
                 .modifier(ConditionalMoveDragModifier(id: isDraggable ? item.id : nil))
+                #endif
 
                 if index < items.count - 1 {
                     Divider()
@@ -3014,10 +3032,14 @@ struct NotchBoardView: View {
     private var showsContextualFooter: Bool {
         guard selectedSection == .loops, !isSettingsPresented else { return false }
         if store.recentlyDeleted != nil { return true }
+        #if FOUNDER_OFFICE_DISTRIBUTION
+        return false
+        #else
         switch codexRunner.state {
         case .idle: return false
         case .running, .finished, .failed: return true
         }
+        #endif
     }
 
     private var footer: some View {
@@ -3032,9 +3054,12 @@ struct NotchBoardView: View {
                 }
                 .buttonStyle(FooterActionButtonStyle(accent: accent))
                 .transition(.opacity.combined(with: .move(edge: .leading)))
-            } else {
+            }
+            #if !FOUNDER_OFFICE_DISTRIBUTION
+            if store.recentlyDeleted == nil {
                 CodexRunFooter(runner: codexRunner, accent: accent)
             }
+            #endif
 
             Spacer()
         }
@@ -3248,7 +3273,7 @@ struct NotchBoardView: View {
                 defer { presentation.transients.endScoped(to: panel) }
                 guard response == .OK, let destination = panel.url else { return }
                 do {
-                    try report.encodedJSON().write(to: destination, options: .atomic)
+                    try await supportReportStorage.save(report, to: destination)
                     closeSupportReportPreview()
                 } catch {
                     supportReportSaveError = "Couldn’t save the support file. Try again."
@@ -3722,10 +3747,12 @@ private struct LoopRow: View {
     let onMove: (LoopStatus) -> Void
     let onSetPriority: (LoopPriority) -> Void
     let onEditPlanning: () -> Void
+    #if !FOUNDER_OFFICE_DISTRIBUTION
     let codexAction: CodexTaskAction
     let isCodexAvailable: Bool
     let isCodexBusy: Bool
     let onRunWithCodex: () -> Void
+    #endif
     let onDelete: () -> Void
 
     private let primaryText = Color.white.opacity(0.95)
@@ -3841,11 +3868,13 @@ private struct LoopRow: View {
 
     private var actionsMenu: some View {
         Menu {
+            #if !FOUNDER_OFFICE_DISTRIBUTION
             if isCodexAvailable {
                 Button(codexAction.label, action: onRunWithCodex)
                     .disabled(isCodexBusy)
                 Divider()
             }
+            #endif
 
             Button("Edit priority and deadline…", action: onEditPlanning)
 
@@ -4376,6 +4405,7 @@ private struct UnsavedAppearanceEditor: View {
     }
 }
 
+#if !FOUNDER_OFFICE_DISTRIBUTION
 private struct CodexRunFooter: View {
     @ObservedObject var runner: CodexRunner
     let accent: Color
@@ -4402,6 +4432,7 @@ private struct CodexRunFooter: View {
         }
     }
 }
+#endif
 
 private struct AppleNavigationButton: View {
     @Environment(\.founderTheme) private var theme

@@ -9,10 +9,30 @@ final class FounderOfficeHealthModel: ObservableObject {
     private let store: OpenLoopStore
     private let personalization: PersonalizationStore
     private let calendar: CalendarProvider
+    #if !FOUNDER_OFFICE_DISTRIBUTION
     private let assistant: CodexRunner
+    #endif
     private let accountSync: any AccountSyncStatusSignaling
     private var cancellables = Set<AnyCancellable>()
 
+    #if FOUNDER_OFFICE_DISTRIBUTION
+    init(
+        store: OpenLoopStore,
+        personalization: PersonalizationStore,
+        calendar: CalendarProvider,
+        accountSync: any AccountSyncStatusSignaling
+    ) {
+        self.store = store
+        self.personalization = personalization
+        self.calendar = calendar
+        self.accountSync = accountSync
+
+        observe(store.objectWillChange)
+        observe(personalization.objectWillChange)
+        observe(calendar.objectWillChange)
+        observe(accountSync.objectWillChange)
+    }
+    #else
     init(
         store: OpenLoopStore,
         personalization: PersonalizationStore,
@@ -32,6 +52,7 @@ final class FounderOfficeHealthModel: ObservableObject {
         observe(assistant.objectWillChange)
         observe(accountSync.objectWillChange)
     }
+    #endif
 
     var snapshot: HealthSnapshot {
         HealthSnapshot(
@@ -167,6 +188,13 @@ final class FounderOfficeHealthModel: ObservableObject {
     }
 
     private var assistantStatus: HealthComponentStatus {
+        #if FOUNDER_OFFICE_DISTRIBUTION
+        return HealthComponentStatus(
+            component: .assistant,
+            condition: .off,
+            detail: "Not included in this build"
+        )
+        #else
         guard assistant.isAvailable else {
             return HealthComponentStatus(
                 component: .assistant,
@@ -208,6 +236,7 @@ final class FounderOfficeHealthModel: ObservableObject {
                 remediation: .recheckAssistant
             )
         }
+        #endif
     }
 
     private func observe(_ publisher: ObservableObjectPublisher) {
