@@ -2242,6 +2242,40 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
             // complete page before snapshot, revision, dedupe, or cursor state
             // can change. Interleaved entities each advance independently.
             try validateRemoteRevisionContinuity(freshChanges)
+            let bootstrapComplete = try scalarCount(
+                "SELECT bootstrap_complete FROM sync_state WHERE singleton = 1",
+                operation: "validate_pulled_acknowledgement_bootstrap"
+            ) == 1
+            var recoveredAcknowledgements: [SyncOperationID: WorkspaceRemoteOperationAcknowledgement]
+                = [:]
+            for change in freshChanges {
+                if let acknowledgement = try pulledAcknowledgement(
+                    for: change,
+                    workspaceID: binding.workspaceID,
+                    bootstrapComplete: bootstrapComplete
+                ) {
+                    recoveredAcknowledgements[change.operationID] = acknowledgement
+                }
+            }
+            if !recoveredAcknowledgements.isEmpty {
+                let existingConflictCount = try scalarCount(
+                    "SELECT count(*) FROM sync_conflicts",
+                    operation: "inspect_pulled_acknowledgement_evidence_limit"
+                )
+                if existingConflictCount > 0 {
+                    let storedAcknowledgementCount = try scalarCount(
+                        "SELECT count(*) FROM sync_operation_acknowledgements",
+                        operation: "inspect_pulled_acknowledgement_evidence_limit"
+                    )
+                    guard storedAcknowledgementCount
+                            + Int64(recoveredAcknowledgements.count)
+                            <= Int64(
+                                WorkspaceSyncRetentionPolicy.default.acknowledgementLimit
+                            ) else {
+                        throw WorkspaceSyncRepositoryError.syncEvidenceLimitReached
+                    }
+                }
+            }
             let appliedEvidenceCount = try scalarCount(
                 "SELECT count(*) FROM sync_applied_operations",
                 operation: "inspect_applied_operation_limit"
@@ -2254,7 +2288,10 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
                 throw WorkspaceSyncRepositoryError.syncEvidenceLimitReached
             }
             let pendingFieldClocks = try pendingRemoteFieldClocks(
-                workspaceID: binding.workspaceID
+                workspaceID: binding.workspaceID,
+                excludingOperationIDs: Set(
+                    recoveredAcknowledgements.values.map(\.localOperationID)
+                )
             )
             var preservedFields: [SyncOperationID: Set<String>] = [:]
             for change in freshChanges {
@@ -2305,6 +2342,16 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
                     revision: change.revision,
                     fieldClocks: fieldClocks
                 )
+                if let acknowledgement = recoveredAcknowledgements[change.operationID] {
+                    // A pull can be the first durable local proof after the
+                    // server accepted an operation but its push response was
+                    // lost. The exact outbox row is retired only in the same
+                    // transaction that applies and deduplicates that change.
+                    try insertRemoteAcknowledgement(acknowledgement)
+                    try deleteDeliveredV2Outbox(
+                        operationID: acknowledgement.localOperationID
+                    )
+                }
                 try execute(
                     """
                     INSERT INTO sync_applied_operations (operation_id, cursor, applied_at)
@@ -3874,6 +3921,14 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
         operation: WorkspaceOutboxOperation,
         workspaceID: WorkspaceID
     ) throws -> (type: SyncEntityType, id: UUID, fieldClocks: [String: Date]) {
+        let wire = try remoteWireOperation(operation: operation, workspaceID: workspaceID)
+        return (wire.entityType, wire.entityID, wire.fieldClocks)
+    }
+
+    private func remoteWireOperation(
+        operation: WorkspaceOutboxOperation,
+        workspaceID: WorkspaceID
+    ) throws -> SyncOperation {
         guard case let .localEntity(envelope) = try operation.decodedLocalPayload() else {
             throw WorkspaceSyncRepositoryError.acknowledgementMismatch
         }
@@ -3903,7 +3958,159 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
             remoteBaseRevision: baseRevision,
             workspaceID: workspaceID
         )
-        return (wire.entityType, wire.entityID, wire.fieldClocks)
+        return wire
+    }
+
+    private func pulledAcknowledgement(
+        for change: SyncChange,
+        workspaceID: WorkspaceID,
+        bootstrapComplete: Bool
+    ) throws -> WorkspaceRemoteOperationAcknowledgement? {
+        guard let operation = try v2OutboxOperation(
+            operationID: change.operationID.rawValue
+        ) else {
+            return nil
+        }
+        // A UUID collision with an unsent local operation is not delivery
+        // evidence. Neither is a pre-bootstrap or quarantined operation.
+        guard bootstrapComplete,
+              operation.deliveryAttempts > 0,
+              try persistedConflict(operationID: operation.operationID) == nil,
+              try remoteAcknowledgement(operationID: operation.operationID) == nil else {
+            throw WorkspaceSyncRepositoryError.acknowledgementMismatch
+        }
+
+        let mapped: WorkspaceV2SyncAdapter.MappedMutation
+        let remoteClocks: [String: Date]
+        do {
+            guard case let .localEntity(envelope) = try operation.decodedLocalPayload() else {
+                throw WorkspaceSyncRepositoryError.acknowledgementMismatch
+            }
+            mapped = try WorkspaceV2SyncAdapter.mappedMutation(
+                envelope: envelope,
+                localClocks: operation.fieldClocks,
+                workspaceID: workspaceID
+            )
+            remoteClocks = try remoteFieldClocks(change.record)
+        } catch {
+            throw WorkspaceSyncRepositoryError.acknowledgementMismatch
+        }
+        guard SyncOperationID(rawValue: operation.operationID) == change.operationID,
+              mapped.entityType == change.entityType,
+              mapped.entityID == change.entityID,
+              mapped.action == change.action,
+              mapped.changedFields == change.changedFields,
+              mapped.fieldClocks.allSatisfy({ field, clock in
+                  guard let remoteClock = remoteClocks[field] else { return false }
+                  return WorkspaceV2SyncAdapter.timestamp(remoteClock)
+                      == WorkspaceV2SyncAdapter.timestamp(clock)
+              }) else {
+            throw WorkspaceSyncRepositoryError.acknowledgementMismatch
+        }
+
+        switch mapped.action {
+        case .upsert:
+            guard let payload = mapped.payload,
+                  payload.allSatisfy({ field, value in
+                      pulledPayloadValueMatches(
+                          expected: value,
+                          actual: change.record[field],
+                          entityType: mapped.entityType,
+                          field: field,
+                          revision: change.revision,
+                          changedAt: change.changedAt
+                      )
+                  }) else {
+                throw WorkspaceSyncRepositoryError.acknowledgementMismatch
+            }
+        case .delete:
+            guard mapped.payload == nil,
+                  let deletedAt = mapped.fieldClocks["deletedAt"],
+                  pulledPayloadValueMatches(
+                      expected: .string(WorkspaceV2SyncAdapter.timestamp(deletedAt)),
+                      actual: change.record["deletedAt"],
+                      entityType: mapped.entityType,
+                      field: "deletedAt",
+                      revision: change.revision,
+                      changedAt: change.changedAt
+                  ) else {
+                throw WorkspaceSyncRepositoryError.acknowledgementMismatch
+            }
+        }
+
+        do {
+            return try WorkspaceRemoteOperationAcknowledgement(
+                localOperationID: operation.operationID,
+                entityType: mapped.entityType,
+                entityID: mapped.entityID,
+                remoteRevision: change.revision,
+                fieldClocks: mapped.fieldClocks
+            )
+        } catch {
+            throw WorkspaceSyncRepositoryError.acknowledgementMismatch
+        }
+    }
+
+    private func pulledPayloadValueMatches(
+        expected: SyncJSONValue,
+        actual: SyncJSONValue?,
+        entityType: SyncEntityType,
+        field: String,
+        revision: Int64,
+        changedAt: Date
+    ) -> Bool {
+        guard let actual else { return false }
+        if expected == .null || actual == .null {
+            return expected == actual
+        }
+
+        let timestampFields: Set<String> = [
+            "completedAt", "deletedAt", "dueAt", "createdAt",
+        ]
+        if timestampFields.contains(field) {
+            guard case let .string(expectedString) = expected,
+                  case let .string(actualString) = actual,
+                  var expectedDate = try? WorkspaceV2SyncAdapter.parseTimestamp(expectedString),
+                  let actualDate = try? WorkspaceV2SyncAdapter.parseTimestamp(actualString) else {
+                return false
+            }
+            // PostgreSQL bounds create timestamps by the authoritative write
+            // time. Reproduce that normalization without weakening ordinary
+            // string comparisons.
+            if field == "createdAt", revision == 1,
+               entityType == .move || entityType == .milestone {
+                expectedDate = min(expectedDate, changedAt)
+            }
+            return WorkspaceV2SyncAdapter.timestamp(expectedDate)
+                == WorkspaceV2SyncAdapter.timestamp(actualDate)
+        }
+
+        if let expectedNumber = decimalValue(expected),
+           let actualNumber = decimalValue(actual) {
+            return expectedNumber == actualNumber
+        }
+
+        let serverTrimmed = (entityType == .workspace && field == "name")
+            || (entityType == .move && field == "title")
+            || (entityType == .primaryGoal && field == "title")
+            || (entityType == .milestone && field == "title")
+        if serverTrimmed,
+           case let .string(expectedString) = expected,
+           case let .string(actualString) = actual {
+            return actualString
+                == expectedString.trimmingCharacters(
+                    in: CharacterSet(charactersIn: " ")
+                )
+        }
+        return expected == actual
+    }
+
+    private func decimalValue(_ value: SyncJSONValue) -> Decimal? {
+        switch value {
+        case let .integer(integer): Decimal(integer)
+        case let .number(number): number
+        default: nil
+        }
     }
 
     private func insertRemoteAcknowledgement(
@@ -4000,6 +4207,24 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
         )
     }
 
+    private func deleteDeliveredV2Outbox(operationID: UUID) throws {
+        try execute(
+            """
+            DELETE FROM operation_outbox
+            WHERE operation_id = ? AND payload_format_version = ?
+              AND delivery_attempts > 0
+            """,
+            bindings: [
+                .text(operationID.uuidString.lowercased()),
+                .integer(Int64(WorkspaceLocalOperationEnvelopeV2.formatVersion)),
+            ],
+            operation: "acknowledge_pulled_remote_operation"
+        )
+        guard sqlite3_changes(connection) == 1 else {
+            throw WorkspaceSyncRepositoryError.acknowledgementMismatch
+        }
+    }
+
     private func appliedCursor(operationID: UUID) throws -> Int64? {
         let statement = try prepare(
             "SELECT cursor FROM sync_applied_operations WHERE operation_id = ?",
@@ -4014,7 +4239,8 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
     }
 
     private func pendingRemoteFieldClocks(
-        workspaceID: WorkspaceID
+        workspaceID: WorkspaceID,
+        excludingOperationIDs: Set<UUID> = []
     ) throws -> [RemoteEntityKey: [String: Date]] {
         // Keep all durable sources of locally protected remote fields behind
         // this one extension point. Retained unresolved-conflict payloads can
@@ -4036,6 +4262,12 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
                 statement,
                 operation: "read_pending_field_clocks"
             )
+            if excludingOperationIDs.contains(operation.operationID) {
+                // The authenticated pull is canonical for the operation it
+                // proves delivered. A newer queued operation remains in this
+                // scan and can still protect its later field clock.
+                continue
+            }
             guard case let .localEntity(envelope) = try operation.decodedLocalPayload() else {
                 throw WorkspaceSyncRepositoryError.bootstrapResponseMismatch
             }
