@@ -25,6 +25,7 @@ public enum HealthCondition: String, Codable, Hashable, Sendable {
     case ready
     case working
     case attention
+    case needsYou = "needs_you"
     case off
 }
 
@@ -34,6 +35,7 @@ public enum HealthCondition: String, Codable, Hashable, Sendable {
 public enum HealthRemediation: String, CaseIterable, Codable, Hashable, Sendable {
     case none
     case reloadLocalData = "reload_local_data"
+    case retryGeneratedProjection = "retry_generated_projection"
     case retrySync = "retry_sync"
     case refreshCalendar = "refresh_calendar"
     case openCalendarSettings = "open_calendar_settings"
@@ -44,6 +46,7 @@ public enum HealthRemediation: String, CaseIterable, Codable, Hashable, Sendable
         switch self {
         case .none: return nil
         case .reloadLocalData: return "Reload"
+        case .retryGeneratedProjection: return "Try again"
         case .retrySync: return "Try again"
         case .refreshCalendar: return "Refresh"
         case .openCalendarSettings: return "Open Settings"
@@ -211,6 +214,60 @@ public struct RedactedSupportReport: Equatable, Sendable {
             SupportReportField(key: "calendar_last_success_utc", value: lastSuccess(.calendar)),
             SupportReportField(key: "startup_state", value: condition(.startup)),
             SupportReportField(key: "assistant_state", value: condition(.assistant))
+        ]
+    }
+
+    public func encodedJSON() throws -> Data {
+        precondition(fields.map(\.key) == Self.fieldKeys)
+        let object = Dictionary(uniqueKeysWithValues: fields.map { ($0.key, $0.value) })
+        return try JSONSerialization.data(
+            withJSONObject: object,
+            options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        )
+    }
+}
+
+/// A safe-mode diagnostic that can be created before the workspace is opened.
+/// It deliberately has no HealthSnapshot input and therefore cannot read or
+/// imply anything about canonical workspace contents.
+public struct RedactedCrashStateReport: Equatable, Sendable {
+    public static let fieldKeys = [
+        "crash_state_report_version",
+        "incident_id",
+        "captured_at_utc",
+        "app_version",
+        "build_number",
+        "platform",
+        "operating_system",
+        "architecture",
+        "safe_mode",
+        "consecutive_pre_ready_failures"
+    ]
+
+    public let fields: [SupportReportField]
+
+    public init(
+        incidentID: UUID,
+        capturedAt: Date,
+        consecutivePreReadyFailures: Int,
+        metadata: SupportReportMetadata
+    ) {
+        let dateFormatter = ISO8601DateFormatter()
+        dateFormatter.formatOptions = [.withInternetDateTime]
+        fields = [
+            SupportReportField(key: "crash_state_report_version", value: "1"),
+            SupportReportField(key: "incident_id", value: incidentID.uuidString.lowercased()),
+            SupportReportField(key: "captured_at_utc", value: dateFormatter.string(from: capturedAt)),
+            SupportReportField(key: "app_version", value: metadata.appVersion),
+            SupportReportField(key: "build_number", value: metadata.buildNumber),
+            SupportReportField(key: "platform", value: "macos"),
+            SupportReportField(key: "operating_system", value: metadata.operatingSystem),
+            SupportReportField(key: "architecture", value: metadata.architecture),
+            SupportReportField(key: "safe_mode", value: "true"),
+            SupportReportField(
+                key: "consecutive_pre_ready_failures",
+                value: String(min(max(consecutivePreReadyFailures, 0), 3))
+            )
         ]
     }
 

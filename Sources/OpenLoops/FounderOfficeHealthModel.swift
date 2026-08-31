@@ -28,6 +28,7 @@ final class FounderOfficeHealthModel: ObservableObject {
         self.accountSync = accountSync
 
         observe(store.objectWillChange)
+        observe(store.session.objectWillChange)
         observe(personalization.objectWillChange)
         observe(calendar.objectWillChange)
         observe(accountSync.objectWillChange)
@@ -91,6 +92,10 @@ final class FounderOfficeHealthModel: ObservableObject {
         case .reloadLocalData:
             store.reload()
             personalization.reload()
+        case .retryGeneratedProjection:
+            Task { [weak store] in
+                _ = await store?.session.refreshProjectionNow()
+            }
         case .retrySync:
             // Cross-device sync is deliberately unavailable until the
             // Supabase operation transport passes its release gate. Health
@@ -117,6 +122,26 @@ final class FounderOfficeHealthModel: ObservableObject {
                 component: .localData,
                 condition: .attention,
                 detail: "Preserved data needs review"
+            )
+        }
+
+        switch store.session.projectionRepairState {
+        case .ready:
+            break
+        case let .retryAvailable(attemptsUsed):
+            return HealthComponentStatus(
+                component: .localData,
+                condition: .attention,
+                detail: "Generated files need a safe retry (\(attemptsUsed)/3)",
+                remediation: .retryGeneratedProjection
+            )
+        case let .needsUser(attemptsUsed):
+            return HealthComponentStatus(
+                component: .localData,
+                condition: .needsYou,
+                detail: attemptsUsed >= BoundedRepairCoordinator.maximumAttempts
+                    ? "Needs You · stopped after three safe tries"
+                    : "Needs You · repair safety record unavailable"
             )
         }
 

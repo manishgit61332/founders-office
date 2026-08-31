@@ -543,9 +543,16 @@ public actor SQLiteWorkspaceRepository: WorkspaceRepository, WorkspaceSyncReposi
     ) throws -> URL {
         let snapshot = try database.loadSnapshot()
         latestSnapshot = snapshot
-        let revisionName = String(format: "revision-%012lld", snapshot.revision.rawValue)
-        let destinationURL = projectionsRootURL.appendingPathComponent(revisionName, isDirectory: true)
+        let destinationURL = Self.projectionURL(
+            in: projectionsRootURL,
+            revision: snapshot.revision
+        )
         if FileManager.default.fileExists(atPath: destinationURL.path) {
+            guard Self.isHealthyProjection(at: destinationURL, snapshot: snapshot) else {
+                throw WorkspaceRepositoryError.exportFailed(
+                    operation: "validate_generated_projection"
+                )
+            }
             try Self.pruneGeneratedProjections(in: projectionsRootURL, keeping: 2)
             return destinationURL
         }
@@ -557,6 +564,275 @@ public actor SQLiteWorkspaceRepository: WorkspaceRepository, WorkspaceSyncReposi
         )
         try Self.pruneGeneratedProjections(in: projectionsRootURL, keeping: 2)
         return destinationURL
+    }
+
+    /// Returns the current generated projection only after checking its
+    /// manifest, bounded files, and digests. This is a read-only health check;
+    /// it never repairs the projection or changes canonical SQLite state.
+    public func currentProjectionURLIfHealthy(
+        in projectionsRootURL: URL
+    ) -> URL? {
+        guard let snapshot = try? database.loadSnapshot() else { return nil }
+        latestSnapshot = snapshot
+        let destinationURL = Self.projectionURL(
+            in: projectionsRootURL,
+            revision: snapshot.revision
+        )
+        return Self.isHealthyProjection(at: destinationURL, snapshot: snapshot)
+            ? destinationURL
+            : nil
+    }
+
+    /// Rebuilds only the generated projection for the current revision. A
+    /// stable sibling backup makes replacement reversible across failures. It
+    /// refuses symbolic links and never writes the canonical database, legacy
+    /// imports, Recovery data, credentials, permissions, or executable code.
+    @discardableResult
+    public func repairCurrentProjection(
+        in projectionsRootURL: URL,
+        generatedAt: Date = Date(),
+        calendar: Calendar = .current
+    ) throws -> URL {
+        let snapshot = try database.loadSnapshot()
+        latestSnapshot = snapshot
+        let destinationURL = Self.projectionURL(
+            in: projectionsRootURL,
+            revision: snapshot.revision
+        )
+        let backupURL = projectionsRootURL.appendingPathComponent(
+            ".founder-office-projection-repair-backup-\(snapshot.revision.rawValue)",
+            isDirectory: true
+        )
+        let replacementURL = projectionsRootURL.appendingPathComponent(
+            ".founder-office-projection-repair-\(UUID().uuidString.lowercased())",
+            isDirectory: true
+        )
+        let fileManager = FileManager.default
+
+        if Self.isHealthyProjection(at: destinationURL, snapshot: snapshot) {
+            try Self.removeDerivedBackupIfPresent(at: backupURL)
+            try Self.pruneGeneratedProjections(in: projectionsRootURL, keeping: 2)
+            return destinationURL
+        }
+
+        do {
+            try fileManager.createDirectory(
+                at: projectionsRootURL,
+                withIntermediateDirectories: true
+            )
+            try Self.restoreInterruptedProjectionRepair(
+                destinationURL: destinationURL,
+                backupURL: backupURL
+            )
+            _ = try Self.writeExport(
+                snapshot: snapshot,
+                to: replacementURL,
+                generatedAt: generatedAt,
+                calendar: calendar
+            )
+            guard Self.isHealthyProjection(at: replacementURL, snapshot: snapshot) else {
+                throw WorkspaceRepositoryError.exportFailed(
+                    operation: "validate_projection_replacement"
+                )
+            }
+        } catch let error as WorkspaceRepositoryError {
+            try? fileManager.removeItem(at: replacementURL)
+            throw error
+        } catch {
+            try? fileManager.removeItem(at: replacementURL)
+            throw WorkspaceRepositoryError.exportFailed(
+                operation: "prepare_projection_repair"
+            )
+        }
+
+        var movedExistingProjection = false
+        var installedReplacement = false
+        do {
+            if fileManager.fileExists(atPath: destinationURL.path) {
+                guard try Self.isPlainDirectory(at: destinationURL) else {
+                    throw WorkspaceRepositoryError.exportFailed(
+                        operation: "refuse_linked_projection"
+                    )
+                }
+                try fileManager.moveItem(at: destinationURL, to: backupURL)
+                movedExistingProjection = true
+            }
+
+            try fileManager.moveItem(at: replacementURL, to: destinationURL)
+            installedReplacement = true
+            guard Self.isHealthyProjection(at: destinationURL, snapshot: snapshot) else {
+                throw WorkspaceRepositoryError.exportFailed(
+                    operation: "verify_repaired_projection"
+                )
+            }
+
+            if movedExistingProjection {
+                try fileManager.removeItem(at: backupURL)
+            }
+            try Self.pruneGeneratedProjections(in: projectionsRootURL, keeping: 2)
+            return destinationURL
+        } catch let failure {
+            if installedReplacement,
+               fileManager.fileExists(atPath: destinationURL.path),
+               (try? Self.isPlainDirectory(at: destinationURL)) == true {
+                try? fileManager.removeItem(at: destinationURL)
+            }
+            if movedExistingProjection,
+               fileManager.fileExists(atPath: backupURL.path),
+               !fileManager.fileExists(atPath: destinationURL.path) {
+                try? fileManager.moveItem(at: backupURL, to: destinationURL)
+            }
+            try? fileManager.removeItem(at: replacementURL)
+            if let repositoryError = failure as? WorkspaceRepositoryError {
+                throw repositoryError
+            }
+            throw WorkspaceRepositoryError.exportFailed(
+                operation: "commit_projection_repair"
+            )
+        }
+    }
+
+    private static func projectionURL(
+        in rootURL: URL,
+        revision: WorkspaceRevision
+    ) -> URL {
+        rootURL.appendingPathComponent(
+            String(format: "revision-%012lld", revision.rawValue),
+            isDirectory: true
+        )
+    }
+
+    private static func restoreInterruptedProjectionRepair(
+        destinationURL: URL,
+        backupURL: URL
+    ) throws {
+        let fileManager = FileManager.default
+        guard fileManager.fileExists(atPath: backupURL.path) else { return }
+        guard try isPlainDirectory(at: backupURL) else {
+            throw WorkspaceRepositoryError.exportFailed(
+                operation: "refuse_linked_projection_backup"
+            )
+        }
+        if fileManager.fileExists(atPath: destinationURL.path) {
+            throw WorkspaceRepositoryError.exportFailed(
+                operation: "projection_repair_requires_review"
+            )
+        }
+        do {
+            try fileManager.moveItem(at: backupURL, to: destinationURL)
+        } catch {
+            throw WorkspaceRepositoryError.exportFailed(
+                operation: "restore_projection_backup"
+            )
+        }
+    }
+
+    private static func removeDerivedBackupIfPresent(at backupURL: URL) throws {
+        let fileManager = FileManager.default
+        guard fileManager.fileExists(atPath: backupURL.path) else { return }
+        guard try isPlainDirectory(at: backupURL) else {
+            throw WorkspaceRepositoryError.exportFailed(
+                operation: "refuse_linked_projection_backup"
+            )
+        }
+        do {
+            try fileManager.removeItem(at: backupURL)
+        } catch {
+            throw WorkspaceRepositoryError.exportFailed(
+                operation: "remove_projection_backup"
+            )
+        }
+    }
+
+    private static func isPlainDirectory(at url: URL) throws -> Bool {
+        let values = try url.resourceValues(forKeys: [
+            .isDirectoryKey,
+            .isSymbolicLinkKey
+        ])
+        return values.isDirectory == true && values.isSymbolicLink != true
+    }
+
+    private static func isHealthyProjection(
+        at destinationURL: URL,
+        snapshot: WorkspaceRepositorySnapshot
+    ) -> Bool {
+        let fileManager = FileManager.default
+        guard fileManager.fileExists(atPath: destinationURL.path),
+              (try? isPlainDirectory(at: destinationURL)) == true else {
+            return false
+        }
+
+        let expectedNames = Set([
+            WorkspaceProjection.openLoopsFileName,
+            WorkspaceProjection.personalizationFileName,
+            WorkspaceProjection.contextFileName,
+            WorkspaceProjection.manifestFileName
+        ])
+        guard let children = try? fileManager.contentsOfDirectory(
+            at: destinationURL,
+            includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey],
+            options: []
+        ), Set(children.map(\.lastPathComponent)) == expectedNames else {
+            return false
+        }
+
+        let manifestURL = destinationURL.appendingPathComponent(
+            WorkspaceProjection.manifestFileName
+        )
+        guard let manifestValues = try? manifestURL.resourceValues(forKeys: [
+            .isRegularFileKey,
+            .isSymbolicLinkKey,
+            .fileSizeKey
+        ]),
+        manifestValues.isRegularFile == true,
+        manifestValues.isSymbolicLink != true,
+        let manifestSize = manifestValues.fileSize,
+        manifestSize <= 64 * 1_024,
+        let manifestData = try? Data(contentsOf: manifestURL),
+        manifestData.count == manifestSize else {
+            return false
+        }
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        guard let manifest = try? decoder.decode(
+            WorkspaceExportManifest.self,
+            from: manifestData
+        ),
+        manifest.schemaVersion == WorkspaceExportManifest.currentSchemaVersion,
+        manifest.workspaceID == snapshot.workspaceID,
+        manifest.revision == snapshot.revision,
+        manifest.files.count == 3,
+        Set(manifest.files.map(\.name)).count == manifest.files.count,
+        Set(manifest.files.map(\.name)) == expectedNames.subtracting([
+            WorkspaceProjection.manifestFileName
+        ]) else {
+            return false
+        }
+
+        for record in manifest.files {
+            guard record.byteCount >= 0,
+                  record.byteCount <= 64 * 1_024 * 1_024,
+                  record.sha256.count == 64,
+                  record.sha256.allSatisfy({ $0.isNumber || ("a"..."f").contains(String($0)) }) else {
+                return false
+            }
+            let fileURL = destinationURL.appendingPathComponent(record.name)
+            guard let values = try? fileURL.resourceValues(forKeys: [
+                .isRegularFileKey,
+                .isSymbolicLinkKey,
+                .fileSizeKey
+            ]),
+            values.isRegularFile == true,
+            values.isSymbolicLink != true,
+            values.fileSize == record.byteCount,
+            let data = try? Data(contentsOf: fileURL),
+            data.count == record.byteCount,
+            WorkspaceProjection.digest(data) == record.sha256 else {
+                return false
+            }
+        }
+        return true
     }
 
     private static func pruneGeneratedProjections(

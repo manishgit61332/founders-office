@@ -11,6 +11,47 @@ import UniformTypeIdentifiers
 @MainActor
 struct WorkspaceSessionIntegrationTests {
     @Test
+    func generatedProjectionRepairStopsAfterThreeRelaunchesWithoutChangingWorkspace() async throws {
+        let fixture = try MacStorageFixture()
+        defer { fixture.remove() }
+        let workspaceID = UUID()
+        let generatedBlockerURL = fixture.root.appendingPathComponent("Generated")
+        let blocker = Data("derived-output blocker".utf8)
+        try blocker.write(to: generatedBlockerURL)
+
+        var lastSession: WorkspaceSession?
+        for attempt in 1...3 {
+            let session = try await WorkspaceSession.open(
+                rootURL: fixture.root,
+                workspaceID: workspaceID,
+                initialSnapshot: fixture.snapshot(moveCount: 1)
+            )
+            if attempt < 3 {
+                #expect(session.projectionRepairState == .retryAvailable(attemptsUsed: attempt))
+            } else {
+                #expect(session.projectionRepairState == .needsUser(attemptsUsed: 3))
+                lastSession = session
+                continue
+            }
+            #expect(session.projectionURL == nil)
+            #expect(session.snapshot.revision == .initial)
+            session.stop()
+        }
+
+        let stoppedSession = try #require(lastSession)
+        #expect(stoppedSession.projectionURL == nil)
+        #expect(try Data(contentsOf: generatedBlockerURL) == blocker)
+        #expect((try await stoppedSession.repository.snapshot()).revision == .initial)
+        #expect(try await stoppedSession.repository.pendingOperations().isEmpty)
+
+        try FileManager.default.removeItem(at: generatedBlockerURL)
+        #expect(await stoppedSession.refreshProjectionNow())
+        #expect(stoppedSession.projectionRepairState == .ready)
+        #expect(stoppedSession.projectionURL != nil)
+        stoppedSession.stop()
+    }
+
+    @Test
     func legacyBytesStayUntouchedWhileMacMutationRelaunchAndProjectionUseSQLite() async throws {
         let fixture = try MacStorageFixture()
         defer { fixture.remove() }

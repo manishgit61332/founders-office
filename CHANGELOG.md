@@ -6,6 +6,8 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Added
 
+- A content-free bounded-repair ledger and coordinator with stable idempotency keys, before/after health checks, hard timeouts, three-strike persistence across relaunches, and a Health **Needs You** stop.
+- A workspace-blind safe-mode crash diagnostic containing only ten allow-listed incident/build fields; safe mode still does not open or export canonical data.
 - Draft public client seams for transactional Appearance commits and strict,
   platform-neutral transient-presentation requests, without enabling remote
   sync or starting cross-platform client worktrees.
@@ -81,6 +83,7 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Fixed
 
+- Corrupt or missing generated projections now rebuild through a verified reversible backup without changing SQLite, while linked paths are refused and timed-out non-cooperative repairs cannot overlap another attempt.
 - **Use Latest** now adopts the exact durable Appearance returned by a save
   conflict instead of depending on a second store read that could be stale.
 - Existing-workspace attachment now rejects regressing feed horizons and skipped or duplicate entity revisions, and it removes stale schema-4 bootstrap journals inside the atomic authority-replacement transaction.

@@ -97,12 +97,42 @@ struct HealthStatusTests {
         #expect(allowed == [
             .none,
             .reloadLocalData,
+            .retryGeneratedProjection,
             .retrySync,
             .refreshCalendar,
             .openCalendarSettings,
             .openLoginItemsSettings,
             .recheckAssistant
         ])
+    }
+
+    @Test
+    func safeModeCrashReportIsWorkspaceBlindAndStrictlyAllowListed() throws {
+        let incidentID = UUID(uuidString: "11111111-2222-4333-8444-555555555555")!
+        let report = RedactedCrashStateReport(
+            incidentID: incidentID,
+            capturedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            consecutivePreReadyFailures: 99,
+            metadata: SupportReportMetadata(
+                appVersion: "1.2.3",
+                buildNumber: "45",
+                operatingSystemMajor: 15,
+                operatingSystemMinor: 6,
+                operatingSystemPatch: 0,
+                architecture: .arm64
+            )
+        )
+
+        #expect(report.fields.map(\.key) == RedactedCrashStateReport.fieldKeys)
+        let data = try report.encodedJSON()
+        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: String])
+        #expect(object.keys.sorted() == RedactedCrashStateReport.fieldKeys.sorted())
+        #expect(object["incident_id"] == incidentID.uuidString.lowercased())
+        #expect(object["safe_mode"] == "true")
+        #expect(object["consecutive_pre_ready_failures"] == "3")
+        let text = try #require(String(data: data, encoding: .utf8))
+        #expect(!text.contains("workspace"))
+        #expect(!text.contains("/Users/"))
     }
 
     private func completeSnapshot(at date: Date) -> HealthSnapshot {
