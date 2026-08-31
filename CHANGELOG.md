@@ -6,6 +6,8 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Added
 
+- A versioned, typed local entity-operation envelope capped at 256 KiB, with strict identity, field, string, number, and date validation plus an explicit transport-adapter seam.
+- A safe schema-1 outbox migration: deterministic single-entity operations upgrade in place, while broad historical snapshots require an exact-revision sync bootstrap before their protected acknowledgement boundary can remove them.
 - Bounded personal-image assets with separate 1,600-pixel display and 960-pixel sync variants, plus an explicit **Export original…** action that preserves the exact customer-selected file.
 - An Ed25519-signed Mac update channel with bounded exact-URL checks, deterministic staged rollout, pause and rollback evidence, a manual status-menu check, and an automatic check limited to once per day after onboarding.
 - An offline update-feed signer that reads its private key only from a non-synchronizing macOS Keychain item or bounded standard input and refuses to replace existing output.
@@ -43,6 +45,8 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Changed
 
+- New Move, profile, workspace, Appearance, primary-goal, milestone, and asset mutations now retain one bounded entity operation instead of another complete workspace snapshot; exact image-original metadata remains excluded.
+- Workspace retry receipts now version their fingerprint algorithm so schema-1 idempotent retries remain valid while new mutations avoid a redundant full-snapshot fingerprint encoding pass.
 - The Mac personal-image widget now renders only a bounded ImageIO thumbnail; file copies, thumbnail generation, export, and cleanup run outside the main actor.
 - The Mac app now uses one transactional SQLite workspace for Moves, personalization, goals, Appearance, tombstones, revisions, idempotency receipts, and sync outbox operations. Legacy JSON and Recovery files remain byte-for-byte migration inputs; JSON and Markdown are generated as immutable revision projections.
 - The legacy polling-based Mac CloudKit JSON bridge has been removed so it cannot compete with the canonical workspace. Cross-device sync remains unavailable until the new authenticated sync contract passes its release gate.
@@ -63,6 +67,7 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 ### Fixed
 
 - Automatic update throttling is now isolated by the reviewed feed URL, channel, and signing key, so a channel move or key rotation is checked immediately instead of inheriting another channel's delay.
+- Repeated mutations in large workspaces no longer amplify the SQLite outbox by one full canonical snapshot per edit, and multiline Move details remain valid during strict v2 validation and schema-1 migration.
 - Failed photo commits immediately roll back newly prepared files, successful replacement/removal retires prior owned variants only after the canonical SQLite commit, and launch reconciliation safely retries interrupted cleanup.
 - Photo import now rebases onto the latest personalization state so a concurrent name, Appearance, goal, or milestone edit is not overwritten by slow image preparation.
 - Rapid Mac mutations now serialize through component-scoped repository patches instead of racing whole-workspace JSON writes, and failed Appearance commits retain both the retryable draft and untouched committed value.

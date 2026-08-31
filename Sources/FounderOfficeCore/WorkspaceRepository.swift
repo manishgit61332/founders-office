@@ -150,7 +150,7 @@ public struct WorkspaceRepositorySnapshot: Sendable {
 }
 
 public struct WorkspaceOutboxOperation: Codable, Sendable {
-    public static let currentPayloadFormatVersion = 1
+    public static let currentPayloadFormatVersion = WorkspaceLocalOperationEnvelopeV2.formatVersion
 
     public var operationID: UUID
     public var idempotencyKey: WorkspaceIdempotencyKey

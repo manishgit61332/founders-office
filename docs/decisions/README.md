@@ -19,3 +19,4 @@ Each ADR records status, date, context, decision, consequences, privacy/security
 - [0014 — Signed external Mac update channel](0014-signed-external-mac-update-channel.md)
 - [0015 — Supabase Auth and revisioned cross-platform sync](0015-supabase-auth-and-revisioned-sync.md)
 - [0016 — Bounded personalization image assets](0016-bounded-personalization-image-assets.md)
+- [0017 — Bounded local entity operation outbox](0017-bounded-local-entity-outbox.md)
