@@ -24,5 +24,6 @@ Each published macOS artifact must ship with:
 - strict-schema `release.json` with the tag, commit, version, build, identifiers, CloudKit enablement, minimum system version, architectures, signing result, notarization submission ID, Gatekeeper result, and artifact hash;
 - the release record;
 - signing, entitlement, notarization, and Gatekeeper evidence.
+- write-once `clean-mac-acceptance.json`, bound to the exact manifest, artifact, immutable URLs, clean test environment, restart, upgrade, export, erase, recovery, and staged-update results.
 
 Release URLs are immutable. Withdraw a bad build and publish a higher build number. Never replace bytes under an existing release URL.

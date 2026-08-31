@@ -6,6 +6,7 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Added
 
+- A fail-closed clean-Mac acceptance record that binds restart, upgrade, export, erase, recovery, and staged-update checks to the exact sealed Mac artifact before the website can expose it.
 - A versioned, typed local entity-operation envelope capped at 256 KiB, with strict identity, field, string, number, and date validation plus an explicit transport-adapter seam.
 - A safe schema-1 outbox migration: deterministic single-entity operations upgrade in place, while broad historical snapshots require an exact-revision sync bootstrap before their protected acknowledgement boundary can remove them.
 - Bounded personal-image assets with separate 1,600-pixel display and 960-pixel sync variants, plus an explicit **Export original…** action that preserves the exact customer-selected file.

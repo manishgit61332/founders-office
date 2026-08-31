@@ -108,9 +108,9 @@ The script performs an Xcode archive and Developer ID export, then:
 
 The script refuses to reuse a version, build, tag, and commit path and makes the local output read-only. Local file permissions are not immutable storage: the publication origin must enforce object versioning or retention. Publish a new build to correct a defect; never replace an existing ZIP at the same URL.
 
-## Publish to the website
+## Stage the immutable release
 
-Publish only the final ZIP from the sealed release directory. Publish `release.json`, `release-record.md`, and the `.sha256` file beside it. Use a versioned, immutable object URL. Configure the download response as an attachment and do not serve user-uploaded content from the release origin.
+Upload only the final ZIP from the sealed release directory. Upload `release.json`, `release-record.md`, and the `.sha256` file beside it. Use a versioned, immutable object URL. Configure the download response as an attachment and do not serve user-uploaded content from the release origin. Do not enable the website download yet.
 
 Keep the website download control disabled until the artifact exists at the immutable URL and a clean Mac passes the verification below. The website requires both a committed verified-release manifest and an independently configured HTTPS origin before it renders the download. Never point the website at:
 
@@ -134,12 +134,15 @@ Scripts/verify-macos-release.sh \
   --expected-archs "arm64 x86_64"
 ```
 
-Only after that verifier passes, generate the website gate from the same canonical metadata and verified downloaded ZIP. The URL must use the immutable version/build/commit path; `latest.zip`, redirects, query aliases, and a hand-edited website manifest are rejected:
+That verification does not enable the website. Complete the clean-Mac gate below first.
+
+After the clean-Mac record is uploaded at its exact immutable path, generate the website gate from the same canonical metadata, verified downloaded ZIP, and acceptance bytes. The artifact and acceptance URLs must use the same immutable version/build/commit path; `latest` aliases, redirects, query aliases, and a hand-edited website manifest are rejected:
 
 ```bash
 python3 Scripts/prepare-website-mac-release.py \
   --metadata /path/to/downloaded/release.json \
   --verified-artifact /path/to/downloaded/FoundersOffice-X.Y.Z-build-N-macOS.zip \
+  --clean-mac-acceptance /path/to/downloaded/clean-mac-acceptance.json \
   --download-url https://DOWNLOAD_ORIGIN/releases/macos/vX.Y.Z/build-N/FULL_COMMIT/FoundersOffice-X.Y.Z-build-N-macOS.zip \
   --approved-origin https://DOWNLOAD_ORIGIN \
   --output Website/release/mac-release.json
@@ -155,17 +158,50 @@ Publish the final Team ID, bundle ID, iCloud container, and supported architectu
 
 Use a macOS account that has never installed Founder's Office. It must not have the developer certificate or source checkout.
 
-1. Download the ZIP, `release.json`, and `release-record.md` through the public website into the same directory.
+1. Download the staged ZIP, `release.json`, and `release-record.md` directly from their immutable release-origin paths into the same directory. The website button remains disabled.
 2. Run the independent release verifier.
 3. Drag the app to Applications and launch it through Finder.
 4. Confirm there is no Gatekeeper bypass instruction.
 5. Complete onboarding in local-only mode first.
-6. Repeat with iCloud sync enabled and confirm production CloudKit behavior.
+6. Grant Calendar access, relaunch, and confirm the permission and selected calendars persist.
 7. Restart the Mac and verify the launch-at-login choice.
 8. Install the next signed build and verify preferences and user data survive the upgrade.
-9. Verify a staged signed feed offers the exact immutable URL, a paused feed offers nothing, and a higher corrective build carries rollback evidence without attempting a downgrade.
+9. Verify workspace export, erasure, recovery, and relaunch from each supported outcome.
+10. Verify a staged signed feed offers the exact immutable URL, a paused feed offers nothing, and a higher corrective build carries rollback evidence without attempting a downgrade.
 
-Record the Mac model, macOS version, artifact SHA-256, and results in the release record. A test on the development Mac is not sufficient evidence.
+Record the evidence only after every check passes. `--passed` must be repeated for all values shown by `--help`; omitting any one check refuses the record:
+
+```bash
+python3 Scripts/record-macos-clean-acceptance.py \
+  --metadata /path/to/downloaded/release.json \
+  --verified-artifact /path/to/downloaded/FoundersOffice-X.Y.Z-build-N-macOS.zip \
+  --approved-origin https://DOWNLOAD_ORIGIN \
+  --artifact-url https://DOWNLOAD_ORIGIN/releases/macos/vX.Y.Z/build-N/FULL_COMMIT/FoundersOffice-X.Y.Z-build-N-macOS.zip \
+  --canonical-manifest-url https://DOWNLOAD_ORIGIN/releases/macos/vX.Y.Z/build-N/FULL_COMMIT/release.json \
+  --acceptance-record-url https://DOWNLOAD_ORIGIN/releases/macos/vX.Y.Z/build-N/FULL_COMMIT/clean-mac-acceptance.json \
+  --mac-model MAC_MODEL_IDENTIFIER \
+  --macos-version X.Y.Z \
+  --confirm-clean-account \
+  --confirm-no-developer-certificate \
+  --confirm-no-source-checkout \
+  --passed immutablePublicOriginDownload \
+  --passed independentReleaseVerification \
+  --passed cleanInstall \
+  --passed gatekeeperLaunch \
+  --passed onboarding \
+  --passed calendarPermissionRetention \
+  --passed launchAtLoginRestart \
+  --passed signedUpgradeDataRetention \
+  --passed workspaceExport \
+  --passed workspaceErase \
+  --passed recovery \
+  --passed stagedUpdate \
+  --passed pausedUpdate \
+  --passed correctiveRollbackEvidence \
+  --output /path/to/clean-mac-acceptance.json
+```
+
+Upload this file once at the declared acceptance-record URL, download it again, and use those downloaded bytes when preparing the website gate. A test on the development Mac is not sufficient evidence. Passing confirmations without performing the tests is a release-process violation, not acceptance.
 
 ## Failure and rollback
 

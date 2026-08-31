@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import re
 from urllib.parse import urlparse
+import uuid
 
 
 def fail(message: str) -> None:
@@ -41,6 +42,7 @@ def sha256_file(path: Path) -> str:
 parser = argparse.ArgumentParser()
 parser.add_argument("--metadata", required=True, type=Path)
 parser.add_argument("--verified-artifact", required=True, type=Path)
+parser.add_argument("--clean-mac-acceptance", required=True, type=Path)
 parser.add_argument("--download-url", required=True)
 parser.add_argument("--approved-origin", required=True)
 parser.add_argument("--output", required=True, type=Path)
@@ -49,12 +51,15 @@ arguments = parser.parse_args()
 for path, label in [
     (arguments.metadata, "canonical metadata"),
     (arguments.verified_artifact, "verified artifact"),
+    (arguments.clean_mac_acceptance, "clean-Mac acceptance record"),
 ]:
     if not path.is_file() or path.is_symlink():
         fail(f"{label} must be a regular, non-symlink file")
 
 if arguments.metadata.stat().st_size > 1_048_576:
     fail("canonical metadata exceeds 1 MiB")
+if arguments.clean_mac_acceptance.stat().st_size > 1_048_576:
+    fail("clean-Mac acceptance record exceeds 1 MiB")
 
 metadata_bytes = arguments.metadata.read_bytes()
 try:
@@ -136,11 +141,140 @@ if (
 ):
     fail("verified artifact bytes do not match canonical metadata")
 
+acceptance_bytes = arguments.clean_mac_acceptance.read_bytes()
+try:
+    acceptance = json.loads(acceptance_bytes, object_pairs_hook=reject_duplicate_keys)
+except (UnicodeDecodeError, json.JSONDecodeError) as error:
+    fail(f"clean-Mac acceptance record is invalid JSON: {error}")
+
+exact_keys(
+    acceptance,
+    {
+        "schemaVersion",
+        "writeOnce",
+        "accepted",
+        "acceptanceId",
+        "testedAt",
+        "release",
+        "environment",
+        "checks",
+    },
+    "clean-Mac acceptance record",
+)
+if (
+    acceptance.get("schemaVersion") != 1
+    or acceptance.get("writeOnce") is not True
+    or acceptance.get("accepted") is not True
+):
+    fail("clean-Mac acceptance record is not an accepted write-once schema-1 record")
+
+try:
+    acceptance_id = str(uuid.UUID(acceptance.get("acceptanceId", ""))).lower()
+except (ValueError, AttributeError):
+    fail("clean-Mac acceptance ID is malformed")
+if acceptance_id != acceptance.get("acceptanceId"):
+    fail("clean-Mac acceptance ID is not canonical")
+
+try:
+    release_created_at = datetime.datetime.strptime(
+        manifest.get("createdAt", ""), "%Y-%m-%dT%H:%M:%SZ"
+    )
+    acceptance_tested_at = datetime.datetime.strptime(
+        acceptance.get("testedAt", ""), "%Y-%m-%dT%H:%M:%SZ"
+    )
+except (TypeError, ValueError):
+    fail("clean-Mac acceptance time is malformed")
+if acceptance_tested_at < release_created_at:
+    fail("clean-Mac acceptance predates the sealed release")
+
+accepted_release = acceptance.get("release")
+exact_keys(
+    accepted_release,
+    {
+        "sourceManifestSHA256",
+        "artifactSHA256",
+        "artifactSizeBytes",
+        "version",
+        "build",
+        "commit",
+        "artifactURL",
+        "canonicalManifestURL",
+        "acceptanceRecordURL",
+    },
+    "clean-Mac accepted release",
+)
+accepted_release_identity = {
+    "sourceManifestSHA256": hashlib.sha256(metadata_bytes).hexdigest(),
+    "artifactSHA256": artifact_sha256,
+    "artifactSizeBytes": artifact_size,
+    "version": version,
+    "build": build,
+    "commit": commit,
+}
+if any(accepted_release.get(key) != value for key, value in accepted_release_identity.items()):
+    fail("clean-Mac acceptance does not match the canonical release and artifact")
+
+accepted_environment = acceptance.get("environment")
+exact_keys(
+    accepted_environment,
+    {
+        "macModel",
+        "macOSVersion",
+        "cleanAccount",
+        "developerCertificateAbsent",
+        "sourceCheckoutAbsent",
+    },
+    "clean-Mac acceptance environment",
+)
+if (
+    not isinstance(accepted_environment.get("macModel"), str)
+    or not accepted_environment["macModel"]
+    or accepted_environment["macModel"] != accepted_environment["macModel"].strip()
+    or len(accepted_environment["macModel"]) > 64
+    or any(
+        ord(character) < 0x20 or ord(character) == 0x7F
+        for character in accepted_environment["macModel"]
+    )
+    or not isinstance(accepted_environment.get("macOSVersion"), str)
+    or not re.fullmatch(
+        r"[0-9]+\.[0-9]+(?:\.[0-9]+)?", accepted_environment["macOSVersion"]
+    )
+    or accepted_environment.get("cleanAccount") is not True
+    or accepted_environment.get("developerCertificateAbsent") is not True
+    or accepted_environment.get("sourceCheckoutAbsent") is not True
+):
+    fail("clean-Mac acceptance environment is malformed or not clean")
+
+required_checks = {
+    "immutablePublicOriginDownload",
+    "independentReleaseVerification",
+    "cleanInstall",
+    "gatekeeperLaunch",
+    "onboarding",
+    "calendarPermissionRetention",
+    "launchAtLoginRestart",
+    "signedUpgradeDataRetention",
+    "workspaceExport",
+    "workspaceErase",
+    "recovery",
+    "stagedUpdate",
+    "pausedUpdate",
+    "correctiveRollbackEvidence",
+}
+accepted_checks = acceptance.get("checks")
+if not isinstance(accepted_checks, dict) or set(accepted_checks) != required_checks:
+    fail("clean-Mac checks do not have the reviewed schema")
+failed_checks = sorted(name for name, outcome in accepted_checks.items() if outcome != "passed")
+if failed_checks:
+    fail("clean-Mac check did not pass: " + ", ".join(failed_checks))
+
 origin = urlparse(arguments.approved_origin)
 download = urlparse(arguments.download_url)
 expected_path = f"/releases/macos/v{version}/build-{build}/{commit}/{expected_name}"
+release_base_path = f"/releases/macos/v{version}/build-{build}/{commit}"
 if (
     origin.scheme != "https"
+    or origin.hostname is None
     or origin.username is not None
     or origin.password is not None
     or origin.path not in {"", "/"}
@@ -161,11 +295,38 @@ if (
 ):
     fail("download URL is not the exact immutable release path on the approved origin")
 
+accepted_artifact_url = urlparse(accepted_release.get("artifactURL", ""))
+accepted_manifest_url = urlparse(accepted_release.get("canonicalManifestURL", ""))
+accepted_acceptance_url = urlparse(accepted_release.get("acceptanceRecordURL", ""))
+for label, candidate, expected_immutable_path in (
+    ("artifact", accepted_artifact_url, expected_path),
+    ("canonical manifest", accepted_manifest_url, f"{release_base_path}/release.json"),
+    (
+        "acceptance record",
+        accepted_acceptance_url,
+        f"{release_base_path}/clean-mac-acceptance.json",
+    ),
+):
+    if (
+        candidate.scheme != "https"
+        or candidate.netloc != origin.netloc
+        or candidate.username is not None
+        or candidate.password is not None
+        or candidate.path != expected_immutable_path
+        or candidate.params
+        or candidate.query
+        or candidate.fragment
+    ):
+        fail(f"clean-Mac {label} URL is not the exact immutable evidence path")
+if accepted_release["artifactURL"] != arguments.download_url:
+    fail("website download URL differs from the clean-Mac tested artifact URL")
+
 website_manifest = {
-    "schemaVersion": 1,
+    "schemaVersion": 2,
     "available": True,
     "verifiedFromCanonicalManifest": True,
     "signedAndNotarized": True,
+    "cleanMacAccepted": True,
     "version": version,
     "build": int(build),
     "teamID": team_id,
@@ -174,6 +335,8 @@ website_manifest = {
     "artifactSizeBytes": artifact_size,
     "releaseCommit": commit,
     "sourceManifestSHA256": hashlib.sha256(metadata_bytes).hexdigest(),
+    "acceptanceRecordSHA256": hashlib.sha256(acceptance_bytes).hexdigest(),
+    "acceptanceRecordURL": accepted_release["acceptanceRecordURL"],
     "downloadURL": arguments.download_url,
 }
 
