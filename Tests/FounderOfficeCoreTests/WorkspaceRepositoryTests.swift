@@ -395,13 +395,13 @@ struct WorkspaceRepositoryTests {
     func newerDatabaseSchemaRefusesDowngrade() async throws {
         let fixture = try RepositoryFixture()
         defer { fixture.remove() }
-        try fixture.createDatabaseWithSchemaVersion(4)
+        try fixture.createDatabaseWithSchemaVersion(5)
         let before = try Data(contentsOf: fixture.databaseURL)
 
         let error = await capturedRepositoryError {
             try await fixture.open(initial: fixture.snapshot(title: "Unused"))
         }
-        #expect(error == .schemaTooNew(found: 4, supported: 3))
+        #expect(error == .schemaTooNew(found: 5, supported: 4))
         #expect(try Data(contentsOf: fixture.databaseURL) == before)
     }
 

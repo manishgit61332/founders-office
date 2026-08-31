@@ -1053,6 +1053,11 @@ public struct SyncChange: Codable, Equatable, Sendable {
     /// decoded. The standalone change envelope cannot prove an asset prefix.
     public func validate(for workspaceID: WorkspaceID) throws {
         try validate()
+        if entityType == .workspace || entityType == .appearance {
+            guard entityID == workspaceID.rawValue else {
+                throw SyncContractValidationError.invalidResponse
+            }
+        }
         try SyncContractRules.validateRecord(
             record,
             entityType: entityType,

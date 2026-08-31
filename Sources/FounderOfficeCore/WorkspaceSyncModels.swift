@@ -300,6 +300,43 @@ public enum WorkspaceSyncRepositoryError: Error, Equatable, Sendable {
     case conflictEvidenceUnavailable
     case conflictResolutionUnavailable
     case syncEvidenceLimitReached
+    case replacementExportRequired
+    case invalidProvisioningFeed
+}
+
+/// A destructive remote attachment is intentionally impossible to express
+/// without naming how the current local workspace is protected first.
+public enum ExistingWorkspaceAttachmentAuthorization: Equatable, Sendable {
+    /// Valid only when the repository proves that the local workspace has no
+    /// customer-authored content.
+    case freshDevice
+    /// The repository writes an immutable local export to this new directory
+    /// before the replacement transaction begins.
+    case exportAndReplace(destination: URL)
+}
+
+public enum WorkspaceProvisioningDisposition: Equatable, Sendable {
+    /// Claim the current local UUID as a new remote workspace. This never
+    /// replaces local canonical data.
+    case claimLocalAsNew
+    /// Discover and attach the account's existing remote workspace.
+    case attachExisting(ExistingWorkspaceAttachmentAuthorization)
+}
+
+public enum WorkspaceProvisioningResult: Equatable, Sendable {
+    case claimedLocalAsNew(WorkspaceSyncBinding)
+    case attachedExisting(WorkspaceSyncBinding, localExportCreated: Bool)
+    case alreadyAttached(WorkspaceSyncBinding)
+}
+
+public struct ExistingWorkspaceAttachmentCommit: Sendable {
+    public let snapshot: WorkspaceRepositorySnapshot
+    public let binding: WorkspaceSyncBinding
+
+    public init(snapshot: WorkspaceRepositorySnapshot, binding: WorkspaceSyncBinding) {
+        self.snapshot = snapshot
+        self.binding = binding
+    }
 }
 
 /// Redacted transport failures shared by the coordinator and concrete HTTPS
@@ -381,8 +418,25 @@ extension WorkspaceSyncRepositoryError: LocalizedError {
             return "This conflict cannot be resolved safely by this app version. Nothing was changed."
         case .syncEvidenceLimitReached:
             return "Device sync reached its durable replay-evidence limit and stopped safely."
+        case .replacementExportRequired:
+            return "Export this local workspace before replacing it with the synced workspace."
+        case .invalidProvisioningFeed:
+            return "The existing workspace could not be verified completely. Local data was not changed."
         }
     }
+}
+
+/// Narrow provisioning boundary used before the ordinary sync coordinator can
+/// start. Runtime UI remains disabled until the production backend gates pass.
+public protocol WorkspaceProvisioningRepository: Actor {
+    func snapshot() throws -> WorkspaceRepositorySnapshot
+    func syncBinding() throws -> WorkspaceSyncBinding?
+    func bindSync(_ binding: WorkspaceSyncBinding) throws
+    func attachExistingWorkspace(
+        bootstrap: WorkspaceBootstrap,
+        pages: [SyncPullResponse],
+        authorization: ExistingWorkspaceAttachmentAuthorization
+    ) throws -> ExistingWorkspaceAttachmentCommit
 }
 
 public protocol WorkspaceSyncRepository: Actor {

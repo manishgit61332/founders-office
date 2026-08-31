@@ -523,7 +523,7 @@ public actor WorkspaceSyncCoordinator {
         case .appearance: return (.appearance, workspaceID.rawValue)
         case .profile: throw WorkspaceV2SyncAdapterError.profileRequiresReviewedBootstrap
         case .workspace: return (.workspace, workspaceID.rawValue)
-        case .primaryGoal: throw WorkspaceV2SyncAdapterError.primaryGoalRequiresDecimalMigration
+        case let .primaryGoal(goal): return (.primaryGoal, goal.id)
         case let .milestone(milestone): return (.milestone, milestone.id)
         case .asset: throw WorkspaceV2SyncAdapterError.assetTransferDisabled
         }
@@ -697,7 +697,6 @@ public actor WorkspaceSyncCoordinator {
     private func adapterCode(_ error: WorkspaceV2SyncAdapterError) -> String {
         switch error {
         case .profileRequiresReviewedBootstrap: return "profile_requires_reviewed_bootstrap"
-        case .primaryGoalRequiresDecimalMigration: return "goal_decimal_migration_required"
         case .assetTransferDisabled: return "assets_disabled"
         case .unsupportedEntity, .unsupportedField: return "adapter_mapping_missing"
         case .missingFieldClock: return "field_clock_missing"

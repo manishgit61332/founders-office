@@ -96,15 +96,17 @@ explicit; the app never chooses **Keep Mine** or **Use Latest** automatically.
 
 ## Migration and rollback
 
-This decision adds no table and does not change SQLite `user_version`; it uses
-the schema-3 sync tables already present. Integration with the replay-safe
-bootstrap work's later schema version is additive. A rollback can ignore the
-unified event stream, but must not delete outbox rows referenced by unresolved
-conflicts. Builds predating reviewed conflict resolution will continue to see
-the durable conflict and remain fail closed.
+This decision itself adds no table and does not change SQLite `user_version`.
+The integrated build retains schema 4 and the `sync_bootstrap_attempt` journal
+introduced by ADR 0021; the runtime changes use the existing sync tables
+additively. A rollback can ignore the unified event stream, but must not delete
+outbox rows referenced by unresolved conflicts. Builds predating reviewed
+conflict resolution will continue to see the durable conflict and remain fail
+closed.
 
 ## Related work
 
 - [0015 — Supabase Auth and revisioned cross-platform sync](0015-supabase-auth-and-revisioned-sync.md)
 - [0017 — Bounded local entity operation outbox](0017-bounded-local-entity-outbox.md)
 - [0020 — Fail-closed local live-sync engine](0020-fail-closed-live-sync-engine.md)
+- [0021 — Replay-safe bootstrap and exact primary-goal sync](0021-replay-safe-bootstrap-and-exact-goal-sync.md)

@@ -33,10 +33,15 @@ Before any future workspace binding, the user sees all dispositions:
 - switch to an existing workspace; or
 - export local work and replace it.
 
-Only **keep local-only** is enabled in this build. The other actions remain
-staged until the authenticated transport, export path, and conflict contract
-pass their release gates. Signing in never uploads, replaces, or claims local
-data implicitly.
+Only **keep local-only** is enabled in the customer runtime. A test-only
+provisioning seam now proves that claim and attach are different operations:
+claim sends the local UUID without replacing the snapshot; attach discovers with
+no local UUID and installs a complete cursor-zero feed atomically. A fresh device
+may attach directly. A data-bearing device must first create an immutable local
+export through the explicit export-and-replace disposition. The UI actions remain
+staged until the production identity, RLS/RPC, revocation, private-asset, and
+two-device gates pass. Signing in never uploads, replaces, or claims local data
+implicitly.
 
 Native authentication owns a transient-presentation token, suspends the notch,
 and restores it after the final provider outcome. In-notch review choices hold

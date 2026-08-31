@@ -96,11 +96,19 @@ stale erased UUID. Do not expose direct `profiles` deletion as an account API.
 
 ## Client live-sync engine status
 
-The repository includes a schema-3 SQLite sync-state boundary, an exhaustive
+The repository includes a schema-4 SQLite sync-state boundary, an exhaustive
 v2-local-to-v1-wire adapter for supported entities, a bounded HTTPS RPC
 transport, and an event-driven coordinator. These components are exercised only
 by tests. The customer Mac binary does not construct the transport or enable a
 cloud-sync UI, so their presence is not a claim that production sync is live.
+
+The test-only provisioning boundary also separates a new local claim from a
+returning-account attachment. Attachment calls `bootstrap_workspace` without a
+local UUID, validates the account/provider/device, reads the complete bounded
+feed from cursor zero, and atomically establishes the replacement snapshot,
+binding, cursor, remote revisions, and dedupe evidence. Customer-authored local
+data requires an immutable export before that transaction. This does not enable
+the Account & Sync controls in a distribution build.
 
 Runtime enablement requires an explicit local workspace claim, matching restored
 product session, approved production endpoint and publishable key, deployed and
@@ -108,14 +116,16 @@ integration-tested RPC contract, RLS evidence, revocation decision, migration
 plan, monitoring, and incident response. Without all of these, the repository
 reports local-only or blocks at the adapter/contract boundary.
 
-This branch base predates the canonical exact `GoalDecimal` model, so primary
-goals remain blocked here without conversion. Integration already contains that
-model; after merging this engine, it must map `GoalDecimal.decimalValue`
-losslessly to `SyncJSONValue.number` and pass exact round-trip tests before
-primary-goal sync is enabled. Reviewed names are bootstrap-only; ordinary
-profile operations are not silently discarded. Asset upload/download/replacement
-remains disabled until private-object export and erasure proof, including
-replacement tombstones, passes its release gate.
+Primary goals use the canonical exact `GoalDecimal` model and map its
+`decimalValue` directly to `SyncJSONValue.number`; no sync path converts through
+`Double`. Bootstrap plans are pinned durably until their exact acknowledgement,
+and the workspace record returned by `bootstrap_workspace` establishes the
+singleton's positive server revision before any later rename. Reviewed names are
+bootstrap-only; ordinary profile operations are not silently discarded. Asset
+upload/download/replacement remains disabled until private-object export and
+erasure proof, including replacement tombstones, passes its release gate. A
+current image or valid legacy resolved photo filename blocks bootstrap rather
+than silently omitting private data.
 
 ## Identity and connector separation
 
