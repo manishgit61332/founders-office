@@ -23,7 +23,9 @@ enum AppDiagnostics {
         case calendarAuthorizationRequest = "calendar.authorization.request"
         case calendarEventSave = "calendar.event.save"
         case cloudConfigurationLoad = "cloud.configuration.load"
+        #if !FOUNDER_OFFICE_DISTRIBUTION
         case codexProcessStart = "codex.process.start"
+        #endif
         case fontRegistration = "font.registration"
         case fontResourceLookup = "font.resource.lookup"
         case launchAtLoginRegister = "launch_at_login.register"

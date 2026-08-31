@@ -70,6 +70,8 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 - CloudKit now resolves one explicit container from product configuration instead of a source-code default; macOS also verifies the signed process entitlement, while iOS relies on its provisioning profile and CKContainer enforcement.
 - Existing beta workspaces remain local until their owner completes the new storage and privacy review.
 - Customer Release builds compile external Codex CLI execution out until its separately scoped helper and consent gates pass.
+- Customer Release builds now omit the complete development assistant runner, its task actions, status UI, callbacks, and identifying strings rather than retaining an inert shell.
+- Redacted support-report JSON encoding and atomic file writes now run on a dedicated storage actor so the notch remains responsive during export.
 - The codebase now passes complete Swift 6 concurrency checking with warnings treated as errors.
 - Customer-facing “Open Loops” language is now **Moves**.
 - The ambiguous “Waiting” state is now **Blocked** in the current interface.
@@ -127,6 +129,7 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 - Exact vision-image originals remain local and are never used by the notch or sync path; strict UUID-derived filenames, source/decompression/output bounds, private permissions, and path-safe cleanup prevent traversal and unbounded image handling.
 - Direct Mac releases now require an independently reviewed update-feed URL, Ed25519 public key, and sandbox network-client entitlement; the app opens only a signed immutable download URL and never installs code itself.
 - Support export is a local-only 16-field allow list; it never scrapes logs or workspace files and requires an exact on-screen preview before Save.
+- The customer-binary verifier now rejects development assistant type, state, action, footer, status-copy, and callback sentinels in every shipped architecture.
 - Product-auth callbacks now use only the reviewed provisional custom schemes supported by the native browser flow, and the completed response must match the configured scheme, host, port, and encoded path before Supabase receives its PKCE code. Universal links remain a separate unimplemented release gate.
 - Production identity configuration accepts only HTTPS endpoints and Supabase publishable/legacy-anon keys; secret and service-role credentials are rejected before the client is created.
 - Founder runtime data, photos, Codex runs, exports, support bundles, visual QA, credentials, and signing files are excluded from source control.
