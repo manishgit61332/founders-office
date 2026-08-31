@@ -2,10 +2,11 @@ import CryptoKit
 import Foundation
 import SQLite3
 
-public actor SQLiteWorkspaceRepository: WorkspaceRepository {
+public actor SQLiteWorkspaceRepository: WorkspaceRepository, WorkspaceSyncRepository {
     private let database: SQLiteWorkspaceDatabase
     private var latestSnapshot: WorkspaceRepositorySnapshot
     private var changeContinuations: [UUID: AsyncStream<WorkspaceChange>.Continuation] = [:]
+    private var remoteChangeContinuations: [UUID: AsyncStream<WorkspaceRepositorySnapshot>.Continuation] = [:]
 
     private init(
         database: SQLiteWorkspaceDatabase,
@@ -71,13 +72,7 @@ public actor SQLiteWorkspaceRepository: WorkspaceRepository {
             }
         }
 
-        var replacement = current.content
-        switch request.patch {
-        case let .openLoops(document):
-            replacement.openLoops = document
-        case let .personalization(document):
-            replacement.personalization = document
-        }
+        let replacement = try Self.mergePatch(request, into: current.content)
 
         return try transact(
             expectedRevision: current.revision,
@@ -92,6 +87,192 @@ public actor SQLiteWorkspaceRepository: WorkspaceRepository {
                 createdAt: request.createdAt
             )
         )
+    }
+
+    /// Entity-scoped merge prevents a stale whole-component UI document from
+    /// overwriting an unrelated entity that arrived through sync while the UI
+    /// edit was queued. The outbox mask and the local commit now describe the
+    /// same atomic change.
+    private static func mergePatch(
+        _ request: WorkspacePatchMutation,
+        into current: FounderOfficeSnapshot
+    ) throws -> FounderOfficeSnapshot {
+        var replacement = current
+        let fields = Set(request.changedFields)
+        switch request.patch {
+        case let .openLoops(proposed):
+            guard request.entityKind == WorkspaceLocalEntityKind.move.rawValue,
+                  let identifier = UUID(uuidString: request.entityID),
+                  let proposedMove = proposed.items.first(where: { $0.id == identifier }) else {
+                throw WorkspaceRepositoryError.invalidMutation(reason: "Move patch is not entity scoped")
+            }
+            if let index = replacement.openLoops.items.firstIndex(where: { $0.id == identifier }) {
+                var move = replacement.openLoops.items[index]
+                for field in fields {
+                    switch field {
+                    case "title": move.title = proposedMove.title
+                    case "details": move.details = proposedMove.details
+                    case "status": move.status = proposedMove.status
+                    case "previousStatus": move.previousStatus = proposedMove.previousStatus
+                    case "priority": move.priority = proposedMove.priority
+                    case "dueAt": move.dueAt = proposedMove.dueAt
+                    case "createdAt": move.createdAt = proposedMove.createdAt
+                    case "updatedAt": move.updatedAt = proposedMove.updatedAt
+                    case "priorityUpdatedAt": move.priorityUpdatedAt = proposedMove.priorityUpdatedAt
+                    case "dueAtUpdatedAt": move.dueAtUpdatedAt = proposedMove.dueAtUpdatedAt
+                    case "completedAt": move.completedAt = proposedMove.completedAt
+                    case "deletedAt": move.deletedAt = proposedMove.deletedAt
+                    case "source": move.source = proposedMove.source
+                    default:
+                        throw WorkspaceRepositoryError.invalidMutation(reason: "Move patch field is unsupported")
+                    }
+                }
+                replacement.openLoops.items[index] = move
+            } else {
+                let required: Set<String> = ["title", "details", "status", "priority", "createdAt"]
+                guard required.isSubset(of: fields) else {
+                    throw WorkspaceRepositoryError.invalidMutation(reason: "New Move patch is incomplete")
+                }
+                replacement.openLoops.items.append(proposedMove)
+            }
+            replacement.openLoops.schemaVersion = max(
+                replacement.openLoops.schemaVersion,
+                proposed.schemaVersion
+            )
+            replacement.openLoops.updatedAt = max(replacement.openLoops.updatedAt, proposed.updatedAt)
+
+        case let .personalization(proposed):
+            switch WorkspaceLocalEntityKind(metadataValue: request.entityKind) {
+            case .profile:
+                for field in fields {
+                    switch field {
+                    case "displayName": replacement.personalization.displayName = proposed.displayName
+                    case "preferredName": replacement.personalization.preferredName = proposed.preferredName
+                    case "iconStyle": replacement.personalization.iconStyle = proposed.iconStyle
+                    case "updatedAt": replacement.personalization.updatedAt = proposed.updatedAt
+                    default:
+                        throw WorkspaceRepositoryError.invalidMutation(reason: "Profile patch field is unsupported")
+                    }
+                }
+            case .workspace:
+                for field in fields {
+                    switch field {
+                    case "workspaceName": replacement.personalization.workspaceName = proposed.workspaceName
+                    case "updatedAt": replacement.personalization.updatedAt = proposed.updatedAt
+                    default:
+                        throw WorkspaceRepositoryError.invalidMutation(reason: "Workspace patch field is unsupported")
+                    }
+                }
+            case .appearance:
+                for field in fields {
+                    switch field {
+                    case "appearance": replacement.personalization.appearance = proposed.appearance
+                    case "accent": replacement.personalization.accent = proposed.accent
+                    case "updatedAt": replacement.personalization.updatedAt = proposed.updatedAt
+                    default:
+                        throw WorkspaceRepositoryError.invalidMutation(reason: "Appearance patch field is unsupported")
+                    }
+                }
+            case .primaryGoal:
+                guard let identifier = UUID(uuidString: request.entityID),
+                      let proposedGoal = proposed.primaryGoal,
+                      proposedGoal.id == identifier else {
+                    throw WorkspaceRepositoryError.invalidMutation(reason: "Primary goal patch is not entity scoped")
+                }
+                replacement.personalization.primaryGoal = mergeGoal(
+                    current: replacement.personalization.primaryGoal,
+                    proposed: proposedGoal,
+                    fields: fields
+                )
+                replacement.personalization.updatedAt = latest(
+                    replacement.personalization.updatedAt,
+                    proposed.updatedAt
+                )
+            case .milestone:
+                guard let identifier = UUID(uuidString: request.entityID),
+                      let proposedMilestone = proposed.milestones.first(where: { $0.id == identifier }) else {
+                    throw WorkspaceRepositoryError.invalidMutation(reason: "Milestone patch is not entity scoped")
+                }
+                if let index = replacement.personalization.milestones.firstIndex(where: { $0.id == identifier }) {
+                    replacement.personalization.milestones[index] = mergeMilestone(
+                        current: replacement.personalization.milestones[index],
+                        proposed: proposedMilestone,
+                        fields: fields
+                    )
+                } else {
+                    guard Set(["title", "dueAt", "createdAt"]).isSubset(of: fields) else {
+                        throw WorkspaceRepositoryError.invalidMutation(reason: "New milestone patch is incomplete")
+                    }
+                    replacement.personalization.milestones.append(proposedMilestone)
+                }
+                replacement.personalization.updatedAt = latest(
+                    replacement.personalization.updatedAt,
+                    proposed.updatedAt
+                )
+            case .asset:
+                let allowed: Set<String> = ["photoFileName", "visionImageAsset", "updatedAt"]
+                guard fields.isSubset(of: allowed) else {
+                    throw WorkspaceRepositoryError.invalidMutation(reason: "Asset patch field is unsupported")
+                }
+                if fields.contains("photoFileName") {
+                    replacement.personalization.photoFileName = proposed.photoFileName
+                }
+                if fields.contains("visionImageAsset") {
+                    replacement.personalization.visionImageAsset = proposed.visionImageAsset
+                }
+                if fields.contains("updatedAt") {
+                    replacement.personalization.updatedAt = proposed.updatedAt
+                }
+            case .move, .none:
+                throw WorkspaceRepositoryError.invalidMutation(reason: "Personalization patch entity is unsupported")
+            }
+            replacement.personalization.schemaVersion = max(
+                replacement.personalization.schemaVersion,
+                proposed.schemaVersion
+            )
+        }
+        return replacement
+    }
+
+    private static func mergeGoal(
+        current: PrimaryGoal?,
+        proposed: PrimaryGoal,
+        fields: Set<String>
+    ) -> PrimaryGoal {
+        guard var goal = current, goal.id == proposed.id else { return proposed }
+        if fields.contains("title") { goal.title = proposed.title }
+        if fields.contains("metric") { goal.metric = proposed.metric }
+        if fields.contains("currentValue") { goal.currentValue = proposed.currentValue }
+        if fields.contains("targetValue") { goal.targetValue = proposed.targetValue }
+        if fields.contains("unit") { goal.unit = proposed.unit }
+        if fields.contains("dueAt") { goal.dueAt = proposed.dueAt }
+        if fields.contains("createdAt") { goal.createdAt = proposed.createdAt }
+        if fields.contains("updatedAt") { goal.updatedAt = proposed.updatedAt }
+        if fields.contains("deletedAt") { goal.deletedAt = proposed.deletedAt }
+        return goal
+    }
+
+    private static func mergeMilestone(
+        current: Milestone,
+        proposed: Milestone,
+        fields: Set<String>
+    ) -> Milestone {
+        var milestone = current
+        if fields.contains("title") { milestone.title = proposed.title }
+        if fields.contains("dueAt") { milestone.dueAt = proposed.dueAt }
+        if fields.contains("createdAt") { milestone.createdAt = proposed.createdAt }
+        if fields.contains("updatedAt") { milestone.updatedAt = proposed.updatedAt }
+        if fields.contains("deletedAt") { milestone.deletedAt = proposed.deletedAt }
+        return milestone
+    }
+
+    private static func latest(_ lhs: Date?, _ rhs: Date?) -> Date? {
+        switch (lhs, rhs) {
+        case let (.some(lhs), .some(rhs)): return max(lhs, rhs)
+        case let (.some(lhs), nil): return lhs
+        case let (nil, .some(rhs)): return rhs
+        case (nil, nil): return nil
+        }
     }
 
     public func changes() -> AsyncStream<WorkspaceChange> {
@@ -120,13 +301,89 @@ public actor SQLiteWorkspaceRepository: WorkspaceRepository {
         try database.acknowledgeOperations(operationIDs: operationIDs)
     }
 
-    /// Removes legacy whole-snapshot rows only after a sync coordinator has
-    /// durably bootstrapped the exact current canonical revision. Ordinary
-    /// entity acknowledgements can never delete these compatibility rows.
-    public func acknowledgeLegacyOperationsAfterBootstrap(
-        revision: WorkspaceRevision
+    public func syncBinding() throws -> WorkspaceSyncBinding? {
+        try database.syncBinding()
+    }
+
+    public func bindSync(_ binding: WorkspaceSyncBinding) throws {
+        try database.bindSync(binding)
+    }
+
+    public func syncCursor() throws -> SyncCursor {
+        try database.syncCursor()
+    }
+
+    public func syncStatus() throws -> WorkspaceSyncStatus {
+        try database.syncStatus()
+    }
+
+    public func setSyncStatus(_ status: WorkspaceSyncStatus) throws {
+        try database.setSyncStatus(status)
+    }
+
+    public func pendingSyncBatch(
+        maximumCount: Int = 100,
+        maximumByteCount: Int = 2 * 1_024 * 1_024
+    ) throws -> WorkspacePendingSyncBatch {
+        try database.pendingSyncBatch(
+            maximumCount: maximumCount,
+            maximumByteCount: maximumByteCount
+        )
+    }
+
+    public func remoteRevision(entityType: SyncEntityType, entityID: UUID) throws -> Int64 {
+        try database.remoteRevision(entityType: entityType, entityID: entityID)
+    }
+
+    public func canonicalBootstrapPlan() throws -> WorkspaceCanonicalBootstrapPlan {
+        try database.canonicalBootstrapPlan()
+    }
+
+    public func acknowledgeCanonicalBootstrap(
+        plan: WorkspaceCanonicalBootstrapPlan,
+        bootstrap: WorkspaceBootstrap,
+        responses: [SyncPushResponse]
+    ) throws -> WorkspaceCanonicalBootstrapReceipt {
+        try database.acknowledgeCanonicalBootstrap(
+            plan: plan,
+            bootstrap: bootstrap,
+            responses: responses
+        )
+    }
+
+    public func acknowledgeRemoteOperations(
+        _ acknowledgements: [WorkspaceRemoteOperationAcknowledgement],
+        conflicts: [WorkspacePersistedSyncConflict]
     ) throws {
-        try database.acknowledgeLegacyOperationsAfterBootstrap(revision: revision)
+        try database.acknowledgeRemoteOperations(acknowledgements, conflicts: conflicts)
+    }
+
+    public func applyRemotePage(_ response: SyncPullResponse) throws {
+        let updated = try database.applyRemotePage(response)
+        if let updated {
+            latestSnapshot = updated
+            for continuation in remoteChangeContinuations.values {
+                continuation.yield(updated)
+            }
+        }
+    }
+
+    public func persistedSyncConflicts(limit: Int = 100) throws -> [WorkspacePersistedSyncConflict] {
+        try database.persistedSyncConflicts(limit: limit)
+    }
+
+    public func remoteChanges() -> AsyncStream<WorkspaceRepositorySnapshot> {
+        let identifier = UUID()
+        return AsyncStream(bufferingPolicy: .bufferingNewest(8)) { continuation in
+            remoteChangeContinuations[identifier] = continuation
+            continuation.onTermination = { [weak self] _ in
+                Task { await self?.removeRemoteChangeContinuation(identifier) }
+            }
+        }
+    }
+
+    private func removeRemoteChangeContinuation(_ identifier: UUID) {
+        remoteChangeContinuations.removeValue(forKey: identifier)
     }
 
     /// Writes a revision-consistent, immutable projection. The destination
@@ -347,6 +604,19 @@ private struct ValidatedWorkspaceMutation {
     var fingerprint: Data
 }
 
+private struct StoredBootstrapReceipt {
+    let receiptID: UUID
+    let acceptedCursor: SyncCursor
+    let operationsDigest: Data
+}
+
+private struct StoredRemoteAcknowledgement {
+    let entityType: SyncEntityType
+    let entityID: UUID
+    let remoteRevision: Int64
+    let fieldClocks: [String: Date]
+}
+
 private enum SQLiteWorkspaceValue {
     case integer(Int64)
     case real(Double)
@@ -356,7 +626,7 @@ private enum SQLiteWorkspaceValue {
 }
 
 private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
-    static let currentSchemaVersion = 2
+    static let currentSchemaVersion = 3
     static let applicationID: Int64 = 1_179_600_454 // ASCII "FOFF"
     static let supportedOpenLoopsSchemaVersion = 3
     static let supportedPersonalizationSchemaVersion = 6
@@ -599,61 +869,76 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
 
         var operations: [WorkspaceOutboxOperation] = []
         while try statement.step(operation: "read_outbox") {
-            let changedFieldsData = try statement.requiredBlob(at: 8, operation: "read_outbox")
-            let fieldClocksData = try statement.requiredBlob(at: 9, operation: "read_outbox")
-            let changedFields: [String]
-            let fieldClocks: [String: Date]
-            do {
-                changedFields = try codec.decoder.decode([String].self, from: changedFieldsData)
-                fieldClocks = try codec.decoder.decode([String: Date].self, from: fieldClocksData)
-            } catch {
-                throw WorkspaceRepositoryError.invalidDatabase
-            }
-
-            guard
-                let operationID = UUID(uuidString: try statement.requiredText(at: 0, operation: "read_outbox")),
-                let idempotencyUUID = UUID(uuidString: try statement.requiredText(at: 1, operation: "read_outbox")),
-                let workspaceID = UUID(uuidString: try statement.requiredText(at: 2, operation: "read_outbox")),
-                let writerUUID = UUID(uuidString: try statement.requiredText(at: 3, operation: "read_outbox"))
-            else {
-                throw WorkspaceRepositoryError.invalidDatabase
-            }
-
-            let operation = WorkspaceOutboxOperation(
-                operationID: operationID,
-                idempotencyKey: WorkspaceIdempotencyKey(rawValue: idempotencyUUID),
-                workspaceID: workspaceID,
-                writerID: WorkspaceWriterID(rawValue: writerUUID),
-                baseRevision: WorkspaceRevision(rawValue: statement.integer(at: 4)),
-                committedRevision: WorkspaceRevision(rawValue: statement.integer(at: 5)),
-                entityKind: try statement.requiredText(at: 6, operation: "read_outbox"),
-                entityID: try statement.requiredText(at: 7, operation: "read_outbox"),
-                changedFields: changedFields,
-                fieldClocks: fieldClocks,
-                payloadFormatVersion: Int(statement.integer(at: 10)),
-                payload: try statement.requiredBlob(at: 11, operation: "read_outbox"),
-                createdAt: Date(timeIntervalSince1970: statement.double(at: 12)),
-                deliveryAttempts: Int(statement.integer(at: 13))
-            )
-            guard operation.baseRevision.rawValue >= 0,
-                  operation.committedRevision.rawValue > operation.baseRevision.rawValue,
-                  operation.createdAt.timeIntervalSinceReferenceDate.isFinite,
-                  operation.deliveryAttempts >= 0,
-                  operation.changedFields == Array(Set(operation.changedFields)).sorted(),
-                  Set(operation.fieldClocks.keys).isSubset(of: Set(operation.changedFields)),
-                  operation.fieldClocks.values.allSatisfy({
-                      $0.timeIntervalSinceReferenceDate.isFinite
-                  }) else {
-                throw WorkspaceRepositoryError.invalidDatabase
-            }
-            do {
-                _ = try operation.decodedLocalPayload()
-            } catch {
-                throw WorkspaceRepositoryError.invalidDatabase
-            }
-            operations.append(operation)
+            operations.append(try decodeOutboxOperation(statement, operation: "read_outbox"))
         }
         return operations
+    }
+
+    private func decodeOutboxOperation(
+        _ statement: SQLiteWorkspaceStatement,
+        operation databaseOperation: String
+    ) throws -> WorkspaceOutboxOperation {
+        let changedFields: [String]
+        let fieldClocks: [String: Date]
+        do {
+            changedFields = try codec.decoder.decode(
+                [String].self,
+                from: try statement.requiredBlob(at: 8, operation: databaseOperation)
+            )
+            fieldClocks = try codec.decoder.decode(
+                [String: Date].self,
+                from: try statement.requiredBlob(at: 9, operation: databaseOperation)
+            )
+        } catch {
+            throw WorkspaceRepositoryError.invalidDatabase
+        }
+        guard let operationID = UUID(
+            uuidString: try statement.requiredText(at: 0, operation: databaseOperation)
+        ),
+        let idempotencyUUID = UUID(
+            uuidString: try statement.requiredText(at: 1, operation: databaseOperation)
+        ),
+        let workspaceID = UUID(
+            uuidString: try statement.requiredText(at: 2, operation: databaseOperation)
+        ),
+        let writerUUID = UUID(
+            uuidString: try statement.requiredText(at: 3, operation: databaseOperation)
+        ) else {
+            throw WorkspaceRepositoryError.invalidDatabase
+        }
+        let value = WorkspaceOutboxOperation(
+            operationID: operationID,
+            idempotencyKey: WorkspaceIdempotencyKey(rawValue: idempotencyUUID),
+            workspaceID: workspaceID,
+            writerID: WorkspaceWriterID(rawValue: writerUUID),
+            baseRevision: WorkspaceRevision(rawValue: statement.integer(at: 4)),
+            committedRevision: WorkspaceRevision(rawValue: statement.integer(at: 5)),
+            entityKind: try statement.requiredText(at: 6, operation: databaseOperation),
+            entityID: try statement.requiredText(at: 7, operation: databaseOperation),
+            changedFields: changedFields,
+            fieldClocks: fieldClocks,
+            payloadFormatVersion: Int(statement.integer(at: 10)),
+            payload: try statement.requiredBlob(at: 11, operation: databaseOperation),
+            createdAt: Date(timeIntervalSince1970: statement.double(at: 12)),
+            deliveryAttempts: Int(statement.integer(at: 13))
+        )
+        guard value.baseRevision.rawValue >= 0,
+              value.committedRevision.rawValue > value.baseRevision.rawValue,
+              value.createdAt.timeIntervalSinceReferenceDate.isFinite,
+              value.deliveryAttempts >= 0,
+              value.changedFields == Array(Set(value.changedFields)).sorted(),
+              Set(value.fieldClocks.keys) == Set(value.changedFields),
+              value.fieldClocks.values.allSatisfy({
+                  $0.timeIntervalSinceReferenceDate.isFinite
+              }) else {
+            throw WorkspaceRepositoryError.invalidDatabase
+        }
+        do {
+            _ = try value.decodedLocalPayload()
+        } catch {
+            throw WorkspaceRepositoryError.invalidDatabase
+        }
+        return value
     }
 
     func recordDeliveryAttempt(operationIDs: [UUID]) throws {
@@ -695,34 +980,575 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
         }
     }
 
-    func acknowledgeLegacyOperationsAfterBootstrap(
-        revision: WorkspaceRevision
-    ) throws {
-        guard revision.rawValue >= 0 else {
-            throw WorkspaceRepositoryError.invalidMutation(
-                reason: "bootstrap revision cannot be negative"
-            )
+    func syncBinding() throws -> WorkspaceSyncBinding? {
+        let statement = try prepare(
+            """
+            SELECT account_id, remote_workspace_id, device_id, identity_provider, bound_at
+            FROM sync_binding WHERE singleton = 1
+            """,
+            operation: "read_sync_binding"
+        )
+        guard try statement.step(operation: "read_sync_binding") else { return nil }
+        guard let accountID = UUID(uuidString: try statement.requiredText(at: 0, operation: "read_sync_binding")),
+              let workspaceID = UUID(uuidString: try statement.requiredText(at: 1, operation: "read_sync_binding")),
+              let deviceID = UUID(uuidString: try statement.requiredText(at: 2, operation: "read_sync_binding")),
+              let provider = AccountIdentityProvider(
+                rawValue: try statement.requiredText(at: 3, operation: "read_sync_binding")
+              ) else {
+            throw WorkspaceSyncRepositoryError.invalidBinding
         }
+        return try WorkspaceSyncBinding(
+            accountID: FounderAccountID(rawValue: accountID),
+            workspaceID: WorkspaceID(rawValue: workspaceID),
+            deviceID: DeviceID(rawValue: deviceID),
+            identityProvider: provider,
+            boundAt: Date(timeIntervalSince1970: statement.double(at: 4))
+        )
+    }
+
+    func bindSync(_ binding: WorkspaceSyncBinding) throws {
         try transaction {
-            let current = try loadSnapshot()
-            guard revision == current.revision else {
-                throw WorkspaceRepositoryError.revisionConflict(
-                    expected: revision,
-                    actual: current.revision
-                )
+            let local = try loadSnapshot()
+            guard binding.workspaceID.rawValue == local.workspaceID else {
+                throw WorkspaceSyncRepositoryError.bindingMismatch
+            }
+            if let existing = try syncBinding() {
+                guard existing.accountID == binding.accountID,
+                      existing.workspaceID == binding.workspaceID,
+                      existing.deviceID == binding.deviceID,
+                      existing.identityProvider == binding.identityProvider else {
+                    throw WorkspaceSyncRepositoryError.identityReplacementRequiresDisposition
+                }
+                return
             }
             try execute(
                 """
-                DELETE FROM operation_outbox
-                WHERE payload_format_version = ? AND committed_revision <= ?
+                INSERT INTO sync_binding (
+                    singleton, account_id, remote_workspace_id, device_id,
+                    identity_provider, bound_at
+                ) VALUES (1, ?, ?, ?, ?, ?)
                 """,
                 bindings: [
-                    .integer(Int64(WorkspaceOutboxOperation.legacySnapshotPayloadFormatVersion)),
-                    .integer(revision.rawValue)
+                    .text(binding.accountID.rawValue.uuidString.lowercased()),
+                    .text(binding.workspaceID.rawValue.uuidString.lowercased()),
+                    .text(binding.deviceID.rawValue.uuidString.lowercased()),
+                    .text(binding.identityProvider.rawValue),
+                    .real(binding.boundAt.timeIntervalSince1970),
                 ],
-                operation: "acknowledge_legacy_outbox_bootstrap"
+                operation: "bind_sync"
+            )
+            try execute(
+                """
+                UPDATE sync_state SET phase = 'idle', retry_attempt = 0,
+                    next_retry_at = NULL, failure_code = NULL
+                WHERE singleton = 1
+                """,
+                operation: "bind_sync"
             )
         }
+    }
+
+    func syncCursor() throws -> SyncCursor {
+        let statement = try prepare(
+            "SELECT cursor FROM sync_state WHERE singleton = 1",
+            operation: "read_sync_cursor"
+        )
+        guard try statement.step(operation: "read_sync_cursor") else {
+            throw WorkspaceSyncRepositoryError.invalidSyncState
+        }
+        return try SyncCursor(value: statement.integer(at: 0))
+    }
+
+    func syncStatus() throws -> WorkspaceSyncStatus {
+        let statement = try prepare(
+            """
+            SELECT phase, retry_attempt, next_retry_at, last_success_at, failure_code
+            FROM sync_state WHERE singleton = 1
+            """,
+            operation: "read_sync_status"
+        )
+        guard try statement.step(operation: "read_sync_status"),
+              let phase = WorkspaceSyncPhase(
+                rawValue: try statement.requiredText(at: 0, operation: "read_sync_status")
+              ) else {
+            throw WorkspaceSyncRepositoryError.invalidSyncState
+        }
+        return try WorkspaceSyncStatus(
+            phase: phase,
+            retryAttempt: Int(statement.integer(at: 1)),
+            nextRetryAt: statement.optionalDate(at: 2),
+            lastSuccessAt: statement.optionalDate(at: 3),
+            failureCode: try statement.optionalText(at: 4, operation: "read_sync_status")
+        )
+    }
+
+    func setSyncStatus(_ status: WorkspaceSyncStatus) throws {
+        try execute(
+            """
+            UPDATE sync_state
+            SET phase = ?, retry_attempt = ?, next_retry_at = ?,
+                last_success_at = ?, failure_code = ?
+            WHERE singleton = 1
+            """,
+            bindings: [
+                .text(status.phase.rawValue),
+                .integer(Int64(status.retryAttempt)),
+                status.nextRetryAt.map { .real($0.timeIntervalSince1970) } ?? .null,
+                status.lastSuccessAt.map { .real($0.timeIntervalSince1970) } ?? .null,
+                status.failureCode.map(SQLiteWorkspaceValue.text) ?? .null,
+            ],
+            operation: "write_sync_status"
+        )
+        guard sqlite3_changes(connection) == 1 else {
+            throw WorkspaceSyncRepositoryError.invalidSyncState
+        }
+    }
+
+    func pendingSyncBatch(
+        maximumCount: Int,
+        maximumByteCount: Int
+    ) throws -> WorkspacePendingSyncBatch {
+        guard (1...100).contains(maximumCount),
+              (1...2 * 1_024 * 1_024).contains(maximumByteCount) else {
+            throw WorkspaceSyncRepositoryError.requestBoundsExceeded
+        }
+        guard try syncBinding() != nil else {
+            return WorkspacePendingSyncBatch(
+                operations: [],
+                requiresCanonicalBootstrap: false,
+                totalEncodedByteCount: 0
+            )
+        }
+        let bootstrapComplete = try scalarCount(
+            "SELECT bootstrap_complete FROM sync_state WHERE singleton = 1",
+            operation: "inspect_bootstrap_state"
+        ) == 1
+        if !bootstrapComplete {
+            return WorkspacePendingSyncBatch(
+                operations: [],
+                requiresCanonicalBootstrap: true,
+                totalEncodedByteCount: 0
+            )
+        }
+        let legacy = try scalarCount(
+            "SELECT count(*) FROM operation_outbox WHERE payload_format_version = ?",
+            bindings: [.integer(Int64(WorkspaceOutboxOperation.legacySnapshotPayloadFormatVersion))],
+            operation: "inspect_sync_outbox"
+        ) > 0
+        if legacy {
+            return WorkspacePendingSyncBatch(
+                operations: [],
+                requiresCanonicalBootstrap: true,
+                totalEncodedByteCount: 0
+            )
+        }
+
+        let candidates = try pendingOperations(limit: maximumCount)
+        var selected: [WorkspaceOutboxOperation] = []
+        var total = 0
+        for operation in candidates {
+            guard operation.payloadFormatVersion == WorkspaceLocalOperationEnvelopeV2.formatVersion else {
+                throw WorkspaceRepositoryError.invalidDatabase
+            }
+            let encodedSize = operation.payload.count + 1_024
+            if selected.isEmpty, encodedSize > maximumByteCount {
+                throw WorkspaceSyncRepositoryError.requestBoundsExceeded
+            }
+            if total + encodedSize > maximumByteCount { break }
+            selected.append(operation)
+            total += encodedSize
+        }
+        return WorkspacePendingSyncBatch(
+            operations: selected,
+            requiresCanonicalBootstrap: false,
+            totalEncodedByteCount: total
+        )
+    }
+
+    func remoteRevision(entityType: SyncEntityType, entityID: UUID) throws -> Int64 {
+        let statement = try prepare(
+            """
+            SELECT remote_revision FROM sync_entity_revisions
+            WHERE entity_type = ? AND entity_id = ?
+            """,
+            operation: "read_remote_revision"
+        )
+        try statement.bind(
+            [.text(entityType.rawValue), .text(entityID.uuidString.lowercased())],
+            operation: "read_remote_revision"
+        )
+        guard try statement.step(operation: "read_remote_revision") else { return 0 }
+        let revision = statement.integer(at: 0)
+        guard revision > 0 else { throw WorkspaceSyncRepositoryError.invalidRemoteRevision }
+        return revision
+    }
+
+    func canonicalBootstrapPlan() throws -> WorkspaceCanonicalBootstrapPlan {
+        guard let binding = try syncBinding() else {
+            throw WorkspaceSyncRepositoryError.bindingRequired
+        }
+        let snapshot = try loadSnapshot()
+        try failIfBootstrapWouldDropProtectedOutboxState()
+        return try WorkspaceV2SyncAdapter.canonicalBootstrapPlan(
+            snapshot: snapshot,
+            remoteWorkspaceID: binding.workspaceID
+        )
+    }
+
+    func acknowledgeCanonicalBootstrap(
+        plan: WorkspaceCanonicalBootstrapPlan,
+        bootstrap: WorkspaceBootstrap,
+        responses: [SyncPushResponse]
+    ) throws -> WorkspaceCanonicalBootstrapReceipt {
+        try transaction {
+            guard let binding = try syncBinding(),
+                  plan.remoteWorkspaceID == binding.workspaceID,
+                  bootstrap.session == binding.session,
+                  bootstrap.profile.accountID == binding.accountID,
+                  bootstrap.profile.identityProvider == binding.identityProvider,
+                  bootstrap.session.workspaceID == plan.remoteWorkspaceID,
+                  !responses.isEmpty,
+                  responses.allSatisfy({ $0.workspaceID == binding.workspaceID }) else {
+                throw WorkspaceSyncRepositoryError.bootstrapResponseMismatch
+            }
+            if let expectedName = plan.profileDisplayName {
+                guard bootstrap.profile.displayName == expectedName else {
+                    throw WorkspaceSyncRepositoryError.bootstrapResponseMismatch
+                }
+            }
+            let current = try loadSnapshot()
+            guard current.workspaceID == plan.localWorkspaceID,
+                  current.revision == plan.localRevision else {
+                throw WorkspaceSyncRepositoryError.bootstrapRevisionChanged
+            }
+            try failIfBootstrapWouldDropProtectedOutboxState()
+            let currentPlan = try WorkspaceV2SyncAdapter.canonicalBootstrapPlan(
+                snapshot: current,
+                remoteWorkspaceID: binding.workspaceID
+            )
+            guard currentPlan.snapshotDigest == plan.snapshotDigest,
+                  currentPlan.operations == plan.operations else {
+                throw WorkspaceSyncRepositoryError.bootstrapRevisionChanged
+            }
+
+            let results = responses.flatMap(\.results)
+            let expectedIDs = Set(plan.operations.map(\.operationID))
+            guard Set(results.map(\.operationID)) == expectedIDs,
+                  results.count == expectedIDs.count,
+                  results.allSatisfy({
+                      ($0.status == .accepted || $0.status == .duplicate)
+                          && $0.revision != nil && $0.cursor != nil && $0.conflict == nil
+                  }) else {
+                throw WorkspaceSyncRepositoryError.bootstrapResponseMismatch
+            }
+            let resultsByID = Dictionary(uniqueKeysWithValues: results.map { ($0.operationID, $0) })
+            for operation in plan.operations {
+                guard let result = resultsByID[operation.operationID],
+                      let revision = result.revision else {
+                    throw WorkspaceSyncRepositoryError.bootstrapResponseMismatch
+                }
+                try upsertRemoteRevision(
+                    entityType: operation.entityType,
+                    entityID: operation.entityID,
+                    revision: revision,
+                    fieldClocks: operation.fieldClocks
+                )
+            }
+
+            let acceptedCursor = try SyncCursor(
+                value: max(
+                    bootstrap.latestCursor.value,
+                    responses.map(\.latestCursor.value).max() ?? 0
+                )
+            )
+            let resultDigest = try digestBootstrapAcceptance(
+                bootstrap: bootstrap,
+                results: results
+            )
+            if let replay = try bootstrapReceipt(
+                localWorkspaceID: plan.localWorkspaceID,
+                remoteWorkspaceID: plan.remoteWorkspaceID,
+                accountID: binding.accountID,
+                deviceID: binding.deviceID,
+                localRevision: plan.localRevision,
+                snapshotDigest: plan.snapshotDigest
+            ) {
+                guard replay.acceptedCursor == acceptedCursor,
+                      replay.operationsDigest == resultDigest else {
+                    throw WorkspaceSyncRepositoryError.bootstrapResponseMismatch
+                }
+                return WorkspaceCanonicalBootstrapReceipt(
+                    receiptID: replay.receiptID,
+                    remoteWorkspaceID: plan.remoteWorkspaceID,
+                    acceptedCursor: acceptedCursor
+                )
+            }
+
+            let receiptID = UUID()
+            try execute(
+                """
+                INSERT INTO sync_bootstrap_receipts (
+                    receipt_id, local_workspace_id, remote_workspace_id, account_id, device_id,
+                    local_revision, snapshot_digest, accepted_cursor,
+                    accepted_operations_digest, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                bindings: [
+                    .text(receiptID.uuidString.lowercased()),
+                    .text(plan.localWorkspaceID.uuidString.lowercased()),
+                    .text(plan.remoteWorkspaceID.rawValue.uuidString.lowercased()),
+                    .text(binding.accountID.rawValue.uuidString.lowercased()),
+                    .text(binding.deviceID.rawValue.uuidString.lowercased()),
+                    .integer(plan.localRevision.rawValue),
+                    .blob(plan.snapshotDigest),
+                    .integer(acceptedCursor.value),
+                    .blob(resultDigest),
+                    .real(Date().timeIntervalSince1970),
+                ],
+                operation: "record_bootstrap_receipt"
+            )
+            // The receipt and deletion share one SQLite transaction. A crash
+            // can leave both or neither, never an unproven acknowledgement.
+            try execute(
+                "DELETE FROM operation_outbox WHERE committed_revision <= ?",
+                bindings: [.integer(plan.localRevision.rawValue)],
+                operation: "acknowledge_canonical_bootstrap"
+            )
+            try execute(
+                "UPDATE sync_state SET bootstrap_complete = 1 WHERE singleton = 1",
+                operation: "acknowledge_canonical_bootstrap"
+            )
+            guard sqlite3_changes(connection) == 1 else {
+                throw WorkspaceSyncRepositoryError.invalidSyncState
+            }
+            return WorkspaceCanonicalBootstrapReceipt(
+                receiptID: receiptID,
+                remoteWorkspaceID: plan.remoteWorkspaceID,
+                acceptedCursor: acceptedCursor
+            )
+        }
+    }
+
+    func acknowledgeRemoteOperations(
+        _ acknowledgements: [WorkspaceRemoteOperationAcknowledgement],
+        conflicts: [WorkspacePersistedSyncConflict]
+    ) throws {
+        try transaction {
+            guard let binding = try syncBinding() else {
+                throw WorkspaceSyncRepositoryError.bindingRequired
+            }
+            let acknowledgedIDs = Set(acknowledgements.map(\.localOperationID))
+            let conflictIDs = Set(conflicts.map { $0.conflict.operationID.rawValue })
+            guard acknowledgedIDs.isDisjoint(with: conflictIDs),
+                  acknowledgedIDs.count == acknowledgements.count,
+                  conflictIDs.count == conflicts.count,
+                  conflicts.allSatisfy({ $0.workspaceID == binding.workspaceID }) else {
+                throw WorkspaceSyncRepositoryError.invalidConflict
+            }
+
+            for acknowledgement in acknowledgements {
+                guard let operation = try v2OutboxOperation(
+                    operationID: acknowledgement.localOperationID
+                ) else {
+                    guard let stored = try remoteAcknowledgement(
+                        operationID: acknowledgement.localOperationID
+                    ),
+                    stored.entityType == acknowledgement.entityType,
+                    stored.entityID == acknowledgement.entityID,
+                    stored.remoteRevision == acknowledgement.remoteRevision,
+                    stored.fieldClocks == acknowledgement.fieldClocks else {
+                        throw WorkspaceSyncRepositoryError.acknowledgementMismatch
+                    }
+                    continue
+                }
+                let expected = try remoteIdentity(
+                    operation: operation,
+                    workspaceID: binding.workspaceID
+                )
+                guard expected.type == acknowledgement.entityType,
+                      expected.id == acknowledgement.entityID,
+                      expected.fieldClocks == acknowledgement.fieldClocks else {
+                    throw WorkspaceSyncRepositoryError.acknowledgementMismatch
+                }
+                try upsertRemoteRevision(
+                    entityType: acknowledgement.entityType,
+                    entityID: acknowledgement.entityID,
+                    revision: acknowledgement.remoteRevision,
+                    fieldClocks: acknowledgement.fieldClocks
+                )
+                try insertRemoteAcknowledgement(acknowledgement)
+                try deleteV2Outbox(operationID: acknowledgement.localOperationID)
+            }
+
+            for persisted in conflicts {
+                let operationID = persisted.conflict.operationID.rawValue
+                if let existing = try persistedConflict(operationID: operationID) {
+                    guard existing == persisted.conflict else {
+                        throw WorkspaceSyncRepositoryError.invalidConflict
+                    }
+                    continue
+                }
+                guard let operation = try v2OutboxOperation(operationID: operationID) else {
+                    throw WorkspaceSyncRepositoryError.invalidConflict
+                }
+                let expected = try remoteIdentity(
+                    operation: operation,
+                    workspaceID: binding.workspaceID
+                )
+                guard expected.type == persisted.conflict.entityType,
+                      expected.id == persisted.conflict.entityID else {
+                    throw WorkspaceSyncRepositoryError.invalidConflict
+                }
+                let data = try codec.encode(persisted.conflict)
+                try execute(
+                    """
+                    INSERT OR IGNORE INTO sync_conflicts (
+                        conflict_id, workspace_id, operation_id, conflict, recorded_at
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    bindings: [
+                        .text(persisted.id.uuidString.lowercased()),
+                        .text(persisted.workspaceID.rawValue.uuidString.lowercased()),
+                        .text(operationID.uuidString.lowercased()),
+                        .blob(data),
+                        .real(persisted.recordedAt.timeIntervalSince1970),
+                    ],
+                    operation: "persist_sync_conflict"
+                )
+                try deleteV2Outbox(operationID: operationID)
+            }
+            if !conflicts.isEmpty {
+                try execute(
+                    """
+                    UPDATE sync_state SET phase = 'conflictReviewRequired',
+                        retry_attempt = 0, next_retry_at = NULL,
+                        failure_code = 'sync_conflict'
+                    WHERE singleton = 1
+                    """,
+                    operation: "persist_sync_conflict"
+                )
+            }
+        }
+    }
+
+    func applyRemotePage(_ response: SyncPullResponse) throws -> WorkspaceRepositorySnapshot? {
+        try transaction {
+            guard let binding = try syncBinding(), response.workspaceID == binding.workspaceID else {
+                throw WorkspaceSyncRepositoryError.bindingMismatch
+            }
+            let cursor = try syncCursor()
+            guard cursor == response.fromCursor else {
+                throw WorkspaceSyncRepositoryError.cursorMismatch
+            }
+            guard response.changes.count <= 500 else {
+                throw WorkspaceSyncRepositoryError.requestBoundsExceeded
+            }
+
+            let currentStored = try readStoredState()
+            guard let currentStored else { throw WorkspaceRepositoryError.invalidDatabase }
+            let current = try decodeState(currentStored)
+            var freshChanges: [SyncChange] = []
+            for change in response.changes {
+                if let appliedCursor = try appliedCursor(operationID: change.operationID.rawValue) {
+                    guard appliedCursor == change.cursor.value else {
+                        throw WorkspaceSyncRepositoryError.invalidCursor
+                    }
+                } else {
+                    freshChanges.append(change)
+                }
+            }
+            let content = try WorkspaceRemoteChangeApplicator.apply(freshChanges, to: current.content)
+            let canonical = try codec.canonicalizedWithData(content)
+            let changed = canonical.data != currentStored.snapshotData
+            let nextSnapshot: WorkspaceRepositorySnapshot
+            if changed {
+                nextSnapshot = WorkspaceRepositorySnapshot(
+                    workspaceID: current.workspaceID,
+                    writerID: current.writerID,
+                    revision: WorkspaceRevision(rawValue: current.revision.rawValue + 1),
+                    content: canonical.snapshot
+                )
+                try updateState(
+                    nextSnapshot,
+                    snapshotData: canonical.data,
+                    expectedRevision: current.revision
+                )
+            } else {
+                nextSnapshot = current
+            }
+
+            for change in freshChanges {
+                let fieldClocks = try remoteFieldClocks(change.record)
+                try upsertRemoteRevision(
+                    entityType: change.entityType,
+                    entityID: change.entityID,
+                    revision: change.revision,
+                    fieldClocks: fieldClocks
+                )
+                try execute(
+                    """
+                    INSERT INTO sync_applied_operations (operation_id, cursor, applied_at)
+                    VALUES (?, ?, ?)
+                    """,
+                    bindings: [
+                        .text(change.operationID.rawValue.uuidString.lowercased()),
+                        .integer(change.cursor.value),
+                        .real(Date().timeIntervalSince1970),
+                    ],
+                    operation: "record_remote_operation"
+                )
+            }
+            try execute(
+                "UPDATE sync_state SET cursor = ? WHERE singleton = 1 AND cursor = ?",
+                bindings: [.integer(response.nextCursor.value), .integer(response.fromCursor.value)],
+                operation: "advance_sync_cursor"
+            )
+            guard sqlite3_changes(connection) == 1 else {
+                throw WorkspaceSyncRepositoryError.cursorMismatch
+            }
+            return changed ? nextSnapshot : nil
+        }
+    }
+
+    func persistedSyncConflicts(limit: Int) throws -> [WorkspacePersistedSyncConflict] {
+        guard (1...500).contains(limit) else {
+            throw WorkspaceSyncRepositoryError.requestBoundsExceeded
+        }
+        let statement = try prepare(
+            """
+            SELECT conflict_id, workspace_id, conflict, recorded_at
+            FROM sync_conflicts ORDER BY recorded_at DESC, conflict_id ASC LIMIT ?
+            """,
+            operation: "read_sync_conflicts"
+        )
+        try statement.bind([.integer(Int64(limit))], operation: "read_sync_conflicts")
+        var values: [WorkspacePersistedSyncConflict] = []
+        while try statement.step(operation: "read_sync_conflicts") {
+            guard let id = UUID(uuidString: try statement.requiredText(at: 0, operation: "read_sync_conflicts")),
+                  let workspaceID = UUID(
+                    uuidString: try statement.requiredText(at: 1, operation: "read_sync_conflicts")
+                  ) else {
+                throw WorkspaceSyncRepositoryError.invalidConflict
+            }
+            let conflict: SyncConflict
+            do {
+                conflict = try codec.decoder.decode(
+                    SyncConflict.self,
+                    from: try statement.requiredBlob(at: 2, operation: "read_sync_conflicts")
+                )
+            } catch {
+                throw WorkspaceSyncRepositoryError.invalidConflict
+            }
+            values.append(
+                try WorkspacePersistedSyncConflict(
+                    id: id,
+                    workspaceID: WorkspaceID(rawValue: workspaceID),
+                    conflict: conflict,
+                    recordedAt: Date(timeIntervalSince1970: statement.double(at: 3))
+                )
+            )
+        }
+        return values
     }
 
     private func configureConnection() throws {
@@ -818,6 +1644,7 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
                     """,
                     operation: "migrate_database"
                 )
+                try createSyncTables(operation: "migrate_database")
                 try execute(
                     "PRAGMA application_id = \(Self.applicationID)",
                     operation: "migrate_database"
@@ -829,8 +1656,228 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
             }
         } else if applicationID != Self.applicationID {
             throw WorkspaceRepositoryError.invalidDatabase
-        } else if schemaVersion == 1 {
-            try migrateVersionOneOutbox()
+        } else {
+            if schemaVersion == 1 {
+                try migrateVersionOneOutbox()
+            }
+            if schemaVersion <= 2 {
+                try migrateSyncVersionThree()
+            }
+        }
+    }
+
+    private func migrateSyncVersionThree() throws {
+        try transaction {
+            try createSyncTables(operation: "migrate_sync_v3")
+            try quarantineMalformedV2Operations()
+            try execute(
+                "PRAGMA user_version = \(Self.currentSchemaVersion)",
+                operation: "migrate_sync_v3"
+            )
+        }
+    }
+
+    private func createSyncTables(operation: String) throws {
+        try execute(
+            """
+            CREATE TABLE IF NOT EXISTS sync_binding (
+                singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                account_id TEXT NOT NULL,
+                remote_workspace_id TEXT NOT NULL,
+                device_id TEXT NOT NULL,
+                identity_provider TEXT NOT NULL CHECK (identity_provider IN ('google', 'apple')),
+                bound_at REAL NOT NULL
+            )
+            """,
+            operation: operation
+        )
+        try execute(
+            """
+            CREATE TABLE IF NOT EXISTS sync_state (
+                singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                cursor INTEGER NOT NULL CHECK (cursor >= 0),
+                phase TEXT NOT NULL,
+                retry_attempt INTEGER NOT NULL CHECK (retry_attempt BETWEEN 0 AND 32),
+                next_retry_at REAL,
+                last_success_at REAL,
+                failure_code TEXT,
+                bootstrap_complete INTEGER NOT NULL DEFAULT 0
+                    CHECK (bootstrap_complete IN (0, 1))
+            )
+            """,
+            operation: operation
+        )
+        try execute(
+            """
+            INSERT OR IGNORE INTO sync_state (
+                singleton, cursor, phase, retry_attempt,
+                next_retry_at, last_success_at, failure_code, bootstrap_complete
+            ) VALUES (1, 0, 'localOnly', 0, NULL, NULL, NULL, 0)
+            """,
+            operation: operation
+        )
+        try execute(
+            """
+            CREATE TABLE IF NOT EXISTS sync_entity_revisions (
+                entity_type TEXT NOT NULL,
+                entity_id TEXT NOT NULL,
+                remote_revision INTEGER NOT NULL CHECK (remote_revision > 0),
+                field_clocks BLOB NOT NULL,
+                PRIMARY KEY (entity_type, entity_id)
+            )
+            """,
+            operation: operation
+        )
+        try execute(
+            """
+            CREATE TABLE IF NOT EXISTS sync_conflicts (
+                conflict_id TEXT PRIMARY KEY NOT NULL,
+                workspace_id TEXT NOT NULL,
+                operation_id TEXT NOT NULL UNIQUE,
+                conflict BLOB NOT NULL,
+                recorded_at REAL NOT NULL
+            )
+            """,
+            operation: operation
+        )
+        try execute(
+            """
+            CREATE TABLE IF NOT EXISTS sync_operation_acknowledgements (
+                operation_id TEXT PRIMARY KEY NOT NULL,
+                entity_type TEXT NOT NULL,
+                entity_id TEXT NOT NULL,
+                remote_revision INTEGER NOT NULL CHECK (remote_revision > 0),
+                field_clocks BLOB NOT NULL,
+                acknowledged_at REAL NOT NULL
+            )
+            """,
+            operation: operation
+        )
+        try execute(
+            """
+            CREATE TABLE IF NOT EXISTS sync_applied_operations (
+                operation_id TEXT PRIMARY KEY NOT NULL,
+                cursor INTEGER NOT NULL UNIQUE CHECK (cursor > 0),
+                applied_at REAL NOT NULL
+            )
+            """,
+            operation: operation
+        )
+        try execute(
+            """
+            CREATE TABLE IF NOT EXISTS sync_bootstrap_receipts (
+                receipt_id TEXT PRIMARY KEY NOT NULL,
+                local_workspace_id TEXT NOT NULL,
+                remote_workspace_id TEXT NOT NULL,
+                account_id TEXT NOT NULL,
+                device_id TEXT NOT NULL,
+                local_revision INTEGER NOT NULL CHECK (local_revision >= 0),
+                snapshot_digest BLOB NOT NULL,
+                accepted_cursor INTEGER NOT NULL CHECK (accepted_cursor >= 0),
+                accepted_operations_digest BLOB NOT NULL,
+                created_at REAL NOT NULL,
+                UNIQUE (
+                    local_workspace_id, remote_workspace_id, account_id, device_id,
+                    local_revision, snapshot_digest
+                )
+            )
+            """,
+            operation: operation
+        )
+        try execute(
+            """
+            CREATE TABLE IF NOT EXISTS sync_quarantined_operations (
+                operation_id TEXT PRIMARY KEY NOT NULL,
+                idempotency_key TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
+                writer_id TEXT NOT NULL,
+                base_revision INTEGER NOT NULL,
+                committed_revision INTEGER NOT NULL,
+                entity_kind TEXT NOT NULL,
+                entity_id TEXT NOT NULL,
+                changed_fields BLOB NOT NULL,
+                field_clocks BLOB NOT NULL,
+                payload_format_version INTEGER NOT NULL,
+                payload BLOB NOT NULL,
+                created_at REAL NOT NULL,
+                delivery_attempts INTEGER NOT NULL,
+                quarantine_reason TEXT NOT NULL,
+                quarantined_at REAL NOT NULL
+            )
+            """,
+            operation: operation
+        )
+    }
+
+    private func quarantineMalformedV2Operations() throws {
+        let statement = try prepare(
+            """
+            SELECT operation_id, changed_fields, field_clocks
+            FROM operation_outbox
+            WHERE payload_format_version = ?
+            ORDER BY committed_revision ASC
+            """,
+            operation: "inspect_v2_clock_masks"
+        )
+        try statement.bind(
+            [.integer(Int64(WorkspaceLocalOperationEnvelopeV2.formatVersion))],
+            operation: "inspect_v2_clock_masks"
+        )
+        var malformedIDs: [String] = []
+        while try statement.step(operation: "inspect_v2_clock_masks") {
+            let fields: [String]
+            let clocks: [String: Date]
+            do {
+                fields = try codec.decoder.decode(
+                    [String].self,
+                    from: try statement.requiredBlob(at: 1, operation: "inspect_v2_clock_masks")
+                )
+                clocks = try codec.decoder.decode(
+                    [String: Date].self,
+                    from: try statement.requiredBlob(at: 2, operation: "inspect_v2_clock_masks")
+                )
+            } catch {
+                malformedIDs.append(try statement.requiredText(at: 0, operation: "inspect_v2_clock_masks"))
+                continue
+            }
+            if Set(fields) != Set(clocks.keys) {
+                malformedIDs.append(try statement.requiredText(at: 0, operation: "inspect_v2_clock_masks"))
+            }
+        }
+
+        for operationID in malformedIDs {
+            try execute(
+                """
+                INSERT INTO sync_quarantined_operations (
+                    operation_id, idempotency_key, workspace_id, writer_id,
+                    base_revision, committed_revision, entity_kind, entity_id,
+                    changed_fields, field_clocks, payload_format_version, payload,
+                    created_at, delivery_attempts, quarantine_reason, quarantined_at
+                )
+                SELECT operation_id, idempotency_key, workspace_id, writer_id,
+                       base_revision, committed_revision, entity_kind, entity_id,
+                       changed_fields, field_clocks, payload_format_version, payload,
+                       created_at, delivery_attempts, 'clock_mask_mismatch', ?
+                FROM operation_outbox WHERE operation_id = ?
+                """,
+                bindings: [.real(Date().timeIntervalSince1970), .text(operationID)],
+                operation: "quarantine_v2_clock_mask"
+            )
+            try execute(
+                "DELETE FROM operation_outbox WHERE operation_id = ?",
+                bindings: [.text(operationID)],
+                operation: "quarantine_v2_clock_mask"
+            )
+        }
+        if !malformedIDs.isEmpty {
+            try execute(
+                """
+                UPDATE sync_state
+                SET phase = 'adapterBlocked', failure_code = 'legacy_clock_mask_mismatch'
+                WHERE singleton = 1
+                """,
+                operation: "quarantine_v2_clock_mask"
+            )
         }
     }
 
@@ -1080,9 +2127,9 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
         }) else {
             throw WorkspaceRepositoryError.invalidMutation(reason: "a changed field is invalid")
         }
-        guard Set(mutation.fieldClocks.keys).isSubset(of: Set(changedFields)) else {
+        guard Set(mutation.fieldClocks.keys) == Set(changedFields) else {
             throw WorkspaceRepositoryError.invalidMutation(
-                reason: "field clocks must refer to changed fields"
+                reason: "field clocks must match changed fields exactly"
             )
         }
         guard mutation.fieldClocks.values.allSatisfy({ $0.timeIntervalSinceReferenceDate.isFinite }) else {
@@ -1164,6 +2211,396 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
                 actual: actual
             )
         }
+    }
+
+    private func scalarCount(
+        _ sql: String,
+        bindings: [SQLiteWorkspaceValue] = [],
+        operation: String
+    ) throws -> Int64 {
+        let statement = try prepare(sql, operation: operation)
+        try statement.bind(bindings, operation: operation)
+        guard try statement.step(operation: operation) else {
+            throw WorkspaceRepositoryError.invalidDatabase
+        }
+        return statement.integer(at: 0)
+    }
+
+    /// Bootstrap may supersede ordinary entity operations through one exact
+    /// canonical snapshot. These local entities do not yet have a safe v1
+    /// bootstrap representation, so their pending edits must never disappear
+    /// under that acknowledgement.
+    private func failIfBootstrapWouldDropProtectedOutboxState() throws {
+        let profileStatement = try prepare(
+            """
+            SELECT entity_kind, changed_fields FROM operation_outbox
+            WHERE entity_kind IN ('profile', 'personalization')
+            """,
+            operation: "inspect_bootstrap_profile_gate"
+        )
+        while try profileStatement.step(operation: "inspect_bootstrap_profile_gate") {
+            let entityKind = try profileStatement.requiredText(
+                at: 0,
+                operation: "inspect_bootstrap_profile_gate"
+            )
+            let changedFields: [String]
+            do {
+                changedFields = try codec.decoder.decode(
+                    [String].self,
+                    from: try profileStatement.requiredBlob(
+                        at: 1,
+                        operation: "inspect_bootstrap_profile_gate"
+                    )
+                )
+            } catch {
+                throw WorkspaceV2SyncAdapterError.profileRequiresReviewedBootstrap
+            }
+            // The frozen bootstrap RPC owns only preferredName ->
+            // profile.displayName. Product displayName and iconStyle have no
+            // reviewed wire representation and therefore stay pending.
+            guard entityKind == WorkspaceLocalEntityKind.profile.rawValue,
+                  Set(changedFields).isSubset(of: ["preferredName", "updatedAt"]),
+                  changedFields.contains("preferredName") else {
+                throw WorkspaceV2SyncAdapterError.profileRequiresReviewedBootstrap
+            }
+        }
+        let goalCount = try scalarCount(
+            """
+            SELECT count(*) FROM operation_outbox
+            WHERE entity_kind IN ('primary_goal', 'primaryGoal')
+            """,
+            operation: "inspect_bootstrap_goal_gate"
+        )
+        if goalCount > 0 {
+            throw WorkspaceV2SyncAdapterError.primaryGoalRequiresDecimalMigration
+        }
+        let assetCount = try scalarCount(
+            "SELECT count(*) FROM operation_outbox WHERE entity_kind = 'asset'",
+            operation: "inspect_bootstrap_asset_gate"
+        )
+        if assetCount > 0 {
+            throw WorkspaceV2SyncAdapterError.assetTransferDisabled
+        }
+    }
+
+    private func upsertRemoteRevision(
+        entityType: SyncEntityType,
+        entityID: UUID,
+        revision: Int64,
+        fieldClocks: [String: Date]
+    ) throws {
+        guard revision > 0,
+              fieldClocks.values.allSatisfy({ $0.timeIntervalSinceReferenceDate.isFinite }) else {
+            throw WorkspaceSyncRepositoryError.invalidRemoteRevision
+        }
+        let existingStatement = try prepare(
+            """
+            SELECT remote_revision, field_clocks FROM sync_entity_revisions
+            WHERE entity_type = ? AND entity_id = ?
+            """,
+            operation: "read_remote_revision"
+        )
+        let bindings: [SQLiteWorkspaceValue] = [
+            .text(entityType.rawValue), .text(entityID.uuidString.lowercased()),
+        ]
+        try existingStatement.bind(bindings, operation: "read_remote_revision")
+        var mergedClocks = fieldClocks
+        if try existingStatement.step(operation: "read_remote_revision") {
+            let existingRevision = existingStatement.integer(at: 0)
+            guard revision >= existingRevision else {
+                throw WorkspaceSyncRepositoryError.invalidRemoteRevision
+            }
+            let existingClocks: [String: Date]
+            do {
+                existingClocks = try codec.decoder.decode(
+                    [String: Date].self,
+                    from: try existingStatement.requiredBlob(at: 1, operation: "read_remote_revision")
+                )
+            } catch {
+                throw WorkspaceSyncRepositoryError.invalidRemoteRevision
+            }
+            for (field, clock) in existingClocks where mergedClocks[field] == nil {
+                mergedClocks[field] = clock
+            }
+        }
+        let clocksData = try codec.encode(mergedClocks)
+        try execute(
+            """
+            INSERT INTO sync_entity_revisions (
+                entity_type, entity_id, remote_revision, field_clocks
+            ) VALUES (?, ?, ?, ?)
+            ON CONFLICT(entity_type, entity_id) DO UPDATE SET
+                remote_revision = excluded.remote_revision,
+                field_clocks = excluded.field_clocks
+            """,
+            bindings: bindings + [.integer(revision), .blob(clocksData)],
+            operation: "write_remote_revision"
+        )
+    }
+
+    private func digestBootstrapAcceptance(
+        bootstrap: WorkspaceBootstrap,
+        results: [SyncOperationResult]
+    ) throws -> Data {
+        struct DigestItem: Codable {
+            let operationID: SyncOperationID
+            let status: SyncOperationStatus
+            let revision: Int64
+            let cursor: SyncCursor
+        }
+        let items = try results.map { result -> DigestItem in
+            guard let revision = result.revision, let cursor = result.cursor else {
+                throw WorkspaceSyncRepositoryError.bootstrapResponseMismatch
+            }
+            return DigestItem(
+                operationID: result.operationID,
+                status: result.status,
+                revision: revision,
+                cursor: cursor
+            )
+        }
+        .sorted { $0.operationID.rawValue.uuidString < $1.operationID.rawValue.uuidString }
+        struct Acceptance: Codable {
+            let bootstrap: WorkspaceBootstrap
+            let results: [DigestItem]
+        }
+        return Data(
+            SHA256.hash(
+                data: try codec.encode(
+                    Acceptance(bootstrap: bootstrap, results: items)
+                )
+            )
+        )
+    }
+
+    private func bootstrapReceipt(
+        localWorkspaceID: UUID,
+        remoteWorkspaceID: WorkspaceID,
+        accountID: FounderAccountID,
+        deviceID: DeviceID,
+        localRevision: WorkspaceRevision,
+        snapshotDigest: Data
+    ) throws -> StoredBootstrapReceipt? {
+        let statement = try prepare(
+            """
+            SELECT receipt_id, accepted_cursor, accepted_operations_digest
+            FROM sync_bootstrap_receipts
+            WHERE local_workspace_id = ? AND remote_workspace_id = ?
+              AND account_id = ? AND device_id = ?
+              AND local_revision = ? AND snapshot_digest = ?
+            """,
+            operation: "read_bootstrap_receipt"
+        )
+        try statement.bind(
+            [
+                .text(localWorkspaceID.uuidString.lowercased()),
+                .text(remoteWorkspaceID.rawValue.uuidString.lowercased()),
+                .text(accountID.rawValue.uuidString.lowercased()),
+                .text(deviceID.rawValue.uuidString.lowercased()),
+                .integer(localRevision.rawValue),
+                .blob(snapshotDigest),
+            ],
+            operation: "read_bootstrap_receipt"
+        )
+        guard try statement.step(operation: "read_bootstrap_receipt") else { return nil }
+        guard let receiptID = UUID(
+            uuidString: try statement.requiredText(at: 0, operation: "read_bootstrap_receipt")
+        ) else {
+            throw WorkspaceRepositoryError.invalidDatabase
+        }
+        return StoredBootstrapReceipt(
+            receiptID: receiptID,
+            acceptedCursor: try SyncCursor(value: statement.integer(at: 1)),
+            operationsDigest: try statement.requiredBlob(at: 2, operation: "read_bootstrap_receipt")
+        )
+    }
+
+    private func v2OutboxOperation(
+        operationID: UUID
+    ) throws -> WorkspaceOutboxOperation? {
+        let statement = try prepare(
+            """
+            SELECT operation_id, idempotency_key, workspace_id, writer_id,
+                   base_revision, committed_revision, entity_kind, entity_id,
+                   changed_fields, field_clocks, payload_format_version,
+                   payload, created_at, delivery_attempts
+            FROM operation_outbox
+            WHERE operation_id = ? AND payload_format_version = ?
+            """,
+            operation: "read_exact_outbox"
+        )
+        try statement.bind(
+            [
+                .text(operationID.uuidString.lowercased()),
+                .integer(Int64(WorkspaceLocalOperationEnvelopeV2.formatVersion)),
+            ],
+            operation: "read_exact_outbox"
+        )
+        guard try statement.step(operation: "read_exact_outbox") else { return nil }
+        return try decodeOutboxOperation(statement, operation: "read_exact_outbox")
+    }
+
+    private func remoteIdentity(
+        operation: WorkspaceOutboxOperation,
+        workspaceID: WorkspaceID
+    ) throws -> (type: SyncEntityType, id: UUID, fieldClocks: [String: Date]) {
+        guard case let .localEntity(envelope) = try operation.decodedLocalPayload() else {
+            throw WorkspaceSyncRepositoryError.acknowledgementMismatch
+        }
+        let identity: (type: SyncEntityType, id: UUID)
+        switch envelope.record {
+        case let .move(move): identity = (.move, move.id)
+        case .appearance: identity = (.appearance, workspaceID.rawValue)
+        case .profile:
+            throw WorkspaceV2SyncAdapterError.profileRequiresReviewedBootstrap
+        case .workspace: identity = (.workspace, workspaceID.rawValue)
+        case .primaryGoal:
+            throw WorkspaceV2SyncAdapterError.primaryGoalRequiresDecimalMigration
+        case let .milestone(milestone): identity = (.milestone, milestone.id)
+        case .asset:
+            throw WorkspaceV2SyncAdapterError.assetTransferDisabled
+        }
+        let baseRevision = try remoteRevision(
+            entityType: identity.type,
+            entityID: identity.id
+        )
+        // A server acknowledgement or conflict cannot predate the canonical
+        // bootstrap which establishes a positive server revision. Treat such
+        // evidence as unbound rather than adapting a partial local update as a
+        // remote create.
+        guard baseRevision > 0 else {
+            throw WorkspaceSyncRepositoryError.acknowledgementMismatch
+        }
+        let wire = try WorkspaceV2SyncAdapter.adapt(
+            operation: operation,
+            envelope: envelope,
+            remoteBaseRevision: baseRevision,
+            workspaceID: workspaceID
+        )
+        return (wire.entityType, wire.entityID, wire.fieldClocks)
+    }
+
+    private func insertRemoteAcknowledgement(
+        _ acknowledgement: WorkspaceRemoteOperationAcknowledgement
+    ) throws {
+        try execute(
+            """
+            INSERT INTO sync_operation_acknowledgements (
+                operation_id, entity_type, entity_id, remote_revision,
+                field_clocks, acknowledged_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            bindings: [
+                .text(acknowledgement.localOperationID.uuidString.lowercased()),
+                .text(acknowledgement.entityType.rawValue),
+                .text(acknowledgement.entityID.uuidString.lowercased()),
+                .integer(acknowledgement.remoteRevision),
+                .blob(try codec.encode(acknowledgement.fieldClocks)),
+                .real(Date().timeIntervalSince1970),
+            ],
+            operation: "record_remote_acknowledgement"
+        )
+    }
+
+    private func remoteAcknowledgement(
+        operationID: UUID
+    ) throws -> StoredRemoteAcknowledgement? {
+        let statement = try prepare(
+            """
+            SELECT entity_type, entity_id, remote_revision, field_clocks
+            FROM sync_operation_acknowledgements WHERE operation_id = ?
+            """,
+            operation: "read_remote_acknowledgement"
+        )
+        try statement.bind(
+            [.text(operationID.uuidString.lowercased())],
+            operation: "read_remote_acknowledgement"
+        )
+        guard try statement.step(operation: "read_remote_acknowledgement"),
+              let entityType = SyncEntityType(
+                rawValue: try statement.requiredText(at: 0, operation: "read_remote_acknowledgement")
+              ),
+              let entityID = UUID(
+                uuidString: try statement.requiredText(at: 1, operation: "read_remote_acknowledgement")
+              ) else { return nil }
+        let clocks: [String: Date]
+        do {
+            clocks = try codec.decoder.decode(
+                [String: Date].self,
+                from: try statement.requiredBlob(at: 3, operation: "read_remote_acknowledgement")
+            )
+        } catch {
+            throw WorkspaceSyncRepositoryError.acknowledgementMismatch
+        }
+        return StoredRemoteAcknowledgement(
+            entityType: entityType,
+            entityID: entityID,
+            remoteRevision: statement.integer(at: 2),
+            fieldClocks: clocks
+        )
+    }
+
+    private func persistedConflict(operationID: UUID) throws -> SyncConflict? {
+        let statement = try prepare(
+            "SELECT conflict FROM sync_conflicts WHERE operation_id = ?",
+            operation: "read_exact_sync_conflict"
+        )
+        try statement.bind(
+            [.text(operationID.uuidString.lowercased())],
+            operation: "read_exact_sync_conflict"
+        )
+        guard try statement.step(operation: "read_exact_sync_conflict") else { return nil }
+        do {
+            return try codec.decoder.decode(
+                SyncConflict.self,
+                from: try statement.requiredBlob(at: 0, operation: "read_exact_sync_conflict")
+            )
+        } catch {
+            throw WorkspaceSyncRepositoryError.invalidConflict
+        }
+    }
+
+    private func deleteV2Outbox(operationID: UUID) throws {
+        try execute(
+            """
+            DELETE FROM operation_outbox
+            WHERE operation_id = ? AND payload_format_version = ?
+            """,
+            bindings: [
+                .text(operationID.uuidString.lowercased()),
+                .integer(Int64(WorkspaceLocalOperationEnvelopeV2.formatVersion)),
+            ],
+            operation: "acknowledge_remote_operation"
+        )
+    }
+
+    private func appliedCursor(operationID: UUID) throws -> Int64? {
+        let statement = try prepare(
+            "SELECT cursor FROM sync_applied_operations WHERE operation_id = ?",
+            operation: "read_applied_remote_operation"
+        )
+        try statement.bind(
+            [.text(operationID.uuidString.lowercased())],
+            operation: "read_applied_remote_operation"
+        )
+        guard try statement.step(operation: "read_applied_remote_operation") else { return nil }
+        return statement.integer(at: 0)
+    }
+
+    private func remoteFieldClocks(
+        _ record: [String: SyncJSONValue]
+    ) throws -> [String: Date] {
+        guard case let .object(values)? = record["fieldClocks"] else {
+            throw WorkspaceSyncRepositoryError.invalidRemoteRevision
+        }
+        var result: [String: Date] = [:]
+        for (field, value) in values {
+            guard case let .string(string) = value else {
+                throw WorkspaceSyncRepositoryError.invalidRemoteRevision
+            }
+            result[field] = try WorkspaceV2SyncAdapter.parseTimestamp(string)
+        }
+        return result
     }
 
     private func receipt(for key: WorkspaceIdempotencyKey) throws -> WorkspaceOperationReceipt? {
@@ -1491,6 +2928,16 @@ private final class SQLiteWorkspaceStatement {
             )
         }
         return String(cString: text)
+    }
+
+    func optionalText(at index: Int32, operation: String) throws -> String? {
+        if sqlite3_column_type(pointer, index) == SQLITE_NULL { return nil }
+        return try requiredText(at: index, operation: operation)
+    }
+
+    func optionalDate(at index: Int32) -> Date? {
+        guard sqlite3_column_type(pointer, index) != SQLITE_NULL else { return nil }
+        return Date(timeIntervalSince1970: double(at: index))
     }
 
     func requiredBlob(at index: Int32, operation: String) throws -> Data {

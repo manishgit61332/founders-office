@@ -333,13 +333,13 @@ struct WorkspaceRepositoryTests {
     func newerDatabaseSchemaRefusesDowngrade() async throws {
         let fixture = try RepositoryFixture()
         defer { fixture.remove() }
-        try fixture.createDatabaseWithSchemaVersion(3)
+        try fixture.createDatabaseWithSchemaVersion(4)
         let before = try Data(contentsOf: fixture.databaseURL)
 
         let error = await capturedRepositoryError {
             try await fixture.open(initial: fixture.snapshot(title: "Unused"))
         }
-        #expect(error == .schemaTooNew(found: 3, supported: 2))
+        #expect(error == .schemaTooNew(found: 4, supported: 3))
         #expect(try Data(contentsOf: fixture.databaseURL) == before)
     }
 
@@ -537,7 +537,7 @@ struct WorkspaceRepositoryTests {
     }
 
     @Test
-    func broadLegacyPersonalizationRequiresExplicitBootstrapBeforeAcknowledgement() async throws {
+    func broadLegacyPersonalizationStaysPendingUntilEveryProfileFieldHasReviewedWireSemantics() async throws {
         let fixture = try RepositoryFixture()
         defer { fixture.remove() }
         let repository = try await fixture.open(initial: fixture.snapshot(title: "Before"))
@@ -604,27 +604,15 @@ struct WorkspaceRepositoryTests {
             WorkspaceLocalOperationEnvelopeV2.formatVersion
         ])
 
-        let wrongRevisionError = await capturedRepositoryError {
-            try await reopened.acknowledgeLegacyOperationsAfterBootstrap(revision: .initial)
+        let binding = try fixture.syncBinding()
+        try await reopened.bindSync(binding)
+        let pendingBatch = try await reopened.pendingSyncBatch()
+        #expect(pendingBatch.requiresCanonicalBootstrap)
+        let adapterError = await capturedAdapterError {
+            try await reopened.canonicalBootstrapPlan()
         }
-        #expect(
-            wrongRevisionError == .revisionConflict(
-                expected: .initial,
-                actual: WorkspaceRevision(rawValue: 2)
-            )
-        )
+        #expect(adapterError == .profileRequiresReviewedBootstrap)
         #expect(try await reopened.pendingOperations().count == 2)
-
-        try await reopened.acknowledgeLegacyOperationsAfterBootstrap(
-            revision: WorkspaceRevision(rawValue: 2)
-        )
-        let remaining = try await reopened.pendingOperations()
-        #expect(remaining.count == 1)
-        #expect(remaining.first?.operationID == nextMutation.operationID)
-        #expect(remaining.first?.payloadFormatVersion == WorkspaceLocalOperationEnvelopeV2.formatVersion)
-
-        try await reopened.acknowledgeOperations(operationIDs: [nextMutation.operationID])
-        #expect(try await reopened.pendingOperations().isEmpty)
     }
 
     @Test
@@ -756,7 +744,10 @@ struct WorkspaceRepositoryTests {
             entityKind: "personalization",
             entityID: "personalization",
             changedFields: ["personalization", "updatedAt"],
-            fieldClocks: ["personalization": fixture.date(20)],
+            fieldClocks: [
+                "personalization": fixture.date(20),
+                "updatedAt": fixture.date(20),
+            ],
             replacement: replacement,
             createdAt: fixture.date(20)
         )
@@ -898,6 +889,71 @@ private func capturedRepositoryError<Result: Sendable>(
     }
 }
 
+private func capturedSyncRepositoryError<Result: Sendable>(
+    _ operation: @Sendable () async throws -> Result
+) async -> WorkspaceSyncRepositoryError? {
+    do {
+        _ = try await operation()
+        Issue.record("Expected a WorkspaceSyncRepositoryError")
+        return nil
+    } catch let error as WorkspaceSyncRepositoryError {
+        return error
+    } catch {
+        Issue.record("Expected WorkspaceSyncRepositoryError, received \(type(of: error))")
+        return nil
+    }
+}
+
+private func capturedAdapterError<Result: Sendable>(
+    _ operation: @Sendable () async throws -> Result
+) async -> WorkspaceV2SyncAdapterError? {
+    do {
+        _ = try await operation()
+        Issue.record("Expected a WorkspaceV2SyncAdapterError")
+        return nil
+    } catch let error as WorkspaceV2SyncAdapterError {
+        return error
+    } catch {
+        Issue.record("Expected WorkspaceV2SyncAdapterError, received \(type(of: error))")
+        return nil
+    }
+}
+
+private func acceptedPushResponse(
+    workspaceID: WorkspaceID,
+    operations: [SyncOperation],
+    startingCursor: Int64 = 1
+) throws -> SyncPushResponse {
+    let results = try operations.enumerated().map { index, operation in
+        try SyncOperationResult(
+            operationID: operation.operationID,
+            status: .accepted,
+            revision: Int64(index + 1),
+            cursor: SyncCursor(value: startingCursor + Int64(index)),
+            conflict: nil
+        )
+    }
+    struct EncodedResponse: Encodable {
+        let contractVersion: Int
+        let workspaceId: WorkspaceID
+        let latestCursor: SyncCursor
+        let results: [SyncOperationResult]
+    }
+    let response = EncodedResponse(
+        contractVersion: SyncOperation.contractVersion,
+        workspaceId: workspaceID,
+        latestCursor: try SyncCursor(
+            value: startingCursor + Int64(max(0, operations.count - 1))
+        ),
+        results: results
+    )
+    let encoder = JSONEncoder()
+    encoder.dateEncodingStrategy = .iso8601
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+    return try decoder.decode(SyncPushResponse.self, from: encoder.encode(response))
+}
+
 private func repositoryAttempt(
     _ repository: SQLiteWorkspaceRepository,
     revision: WorkspaceRevision,
@@ -918,7 +974,7 @@ private func repositoryAttempt(
     }
 }
 
-private struct RepositoryFixture: Sendable {
+struct RepositoryFixture: Sendable {
     let rootURL: URL
     let databaseURL: URL
     let workspaceID = UUID()
@@ -1021,15 +1077,32 @@ private struct RepositoryFixture: Sendable {
         replacement: FounderOfficeSnapshot,
         changedFields: [String] = ["title"]
     ) -> WorkspaceMutation {
-        WorkspaceMutation(
+        let normalizedFields = Array(Set(changedFields)).sorted()
+        return WorkspaceMutation(
             operationID: UUID(),
             idempotencyKey: WorkspaceIdempotencyKey(),
             entityKind: "move",
             entityID: "00000000-0000-0000-0000-000000000001",
-            changedFields: changedFields,
-            fieldClocks: ["title": date(20)],
+            changedFields: normalizedFields,
+            fieldClocks: Dictionary(
+                uniqueKeysWithValues: normalizedFields.map { ($0, date(20)) }
+            ),
             replacement: replacement,
             createdAt: date(20)
+        )
+    }
+
+    func syncBinding() throws -> WorkspaceSyncBinding {
+        try WorkspaceSyncBinding(
+            accountID: FounderAccountID(
+                rawValue: UUID(uuidString: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")!
+            ),
+            workspaceID: WorkspaceID(rawValue: workspaceID),
+            deviceID: DeviceID(
+                rawValue: UUID(uuidString: "22222222-2222-4222-8222-222222222222")!
+            ),
+            identityProvider: .google,
+            boundAt: date(20)
         )
     }
 

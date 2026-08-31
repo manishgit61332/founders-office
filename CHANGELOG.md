@@ -6,6 +6,8 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Added
 
+- A fail-closed schema-3 live-sync core with durable binding, server revisions, pull cursor, exact bootstrap and acknowledgement receipts, conflict evidence, inbound deduplication, and quarantine for malformed historical clock masks.
+- A bounded Supabase HTTPS RPC transport and event-driven sync coordinator with strict nested response shapes, cancellation, push-before-pull ordering, coalesced manual/automatic runs, hard continuation budgets, and no polling.
 - A versioned, typed local entity-operation envelope capped at 256 KiB, with strict identity, field, string, number, and date validation plus an explicit transport-adapter seam.
 - A safe schema-1 outbox migration: deterministic single-entity operations upgrade in place, while broad historical snapshots require an exact-revision sync bootstrap before their protected acknowledgement boundary can remove them.
 - Bounded personal-image assets with separate 1,600-pixel display and 960-pixel sync variants, plus an explicit **Export original…** action that preserves the exact customer-selected file.
@@ -66,6 +68,8 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Fixed
 
+- Remote pull now applies field-scoped records, server clocks, dedupe IDs, and its cursor in one transaction without re-enqueuing an outbound operation; failed or interrupted pages roll back without cursor skip.
+- Canonical bootstrap can no longer delete pending work from a bare local revision: it requires exact authenticated server proof bound to the current workspace digest, account, device, results, and durable replay receipt.
 - Automatic update throttling is now isolated by the reviewed feed URL, channel, and signing key, so a channel move or key rotation is checked immediately instead of inheriting another channel's delay.
 - Repeated mutations in large workspaces no longer amplify the SQLite outbox by one full canonical snapshot per edit, and multiline Move details remain valid during strict v2 validation and schema-1 migration.
 - Failed photo commits immediately roll back newly prepared files, successful replacement/removal retires prior owned variants only after the canonical SQLite commit, and launch reconciliation safely retries interrupted cleanup.
@@ -98,6 +102,7 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Security
 
+- Remote sync remains disabled in the customer runtime. Unsupported profile, primary-goal, and asset operations fail closed; tokens and response content never enter workspace storage or diagnostics.
 - Exact vision-image originals remain local and are never used by the notch or sync path; strict UUID-derived filenames, source/decompression/output bounds, private permissions, and path-safe cleanup prevent traversal and unbounded image handling.
 - Direct Mac releases now require an independently reviewed update-feed URL, Ed25519 public key, and sandbox network-client entitlement; the app opens only a signed immutable download URL and never installs code itself.
 - Support export is a local-only 16-field allow list; it never scrapes logs or workspace files and requires an exact on-screen preview before Save.
