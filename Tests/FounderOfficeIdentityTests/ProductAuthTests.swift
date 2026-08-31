@@ -52,6 +52,88 @@ struct ProductAuthTests {
         }
     }
 
+    @Test("Callbacks use an explicit custom-scheme or universal-link allowlist")
+    func validatesCallbackAllowlist() throws {
+        let endpoint = try #require(URL(string: "https://project.supabase.co"))
+        for callback in [
+            "founders-office://auth/callback",
+            "founders-office-dev://auth/callback",
+            "https://accounts.example.test/auth/callback"
+        ] {
+            _ = try ProductAuthConfiguration(
+                endpoint: endpoint,
+                publishableKey: publishableKey,
+                callbackURL: #require(URL(string: callback))
+            )
+        }
+
+        for callback in [
+            "javascript://auth/callback",
+            "file://auth/callback",
+            "data://auth/callback",
+            "http://accounts.example.test/auth/callback",
+            "founders-office://attacker/callback",
+            "founders-office://auth/other",
+            "founders-office://auth/callback?code=unexpected",
+            "https://accounts.example.test/other",
+            "https://user:password@accounts.example.test/auth/callback",
+            "https://accounts.example.test:8443/auth/callback",
+            "https://accounts.example.test/auth/callback#fragment"
+        ] {
+            #expect(throws: ProductAuthConfigurationError.invalidCallbackURL) {
+                try ProductAuthConfiguration(
+                    endpoint: endpoint,
+                    publishableKey: publishableKey,
+                    callbackURL: #require(URL(string: callback))
+                )
+            }
+        }
+    }
+
+    @Test("Display-name contract normalizes NFC and counts Unicode scalars")
+    func normalizesReviewedDisplayNames() throws {
+        let reviewed = try ReviewedDisplayName(reviewedInput: "  Jose\u{301}  ")
+        let maximumFourByteName = String(repeating: "🧠", count: 80)
+        let maximum = try ReviewedDisplayName(reviewedInput: maximumFourByteName)
+
+        #expect(ProductDisplayNameContractV1.version == 1)
+        #expect(reviewed.value == "José")
+        #expect(reviewed.value == reviewed.value.precomposedStringWithCanonicalMapping)
+        #expect(maximum.value.unicodeScalars.count == 80)
+        #expect(maximum.value.utf8.count == ProductDisplayNameContractV1.maximumUTF8ByteCount)
+        #expect(throws: ProductDisplayNameValidationError.tooManyUnicodeScalars) {
+            try ReviewedDisplayName(reviewedInput: String(repeating: "a", count: 81))
+        }
+    }
+
+    @Test("Provider names remain non-authoritative onboarding suggestions")
+    func separatesSuggestionsFromReviewedNames() throws {
+        let suggestion = try #require(
+            OnboardingDisplayNameSuggestion(providerValue: "  Priya  ")
+        )
+        let session = ProductAccountSession(
+            accountID: UUID(),
+            provider: .google,
+            onboardingDisplayNameSuggestion: suggestion,
+            expiresAt: .distantFuture
+        )
+
+        #expect(suggestion.suggestedValue == "Priya")
+        #expect(session.onboardingDisplayNameSuggestion == suggestion)
+        #expect(OnboardingDisplayNameSuggestion(providerValue: "\u{200B}") == nil)
+        #expect(OnboardingDisplayNameSuggestion(providerValue: "\u{301}") == nil)
+        #expect(OnboardingDisplayNameSuggestion(providerValue: "---") == nil)
+        #expect(OnboardingDisplayNameSuggestion(providerValue: "Priya\nShah") == nil)
+        #expect(OnboardingDisplayNameSuggestion(providerValue: "Priya\u{202E}Shah") == nil)
+        #expect(OnboardingDisplayNameSuggestion(providerValue: "\u{FEFF}Priya") == nil)
+        #expect(throws: ProductDisplayNameValidationError.containsControlCharacter) {
+            try ReviewedDisplayName(reviewedInput: "Priya\tShah")
+        }
+        #expect(throws: ProductDisplayNameValidationError.empty) {
+            try ReviewedDisplayName(reviewedInput: "   ")
+        }
+    }
+
     @Test("Missing product configuration fails closed to local-only")
     func missingConfigurationFailsClosed() {
         let result = ProductAuthConfiguration.load(infoDictionary: [:])

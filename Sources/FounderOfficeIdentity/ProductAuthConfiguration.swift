@@ -47,8 +47,7 @@ public struct ProductAuthConfiguration: Equatable, Sendable {
             throw ProductAuthConfigurationError.invalidPublishableKey
         }
 
-        guard let scheme = callbackURL.scheme,
-              !scheme.isEmpty,
+        guard Self.isAllowedCallbackURL(callbackURL),
               callbackURL.user == nil,
               callbackURL.password == nil,
               callbackURL.query == nil,
@@ -66,6 +65,24 @@ public struct ProductAuthConfiguration: Equatable, Sendable {
         self.publishableKey = cleanKey
         self.callbackURL = callbackURL
         self.keychainService = cleanService
+    }
+
+    private static func isAllowedCallbackURL(_ callbackURL: URL) -> Bool {
+        guard let scheme = callbackURL.scheme?.lowercased(),
+              callbackURL.port == nil else { return false }
+
+        switch scheme {
+        case "founders-office", "founders-office-dev":
+            return callbackURL.host?.lowercased() == "auth"
+                && callbackURL.path == "/callback"
+        case "https":
+            return callbackURL.host?.isEmpty == false
+                && callbackURL.path == "/auth/callback"
+        default:
+            // Includes javascript, file, data, http, and unreviewed custom
+            // schemes. New callback forms require an explicit contract change.
+            return false
+        }
     }
 
     private static func isPublishableClientKey(_ key: String) -> Bool {

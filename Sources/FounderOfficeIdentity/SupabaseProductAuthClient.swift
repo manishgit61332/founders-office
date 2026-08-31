@@ -7,6 +7,7 @@ public actor SupabaseProductAuthClient: ProductAuthServing {
     private var state: ProductAuthState = .localOnly
     private var continuations: [UUID: AsyncStream<ProductAuthState>.Continuation] = [:]
     private var authObservationTask: Task<Void, Never>?
+    private var ephemeralProviderSuggestion: OnboardingDisplayNameSuggestion?
 
     public init(configuration: ProductAuthConfiguration) {
         client = SupabaseClient(
@@ -40,6 +41,7 @@ public actor SupabaseProductAuthClient: ProductAuthServing {
 
     public func restoreSession() async {
         startAuthStateObservationIfNeeded()
+        ephemeralProviderSuggestion = nil
         publish(.restoring)
         do {
             let session = try await client.auth.session
@@ -53,6 +55,7 @@ public actor SupabaseProductAuthClient: ProductAuthServing {
 
     public func signInWithGoogle() async {
         startAuthStateObservationIfNeeded()
+        ephemeralProviderSuggestion = nil
         publish(.signingIn(.google))
         do {
             let session = try await client.auth.signInWithOAuth(provider: .google)
@@ -64,6 +67,7 @@ public actor SupabaseProductAuthClient: ProductAuthServing {
 
     public func signInWithApple(_ authorization: AppleIdentityAuthorization) async {
         startAuthStateObservationIfNeeded()
+        ephemeralProviderSuggestion = authorization.onboardingDisplayNameSuggestion
         publish(.signingIn(.apple))
         do {
             let session = try await client.auth.signInWithIdToken(
@@ -74,25 +78,27 @@ public actor SupabaseProductAuthClient: ProductAuthServing {
                 )
             )
 
-            if let displayName = Self.validatedDisplayName(authorization.displayName) {
-                _ = try await client.auth.update(
-                    user: UserAttributes(data: ["display_name": .string(displayName)])
-                )
-            }
             let refreshed = client.auth.currentSession ?? session
-            publish(.signedIn(Self.summary(refreshed, preferredProvider: .apple)))
+            publish(
+                .signedIn(
+                    Self.summary(
+                        refreshed,
+                        preferredProvider: .apple,
+                        preferredSuggestion: ephemeralProviderSuggestion
+                    )
+                )
+            )
         } catch {
+            ephemeralProviderSuggestion = nil
             publish(.failed(Self.failure(from: error)))
         }
     }
 
-    public func updateDisplayName(_ displayName: String) async throws {
-        guard let cleanName = Self.validatedDisplayName(displayName) else {
-            throw ProductIdentityError.invalidDisplayName
-        }
+    public func updateReviewedDisplayName(_ displayName: ReviewedDisplayName) async throws {
         _ = try await client.auth.update(
-            user: UserAttributes(data: ["display_name": .string(cleanName)])
+            user: UserAttributes(data: ["display_name": .string(displayName.value)])
         )
+        ephemeralProviderSuggestion = nil
         let session = try await client.auth.session
         publish(.signedIn(Self.summary(session)))
     }
@@ -102,6 +108,7 @@ public actor SupabaseProductAuthClient: ProductAuthServing {
     }
 
     public func signOut() async {
+        ephemeralProviderSuggestion = nil
         do {
             try await client.auth.signOut(scope: .local)
             publish(.localOnly)
@@ -134,15 +141,24 @@ public actor SupabaseProductAuthClient: ProductAuthServing {
 
     private func receiveAuthSession(_ session: Session?) {
         if let session {
-            publish(.signedIn(Self.summary(session)))
+            publish(
+                .signedIn(
+                    Self.summary(
+                        session,
+                        preferredSuggestion: ephemeralProviderSuggestion
+                    )
+                )
+            )
         } else {
+            ephemeralProviderSuggestion = nil
             publish(.localOnly)
         }
     }
 
     private static func summary(
         _ session: Session,
-        preferredProvider: ProductIdentityProvider? = nil
+        preferredProvider: ProductIdentityProvider? = nil,
+        preferredSuggestion: OnboardingDisplayNameSuggestion? = nil
     ) -> ProductAccountSession {
         let metadataProvider = session.user.appMetadata["provider"]?.stringValue
             .flatMap(ProductIdentityProvider.init(rawValue:))
@@ -154,24 +170,17 @@ public actor SupabaseProductAuthClient: ProductAuthServing {
             ?? metadataProvider
             ?? .unknown
 
-        let displayNames = ["display_name", "full_name", "name"]
+        let metadataSuggestions = ["display_name", "full_name", "name"]
             .compactMap { session.user.userMetadata[$0]?.stringValue }
-            .compactMap(validatedDisplayName)
-        let displayName: String? = displayNames.first
+            .compactMap(OnboardingDisplayNameSuggestion.init(providerValue:))
+        let onboardingSuggestion = preferredSuggestion ?? metadataSuggestions.first
 
         return ProductAccountSession(
             accountID: session.user.id,
             provider: provider,
-            displayName: displayName,
+            onboardingDisplayNameSuggestion: onboardingSuggestion,
             expiresAt: Date(timeIntervalSince1970: session.expiresAt)
         )
-    }
-
-    private static func validatedDisplayName(_ value: String?) -> String? {
-        guard let value else { return nil }
-        let clean = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !clean.isEmpty, clean.count <= 80 else { return nil }
-        return clean
     }
 
     private static func failure(from error: Error) -> ProductAuthFailure {
@@ -198,18 +207,5 @@ public actor SupabaseProductAuthClient: ProductAuthServing {
             code: .unknown,
             recoveryMessage: "Sign-in could not be completed. Your local workspace was not changed."
         )
-    }
-}
-
-public enum ProductIdentityError: Error, Equatable, Sendable {
-    case invalidDisplayName
-}
-
-extension ProductIdentityError: LocalizedError {
-    public var errorDescription: String? {
-        switch self {
-        case .invalidDisplayName:
-            return "Enter a name between 1 and 80 characters."
-        }
     }
 }

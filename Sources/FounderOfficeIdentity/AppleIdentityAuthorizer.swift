@@ -80,17 +80,16 @@ extension AppleIdentityAuthorizer: ASAuthorizationControllerDelegate {
             return
         }
 
-        let displayName = credential.fullName.flatMap {
+        let onboardingSuggestion = credential.fullName.flatMap {
             let formatted = PersonNameComponentsFormatter().string(from: $0)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            return formatted.isEmpty ? nil : formatted
+            return OnboardingDisplayNameSuggestion(providerValue: formatted)
         }
         finish(
             with: .success(
                 AppleIdentityAuthorization(
                     identityToken: token,
                     rawNonce: rawNonce,
-                    displayName: displayName
+                    onboardingDisplayNameSuggestion: onboardingSuggestion
                 )
             )
         )

@@ -34,6 +34,7 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Changed
 
+- Provider-supplied account names are now non-authoritative onboarding suggestions; only an explicitly reviewed, NFC-normalized display-name value can cross a durable identity update boundary.
 - App-owned Mac and iPhone typography now uses one three-role hierarchy: a 28-point primary title, a secondary size divided by 1.62, and a tertiary size divided again by 1.6.
 - The Appearance accent editor now uses one compact macOS-style control surface with a native segmented mode picker, exact colour wells, and a focused gradient-direction slider instead of loose oversized controls and technical helper copy.
 - Codex runs are now scoped to the Founder’s Office workspace instead of the parent Application Support directory.
@@ -67,6 +68,7 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Security
 
+- Product-auth callbacks now use an explicit provisional-custom-scheme or HTTPS universal-link allowlist, rejecting executable, file, data, insecure HTTP, credential-bearing, and route-mismatched URLs.
 - Production identity configuration accepts only HTTPS endpoints and Supabase publishable/legacy-anon keys; secret and service-role credentials are rejected before the client is created.
 - Founder runtime data, photos, Codex runs, exports, support bundles, visual QA, credentials, and signing files are excluded from source control.
 - Direct releases accept only a tracked production entitlement file and reject debug, temporary-exception, or unsafe code-signing entitlements.
