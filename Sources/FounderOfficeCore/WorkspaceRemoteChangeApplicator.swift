@@ -3,23 +3,23 @@ import Foundation
 enum WorkspaceRemoteChangeApplicator {
     static func apply(
         _ changes: [SyncChange],
-        to source: FounderOfficeSnapshot
+        to source: FounderOfficeSnapshot,
+        preservingLocalFields: [SyncOperationID: Set<String>] = [:]
     ) throws -> FounderOfficeSnapshot {
         var snapshot = source
         for change in changes {
+            let preservedFields = preservingLocalFields[change.operationID] ?? []
             switch change.entityType {
             case .workspace:
-                try applyWorkspace(change, to: &snapshot)
+                try applyWorkspace(change, preserving: preservedFields, to: &snapshot)
             case .move:
-                try applyMove(change, to: &snapshot)
+                try applyMove(change, preserving: preservedFields, to: &snapshot)
             case .appearance:
-                try applyAppearance(change, to: &snapshot)
+                try applyAppearance(change, preserving: preservedFields, to: &snapshot)
             case .primaryGoal:
-                // See ADR 0018: legacy Double-backed values cannot uphold the
-                // exact numeric(30,8) contract. Stop the whole page atomically.
-                throw WorkspaceV2SyncAdapterError.primaryGoalRequiresDecimalMigration
+                try applyPrimaryGoal(change, preserving: preservedFields, to: &snapshot)
             case .milestone:
-                try applyMilestone(change, to: &snapshot)
+                try applyMilestone(change, preserving: preservedFields, to: &snapshot)
             case .asset:
                 throw WorkspaceSyncRepositoryError.assetsDisabled
             }
@@ -29,12 +29,13 @@ enum WorkspaceRemoteChangeApplicator {
 
     private static func applyWorkspace(
         _ change: SyncChange,
+        preserving preservedFields: Set<String>,
         to snapshot: inout FounderOfficeSnapshot
     ) throws {
         guard change.action == .upsert else {
             throw WorkspaceSyncRepositoryError.unsupportedRemoteEntity
         }
-        if change.changedFields.contains("name") {
+        if change.changedFields.contains("name"), !preservedFields.contains("name") {
             snapshot.personalization.workspaceName = try requiredString("name", in: change.record)
         }
         snapshot.personalization.updatedAt = latest(
@@ -45,6 +46,7 @@ enum WorkspaceRemoteChangeApplicator {
 
     private static func applyMove(
         _ change: SyncChange,
+        preserving preservedFields: Set<String>,
         to snapshot: inout FounderOfficeSnapshot
     ) throws {
         let record = change.record
@@ -69,7 +71,7 @@ enum WorkspaceRemoteChangeApplicator {
             )
         }
 
-        for field in change.changedFields {
+        for field in change.changedFields where !preservedFields.contains(field) {
             switch field {
             case "title": move.title = try requiredString(field, in: record)
             case "details": move.details = try requiredString(field, in: record)
@@ -101,12 +103,13 @@ enum WorkspaceRemoteChangeApplicator {
 
     private static func applyAppearance(
         _ change: SyncChange,
+        preserving preservedFields: Set<String>,
         to snapshot: inout FounderOfficeSnapshot
     ) throws {
         guard change.action == .upsert else {
             throw WorkspaceSyncRepositoryError.unsupportedRemoteEntity
         }
-        if change.changedFields.contains("preferences") {
+        if change.changedFields.contains("preferences"), !preservedFields.contains("preferences") {
             guard case let .object(object)? = change.record["preferences"] else {
                 throw WorkspaceSyncRepositoryError.remoteRecordCannotBeRepresented
             }
@@ -123,7 +126,7 @@ enum WorkspaceRemoteChangeApplicator {
             snapshot.personalization.appearance = appearance
             snapshot.personalization.accent = nearestLegacyAccent(appearance.accent.primaryColor)
         }
-        if change.changedFields.contains("schemaVersion") {
+        if change.changedFields.contains("schemaVersion"), !preservedFields.contains("schemaVersion") {
             let version = try requiredInteger("schemaVersion", in: change.record)
             guard version > 0, version <= Int64(Int.max) else {
                 throw WorkspaceSyncRepositoryError.remoteRecordCannotBeRepresented
@@ -141,6 +144,7 @@ enum WorkspaceRemoteChangeApplicator {
 
     private static func applyMilestone(
         _ change: SyncChange,
+        preserving preservedFields: Set<String>,
         to snapshot: inout FounderOfficeSnapshot
     ) throws {
         let record = change.record
@@ -158,7 +162,7 @@ enum WorkspaceRemoteChangeApplicator {
                 deletedAt: try optionalTimestamp("deletedAt", in: record)
             )
         }
-        for field in change.changedFields {
+        for field in change.changedFields where !preservedFields.contains(field) {
             switch field {
             case "title": milestone.title = try requiredString(field, in: record)
             case "dueAt": milestone.dueAt = try timestamp(field, in: record)
@@ -173,6 +177,56 @@ enum WorkspaceRemoteChangeApplicator {
         } else {
             snapshot.personalization.milestones.append(milestone)
         }
+        snapshot.personalization.updatedAt = latest(snapshot.personalization.updatedAt, change.changedAt)
+    }
+
+    private static func applyPrimaryGoal(
+        _ change: SyncChange,
+        preserving preservedFields: Set<String>,
+        to snapshot: inout FounderOfficeSnapshot
+    ) throws {
+        let record = change.record
+        let existing = snapshot.personalization.primaryGoal
+        if change.action == .delete, existing?.id != change.entityID {
+            snapshot.personalization.updatedAt = latest(
+                snapshot.personalization.updatedAt,
+                change.changedAt
+            )
+            return
+        }
+
+        var goal: PrimaryGoal
+        if let existing, existing.id == change.entityID {
+            goal = existing
+        } else {
+            goal = PrimaryGoal(
+                id: change.entityID,
+                title: try requiredString("title", in: record),
+                metric: try requiredString("metric", in: record),
+                currentValue: try optionalGoalDecimal("currentValue", in: record),
+                targetValue: try optionalGoalDecimal("targetValue", in: record),
+                unit: try goalUnit(record),
+                dueAt: try requiredDateOnly("dueOn", in: record),
+                createdAt: try timestamp("createdAt", in: record),
+                updatedAt: try timestamp("updatedAt", in: record),
+                deletedAt: try optionalTimestamp("deletedAt", in: record)
+            )
+        }
+
+        for field in change.changedFields where !preservedFields.contains(field) {
+            switch field {
+            case "title": goal.title = try requiredString(field, in: record)
+            case "metric": goal.metric = try requiredString(field, in: record)
+            case "currentValue": goal.currentValue = try optionalGoalDecimal(field, in: record)
+            case "targetValue": goal.targetValue = try optionalGoalDecimal(field, in: record)
+            case "unit": goal.unit = try goalUnit(record)
+            case "dueOn": goal.dueAt = try requiredDateOnly(field, in: record)
+            case "deletedAt": goal.deletedAt = try optionalTimestamp(field, in: record)
+            default: throw WorkspaceSyncRepositoryError.unsupportedRemoteEntity
+            }
+        }
+        goal.updatedAt = latest(goal.updatedAt, try timestamp("updatedAt", in: record))
+        snapshot.personalization.primaryGoal = goal
         snapshot.personalization.updatedAt = latest(snapshot.personalization.updatedAt, change.changedAt)
     }
 
@@ -229,6 +283,43 @@ enum WorkspaceRemoteChangeApplicator {
         in record: [String: SyncJSONValue]
     ) throws -> Date? {
         try optionalString(key, in: record).map(WorkspaceV2SyncAdapter.parseDateOnly)
+    }
+
+    private static func requiredDateOnly(
+        _ key: String,
+        in record: [String: SyncJSONValue]
+    ) throws -> Date {
+        try WorkspaceV2SyncAdapter.parseDateOnly(requiredString(key, in: record))
+    }
+
+    private static func optionalGoalDecimal(
+        _ key: String,
+        in record: [String: SyncJSONValue]
+    ) throws -> GoalDecimal? {
+        guard let value = record[key] else {
+            throw WorkspaceSyncRepositoryError.remoteRecordCannotBeRepresented
+        }
+        if case .null = value { return nil }
+        let decimal: Decimal
+        switch value {
+        case let .integer(integer): decimal = Decimal(integer)
+        case let .number(number): decimal = number
+        default: throw WorkspaceSyncRepositoryError.remoteRecordCannotBeRepresented
+        }
+        do {
+            return try GoalDecimal(validating: decimal)
+        } catch {
+            throw WorkspaceSyncRepositoryError.remoteRecordCannotBeRepresented
+        }
+    }
+
+    private static func goalUnit(
+        _ record: [String: SyncJSONValue]
+    ) throws -> GoalValueUnit {
+        guard let unit = GoalValueUnit(rawValue: try requiredString("unit", in: record)) else {
+            throw WorkspaceSyncRepositoryError.remoteRecordCannotBeRepresented
+        }
+        return unit
     }
 
     private static func priority(_ record: [String: SyncJSONValue]) throws -> LoopPriority {

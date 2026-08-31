@@ -610,11 +610,23 @@ private struct StoredBootstrapReceipt {
     let operationsDigest: Data
 }
 
+private struct StoredBootstrapAttempt {
+    let accountID: FounderAccountID
+    let remoteWorkspaceID: WorkspaceID
+    let deviceID: DeviceID
+    let plan: WorkspaceCanonicalBootstrapPlan
+}
+
 private struct StoredRemoteAcknowledgement {
     let entityType: SyncEntityType
     let entityID: UUID
     let remoteRevision: Int64
     let fieldClocks: [String: Date]
+}
+
+private struct RemoteEntityKey: Hashable {
+    let type: SyncEntityType
+    let id: UUID
 }
 
 private enum SQLiteWorkspaceValue {
@@ -626,7 +638,7 @@ private enum SQLiteWorkspaceValue {
 }
 
 private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
-    static let currentSchemaVersion = 3
+    static let currentSchemaVersion = 4
     static let applicationID: Int64 = 1_179_600_454 // ASCII "FOFF"
     static let supportedOpenLoopsSchemaVersion = 3
     static let supportedPersonalizationSchemaVersion = 6
@@ -1184,15 +1196,43 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
     }
 
     func canonicalBootstrapPlan() throws -> WorkspaceCanonicalBootstrapPlan {
-        guard let binding = try syncBinding() else {
-            throw WorkspaceSyncRepositoryError.bindingRequired
+        try transaction {
+            guard let binding = try syncBinding() else {
+                throw WorkspaceSyncRepositoryError.bindingRequired
+            }
+            if let attempt = try bootstrapAttempt() {
+                guard attempt.accountID == binding.accountID,
+                      attempt.remoteWorkspaceID == binding.workspaceID,
+                      attempt.deviceID == binding.deviceID,
+                      attempt.plan.localWorkspaceID == (try loadSnapshot()).workspaceID else {
+                    throw WorkspaceSyncRepositoryError.bindingMismatch
+                }
+                return attempt.plan
+            }
+
+            let snapshot = try loadSnapshot()
+            try failIfBootstrapWouldDropProtectedOutboxState()
+            let plan = try WorkspaceV2SyncAdapter.canonicalBootstrapPlan(
+                snapshot: snapshot,
+                remoteWorkspaceID: binding.workspaceID
+            )
+            try execute(
+                """
+                INSERT INTO sync_bootstrap_attempt (
+                    singleton, account_id, remote_workspace_id, device_id, plan, created_at
+                ) VALUES (1, ?, ?, ?, ?, ?)
+                """,
+                bindings: [
+                    .text(binding.accountID.rawValue.uuidString.lowercased()),
+                    .text(binding.workspaceID.rawValue.uuidString.lowercased()),
+                    .text(binding.deviceID.rawValue.uuidString.lowercased()),
+                    .blob(try codec.encode(plan)),
+                    .real(Date().timeIntervalSince1970),
+                ],
+                operation: "pin_canonical_bootstrap"
+            )
+            return plan
         }
-        let snapshot = try loadSnapshot()
-        try failIfBootstrapWouldDropProtectedOutboxState()
-        return try WorkspaceV2SyncAdapter.canonicalBootstrapPlan(
-            snapshot: snapshot,
-            remoteWorkspaceID: binding.workspaceID
-        )
     }
 
     func acknowledgeCanonicalBootstrap(
@@ -1208,7 +1248,10 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
                   bootstrap.profile.identityProvider == binding.identityProvider,
                   bootstrap.session.workspaceID == plan.remoteWorkspaceID,
                   !responses.isEmpty,
-                  responses.allSatisfy({ $0.workspaceID == binding.workspaceID }) else {
+                  responses.allSatisfy({ $0.workspaceID == binding.workspaceID }),
+                  plan.operations.allSatisfy({ $0.entityType != .workspace }),
+                  case let .string(bootstrapWorkspaceName)? = bootstrap.workspace["name"],
+                  bootstrapWorkspaceName == plan.workspaceName else {
                 throw WorkspaceSyncRepositoryError.bootstrapResponseMismatch
             }
             if let expectedName = plan.profileDisplayName {
@@ -1216,21 +1259,6 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
                     throw WorkspaceSyncRepositoryError.bootstrapResponseMismatch
                 }
             }
-            let current = try loadSnapshot()
-            guard current.workspaceID == plan.localWorkspaceID,
-                  current.revision == plan.localRevision else {
-                throw WorkspaceSyncRepositoryError.bootstrapRevisionChanged
-            }
-            try failIfBootstrapWouldDropProtectedOutboxState()
-            let currentPlan = try WorkspaceV2SyncAdapter.canonicalBootstrapPlan(
-                snapshot: current,
-                remoteWorkspaceID: binding.workspaceID
-            )
-            guard currentPlan.snapshotDigest == plan.snapshotDigest,
-                  currentPlan.operations == plan.operations else {
-                throw WorkspaceSyncRepositoryError.bootstrapRevisionChanged
-            }
-
             let results = responses.flatMap(\.results)
             let expectedIDs = Set(plan.operations.map(\.operationID))
             guard Set(results.map(\.operationID)) == expectedIDs,
@@ -1241,20 +1269,6 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
                   }) else {
                 throw WorkspaceSyncRepositoryError.bootstrapResponseMismatch
             }
-            let resultsByID = Dictionary(uniqueKeysWithValues: results.map { ($0.operationID, $0) })
-            for operation in plan.operations {
-                guard let result = resultsByID[operation.operationID],
-                      let revision = result.revision else {
-                    throw WorkspaceSyncRepositoryError.bootstrapResponseMismatch
-                }
-                try upsertRemoteRevision(
-                    entityType: operation.entityType,
-                    entityID: operation.entityID,
-                    revision: revision,
-                    fieldClocks: operation.fieldClocks
-                )
-            }
-
             let acceptedCursor = try SyncCursor(
                 value: max(
                     bootstrap.latestCursor.value,
@@ -1281,6 +1295,36 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
                     receiptID: replay.receiptID,
                     remoteWorkspaceID: plan.remoteWorkspaceID,
                     acceptedCursor: acceptedCursor
+                )
+            }
+
+            guard let attempt = try bootstrapAttempt(),
+                  attempt.accountID == binding.accountID,
+                  attempt.remoteWorkspaceID == binding.workspaceID,
+                  attempt.deviceID == binding.deviceID,
+                  attempt.plan == plan,
+                  (try loadSnapshot()).workspaceID == plan.localWorkspaceID else {
+                throw WorkspaceSyncRepositoryError.bootstrapRevisionChanged
+            }
+
+            let workspaceBaseline = try bootstrapWorkspaceBaseline(bootstrap)
+            try upsertRemoteRevision(
+                entityType: .workspace,
+                entityID: binding.workspaceID.rawValue,
+                revision: workspaceBaseline.revision,
+                fieldClocks: workspaceBaseline.fieldClocks
+            )
+            let resultsByID = Dictionary(uniqueKeysWithValues: results.map { ($0.operationID, $0) })
+            for operation in plan.operations {
+                guard let result = resultsByID[operation.operationID],
+                      let revision = result.revision else {
+                    throw WorkspaceSyncRepositoryError.bootstrapResponseMismatch
+                }
+                try upsertRemoteRevision(
+                    entityType: operation.entityType,
+                    entityID: operation.entityID,
+                    revision: revision,
+                    fieldClocks: operation.fieldClocks
                 )
             }
 
@@ -1320,6 +1364,13 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
             )
             guard sqlite3_changes(connection) == 1 else {
                 throw WorkspaceSyncRepositoryError.invalidSyncState
+            }
+            try execute(
+                "DELETE FROM sync_bootstrap_attempt WHERE singleton = 1",
+                operation: "acknowledge_canonical_bootstrap"
+            )
+            guard sqlite3_changes(connection) == 1 else {
+                throw WorkspaceSyncRepositoryError.bootstrapResponseMismatch
             }
             return WorkspaceCanonicalBootstrapReceipt(
                 receiptID: receiptID,
@@ -1457,7 +1508,31 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
                     freshChanges.append(change)
                 }
             }
-            let content = try WorkspaceRemoteChangeApplicator.apply(freshChanges, to: current.content)
+            let pendingFieldClocks = try pendingRemoteFieldClocks(
+                workspaceID: binding.workspaceID
+            )
+            var preservedFields: [SyncOperationID: Set<String>] = [:]
+            for change in freshChanges {
+                let key = RemoteEntityKey(type: change.entityType, id: change.entityID)
+                guard let localClocks = pendingFieldClocks[key] else { continue }
+                let serverClocks = try remoteFieldClocks(change.record)
+                let preserved = Set(change.changedFields.filter { field in
+                    guard let localClock = localClocks[field],
+                          let serverClock = serverClocks[field] else { return false }
+                    // A still-pending local value is canonical until the
+                    // server explicitly accepts or conflicts it. Equal clocks
+                    // are preserved too because writer ordering is server-side.
+                    return localClock >= serverClock
+                })
+                if !preserved.isEmpty {
+                    preservedFields[change.operationID] = preserved
+                }
+            }
+            let content = try WorkspaceRemoteChangeApplicator.apply(
+                freshChanges,
+                to: current.content,
+                preservingLocalFields: preservedFields
+            )
             let canonical = try codec.canonicalizedWithData(content)
             let changed = canonical.data != currentStored.snapshotData
             let nextSnapshot: WorkspaceRepositorySnapshot
@@ -1663,6 +1738,9 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
             if schemaVersion <= 2 {
                 try migrateSyncVersionThree()
             }
+            if schemaVersion <= 3 {
+                try migrateSyncVersionFour()
+            }
         }
     }
 
@@ -1673,6 +1751,16 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
             try execute(
                 "PRAGMA user_version = \(Self.currentSchemaVersion)",
                 operation: "migrate_sync_v3"
+            )
+        }
+    }
+
+    private func migrateSyncVersionFour() throws {
+        try transaction {
+            try createSyncTables(operation: "migrate_sync_v4")
+            try execute(
+                "PRAGMA user_version = \(Self.currentSchemaVersion)",
+                operation: "migrate_sync_v4"
             )
         }
     }
@@ -1780,6 +1868,19 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
                     local_workspace_id, remote_workspace_id, account_id, device_id,
                     local_revision, snapshot_digest
                 )
+            )
+            """,
+            operation: operation
+        )
+        try execute(
+            """
+            CREATE TABLE IF NOT EXISTS sync_bootstrap_attempt (
+                singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                account_id TEXT NOT NULL,
+                remote_workspace_id TEXT NOT NULL,
+                device_id TEXT NOT NULL,
+                plan BLOB NOT NULL,
+                created_at REAL NOT NULL
             )
             """,
             operation: operation
@@ -2264,16 +2365,6 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
                 throw WorkspaceV2SyncAdapterError.profileRequiresReviewedBootstrap
             }
         }
-        let goalCount = try scalarCount(
-            """
-            SELECT count(*) FROM operation_outbox
-            WHERE entity_kind IN ('primary_goal', 'primaryGoal')
-            """,
-            operation: "inspect_bootstrap_goal_gate"
-        )
-        if goalCount > 0 {
-            throw WorkspaceV2SyncAdapterError.primaryGoalRequiresDecimalMigration
-        }
         let assetCount = try scalarCount(
             "SELECT count(*) FROM operation_outbox WHERE entity_kind = 'asset'",
             operation: "inspect_bootstrap_asset_gate"
@@ -2373,6 +2464,74 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
         )
     }
 
+    private func bootstrapAttempt() throws -> StoredBootstrapAttempt? {
+        let statement = try prepare(
+            """
+            SELECT account_id, remote_workspace_id, device_id, plan
+            FROM sync_bootstrap_attempt WHERE singleton = 1
+            """,
+            operation: "read_bootstrap_attempt"
+        )
+        guard try statement.step(operation: "read_bootstrap_attempt") else { return nil }
+        guard let accountID = UUID(
+            uuidString: try statement.requiredText(at: 0, operation: "read_bootstrap_attempt")
+        ),
+        let remoteWorkspaceID = UUID(
+            uuidString: try statement.requiredText(at: 1, operation: "read_bootstrap_attempt")
+        ),
+        let deviceID = UUID(
+            uuidString: try statement.requiredText(at: 2, operation: "read_bootstrap_attempt")
+        ) else {
+            throw WorkspaceRepositoryError.invalidDatabase
+        }
+        let plan: WorkspaceCanonicalBootstrapPlan
+        do {
+            plan = try codec.decoder.decode(
+                WorkspaceCanonicalBootstrapPlan.self,
+                from: try statement.requiredBlob(at: 3, operation: "read_bootstrap_attempt")
+            )
+        } catch {
+            throw WorkspaceRepositoryError.invalidDatabase
+        }
+        guard plan.remoteWorkspaceID.rawValue == remoteWorkspaceID,
+              plan.snapshotDigest.count == SHA256.Digest.byteCount,
+              plan.localRevision.rawValue >= 0,
+              !plan.workspaceName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              plan.workspaceName.unicodeScalars.count <= 120,
+              plan.operations.count <= 50_000,
+              plan.operations.allSatisfy({ $0.entityType != .workspace }) else {
+            throw WorkspaceRepositoryError.invalidDatabase
+        }
+        return StoredBootstrapAttempt(
+            accountID: FounderAccountID(rawValue: accountID),
+            remoteWorkspaceID: WorkspaceID(rawValue: remoteWorkspaceID),
+            deviceID: DeviceID(rawValue: deviceID),
+            plan: plan
+        )
+    }
+
+    private func bootstrapWorkspaceBaseline(
+        _ bootstrap: WorkspaceBootstrap
+    ) throws -> (revision: Int64, fieldClocks: [String: Date]) {
+        let revision: Int64
+        switch bootstrap.workspace["revision"] {
+        case let .integer(value): revision = value
+        case let .number(value):
+            let candidate = NSDecimalNumber(decimal: value).int64Value
+            guard Decimal(candidate) == value else {
+                throw WorkspaceSyncRepositoryError.bootstrapResponseMismatch
+            }
+            revision = candidate
+        default:
+            throw WorkspaceSyncRepositoryError.bootstrapResponseMismatch
+        }
+        let fieldClocks = try remoteFieldClocks(bootstrap.workspace)
+        guard revision > 0, fieldClocks["name"] != nil else {
+            throw WorkspaceSyncRepositoryError.bootstrapResponseMismatch
+        }
+        return (revision, fieldClocks)
+    }
+
     private func bootstrapReceipt(
         localWorkspaceID: UUID,
         remoteWorkspaceID: WorkspaceID,
@@ -2454,8 +2613,7 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
         case .profile:
             throw WorkspaceV2SyncAdapterError.profileRequiresReviewedBootstrap
         case .workspace: identity = (.workspace, workspaceID.rawValue)
-        case .primaryGoal:
-            throw WorkspaceV2SyncAdapterError.primaryGoalRequiresDecimalMigration
+        case let .primaryGoal(goal): identity = (.primaryGoal, goal.id)
         case let .milestone(milestone): identity = (.milestone, milestone.id)
         case .asset:
             throw WorkspaceV2SyncAdapterError.assetTransferDisabled
@@ -2585,6 +2743,54 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
         )
         guard try statement.step(operation: "read_applied_remote_operation") else { return nil }
         return statement.integer(at: 0)
+    }
+
+    private func pendingRemoteFieldClocks(
+        workspaceID: WorkspaceID
+    ) throws -> [RemoteEntityKey: [String: Date]] {
+        // Keep all durable sources of locally protected remote fields behind
+        // this one extension point. Retained unresolved-conflict payloads can
+        // merge their clocks here without changing page application semantics.
+        let statement = try prepare(
+            """
+            SELECT operation_id, idempotency_key, workspace_id, writer_id,
+                   base_revision, committed_revision, entity_kind, entity_id,
+                   changed_fields, field_clocks, payload_format_version,
+                   payload, created_at, delivery_attempts
+            FROM operation_outbox
+            ORDER BY committed_revision ASC, operation_id ASC
+            """,
+            operation: "read_pending_field_clocks"
+        )
+        var result: [RemoteEntityKey: [String: Date]] = [:]
+        while try statement.step(operation: "read_pending_field_clocks") {
+            let operation = try decodeOutboxOperation(
+                statement,
+                operation: "read_pending_field_clocks"
+            )
+            guard case let .localEntity(envelope) = try operation.decodedLocalPayload() else {
+                throw WorkspaceSyncRepositoryError.bootstrapResponseMismatch
+            }
+            let mapped: WorkspaceV2SyncAdapter.MappedMutation
+            do {
+                mapped = try WorkspaceV2SyncAdapter.mappedMutation(
+                    envelope: envelope,
+                    localClocks: operation.fieldClocks,
+                    workspaceID: workspaceID
+                )
+            } catch WorkspaceV2SyncAdapterError.profileRequiresReviewedBootstrap {
+                continue
+            } catch WorkspaceV2SyncAdapterError.assetTransferDisabled {
+                continue
+            }
+            let key = RemoteEntityKey(type: mapped.entityType, id: mapped.entityID)
+            var clocks = result[key] ?? [:]
+            for (field, clock) in mapped.fieldClocks {
+                clocks[field] = max(clocks[field] ?? clock, clock)
+            }
+            result[key] = clocks
+        }
+        return result
     }
 
     private func remoteFieldClocks(
