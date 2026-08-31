@@ -89,6 +89,7 @@ The open panel reloads the JSON file automatically. The legacy filenames remain 
 - [docs/LOGGING.md](docs/LOGGING.md) defines diagnostics, activity history, analytics, and AI-execution boundaries.
 - [docs/GITHUB_WORKFLOW.md](docs/GITHUB_WORKFLOW.md) defines branches, checks, milestones, and the local push gate.
 - [docs/product/ASSISTANT_ARCHITECTURE.md](docs/product/ASSISTANT_ARCHITECTURE.md) defines the safe assistant and connector model.
+- [docs/product/ACCOUNT_SYNC_AND_CONNECTIONS_UX.md](docs/product/ACCOUNT_SYNC_AND_CONNECTIONS_UX.md) defines the Google identity, cross-device sync, calm Connections, and AI-worker experience.
 - [docs/product/LAUNCH_GATES.md](docs/product/LAUNCH_GATES.md) defines the evidence required before beta and launch.
 
 Before a commit or pull request:
