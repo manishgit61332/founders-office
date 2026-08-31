@@ -39,7 +39,9 @@
               }
             }
           },
+          "400": { "$ref": "#/components/responses/Error" },
           "401": { "$ref": "#/components/responses/Error" },
+          "403": { "$ref": "#/components/responses/Error" },
           "409": { "$ref": "#/components/responses/Error" }
         }
       }
@@ -67,7 +69,8 @@
           },
           "400": { "$ref": "#/components/responses/Error" },
           "401": { "$ref": "#/components/responses/Error" },
-          "403": { "$ref": "#/components/responses/Error" }
+          "403": { "$ref": "#/components/responses/Error" },
+          "503": { "$ref": "#/components/responses/Error" }
         }
       }
     },
@@ -92,6 +95,7 @@
               }
             }
           },
+          "400": { "$ref": "#/components/responses/Error" },
           "401": { "$ref": "#/components/responses/Error" },
           "403": { "$ref": "#/components/responses/Error" }
         }
@@ -100,7 +104,7 @@
     "/rest/v1/rpc/export_workspace": {
       "post": {
         "operationId": "exportWorkspace",
-        "summary": "Export all owner-visible durable workspace data",
+        "summary": "Export durable rows plus a fail-closed private-object transfer manifest",
         "requestBody": {
           "required": true,
           "content": {
@@ -111,7 +115,7 @@
         },
         "responses": {
           "200": {
-            "description": "Versioned workspace export",
+            "description": "Versioned database export and private-object transfer state; verified means an external adapter proved the exact manifest was exported",
             "content": {
               "application/json": {
                 "schema": { "$ref": "schemas/sync.schema.json#/$defs/ExportResponse" }
@@ -126,7 +130,7 @@
     "/rest/v1/rpc/erase_workspace": {
       "post": {
         "operationId": "eraseWorkspace",
-        "summary": "Permanently erase an owned workspace after exact-ID confirmation",
+        "summary": "Permanently erase an owned workspace after exact-ID confirmation and private-object deletion proof",
         "requestBody": {
           "required": true,
           "content": {
@@ -146,7 +150,9 @@
           },
           "400": { "$ref": "#/components/responses/Error" },
           "401": { "$ref": "#/components/responses/Error" },
-          "403": { "$ref": "#/components/responses/Error" }
+          "403": { "$ref": "#/components/responses/Error" },
+          "409": { "$ref": "#/components/responses/Error" },
+          "503": { "$ref": "#/components/responses/Error" }
         }
       }
     }

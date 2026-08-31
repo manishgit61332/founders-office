@@ -28,6 +28,56 @@ begin
 end;
 $$;
 
+create or replace function private.is_canonical_date_v1(candidate text)
+returns boolean
+language plpgsql
+immutable
+strict
+set search_path = ''
+as $$
+declare
+    parsed date;
+begin
+    if candidate !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' then
+        return false;
+    end if;
+
+    begin
+        parsed := candidate::date;
+    exception
+        when invalid_datetime_format or datetime_field_overflow then
+            return false;
+    end;
+
+    return isfinite(parsed) and to_char(parsed, 'YYYY-MM-DD') = candidate;
+end;
+$$;
+
+create or replace function private.is_canonical_timestamp_v1(candidate text)
+returns boolean
+language plpgsql
+immutable
+strict
+set search_path = ''
+as $$
+declare
+    parsed timestamptz;
+begin
+    if candidate !~ '^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\.[0-9]{1,6})?(Z|[+-]([01][0-9]|2[0-3]):[0-5][0-9])$' then
+        return false;
+    end if;
+
+    begin
+        parsed := candidate::timestamptz;
+    exception
+        when invalid_datetime_format or datetime_field_overflow then
+            return false;
+    end;
+
+    return isfinite(parsed);
+end;
+$$;
+
 create or replace function private.entity_record(
     target_workspace_id uuid,
     target_entity_type text,
@@ -115,6 +165,22 @@ begin
         where goal.workspace_id = target_workspace_id
           and goal.id = target_entity_id;
 
+    when 'milestone' then
+        select jsonb_build_object(
+            'id', milestone.id,
+            'title', milestone.title,
+            'dueAt', milestone.due_at,
+            'deletedAt', milestone.deleted_at,
+            'revision', milestone.revision,
+            'fieldClocks', milestone.field_clocks,
+            'createdAt', milestone.created_at,
+            'updatedAt', milestone.updated_at
+        )
+        into result
+        from public.milestones as milestone
+        where milestone.workspace_id = target_workspace_id
+          and milestone.id = target_entity_id;
+
     when 'asset' then
         select jsonb_build_object(
             'id', asset.id,
@@ -173,6 +239,10 @@ begin
         select goal.field_writers into result
         from public.primary_goals as goal
         where goal.workspace_id = target_workspace_id and goal.id = target_entity_id;
+    when 'milestone' then
+        select milestone.field_writers into result
+        from public.milestones as milestone
+        where milestone.workspace_id = target_workspace_id and milestone.id = target_entity_id;
     when 'asset' then
         select asset.field_writers into result
         from public.assets as asset
@@ -247,10 +317,15 @@ declare
         auth.jwt() ->> 'provider'
     );
     workspace_id uuid;
+    owned_workspace_id uuid;
+    erased_owner_id uuid;
     workspace_was_created boolean := false;
     latest_cursor bigint := 0;
     clean_workspace_name text := btrim(p_workspace_name);
-    clean_display_name text := nullif(btrim(p_display_name), '');
+    clean_display_name text := case
+        when p_display_name is null then null
+        else nullif(private.normalize_display_name_v1(p_display_name), '')
+    end;
 begin
     if account_id is null then
         raise exception using errcode = '28000', message = 'authentication required';
@@ -265,7 +340,7 @@ begin
         raise exception using errcode = '22023', message = 'workspace name is invalid';
     end if;
     if p_display_name is not null
-       and (clean_display_name is null or char_length(clean_display_name) > 120) then
+       and not private.is_valid_display_name_v1(p_display_name) then
         raise exception using errcode = '22023', message = 'display name is invalid';
     end if;
     if clean_display_name is null
@@ -281,6 +356,19 @@ begin
         updated_at = now();
 
     if p_local_workspace_id is not null then
+        select receipt.owner_account_id
+        into erased_owner_id
+        from private.workspace_erasure_receipts as receipt
+        where receipt.workspace_id = p_local_workspace_id;
+
+        if found then
+            if erased_owner_id = account_id then
+                raise exception using errcode = '22023', message = 'workspace was permanently erased';
+            else
+                raise exception using errcode = '42501', message = 'workspace access denied';
+            end if;
+        end if;
+
         select workspace.id
         into workspace_id
         from public.workspaces as workspace
@@ -291,6 +379,19 @@ begin
             select 1 from public.workspaces as unavailable where unavailable.id = p_local_workspace_id
         ) then
             raise exception using errcode = '42501', message = 'workspace access denied';
+        end if;
+
+        if workspace_id is null then
+            select workspace.id
+            into owned_workspace_id
+            from public.workspaces as workspace
+            where workspace.owner_account_id = account_id
+            order by workspace.created_at, workspace.id
+            limit 1;
+
+            if owned_workspace_id is not null then
+                raise exception using errcode = '23505', message = 'account already owns a different workspace';
+            end if;
         end if;
     else
         select workspace.id
@@ -318,9 +419,23 @@ begin
                 jsonb_build_object('name', p_device_id)
             );
         exception when unique_violation then
-            raise exception using errcode = '42501', message = 'workspace is unavailable';
+            select workspace.id
+            into owned_workspace_id
+            from public.workspaces as workspace
+            where workspace.owner_account_id = account_id
+            order by workspace.created_at, workspace.id
+            limit 1;
+
+            if owned_workspace_id is not null
+               and (p_local_workspace_id is null or owned_workspace_id = p_local_workspace_id) then
+                workspace_id := owned_workspace_id;
+            elsif owned_workspace_id is not null then
+                raise exception using errcode = '23505', message = 'account already owns a different workspace';
+            else
+                raise exception using errcode = '42501', message = 'workspace is unavailable';
+            end if;
         end;
-        workspace_was_created := true;
+        workspace_was_created := owned_workspace_id is null;
     end if;
 
     insert into public.workspace_members (workspace_id, account_id, role)
@@ -343,7 +458,7 @@ begin
             'workspace.created',
             'workspace',
             workspace_id,
-            jsonb_build_object('contractVersion', 1)
+            '{}'::jsonb
         );
     end if;
 
@@ -353,10 +468,9 @@ begin
     where change.workspace_id = workspace_id;
 
     insert into public.device_cursors (workspace_id, account_id, device_id, cursor, last_seen_at)
-    values (workspace_id, account_id, p_device_id, latest_cursor, now())
+    values (workspace_id, account_id, p_device_id, 0, now())
     on conflict (workspace_id, account_id, device_id) do update
-    set cursor = greatest(public.device_cursors.cursor, excluded.cursor),
-        last_seen_at = excluded.last_seen_at;
+    set last_seen_at = excluded.last_seen_at;
 
     return jsonb_build_object(
         'contractVersion', 1,
@@ -376,6 +490,7 @@ begin
             where profile.id = account_id
         ),
         'workspace', private.entity_record(workspace_id, 'workspace', workspace_id),
+        'startingCursor', 0,
         'latestCursor', latest_cursor
     );
 end;
@@ -418,16 +533,20 @@ declare
     server_record jsonb;
     change_cursor bigint;
     latest_cursor bigint := 0;
-    duplicate_change record;
+    operation_receipt record;
+    result_item jsonb;
     results jsonb := '[]'::jsonb;
+    seen_operation_ids uuid[] := array[]::uuid[];
+    conflicting_fields jsonb := '[]'::jsonb;
 begin
     if p_device_id is null then
         raise exception using errcode = '22023', message = 'device ID is required';
     end if;
     if p_operations is null
        or jsonb_typeof(p_operations) <> 'array'
-       or jsonb_array_length(p_operations) not between 1 and 100 then
-        raise exception using errcode = '22023', message = 'operations must contain between 1 and 100 items';
+       or jsonb_array_length(p_operations) not between 1 and 100
+       or octet_length(p_operations::text) > 2097152 then
+        raise exception using errcode = '22023', message = 'operations must contain 1 to 100 items and at most 2 MiB';
     end if;
 
     for operation in select value from jsonb_array_elements(p_operations)
@@ -443,6 +562,19 @@ begin
             raise exception using errcode = '22023', message = 'operation has an invalid shape';
         end if;
 
+        if jsonb_typeof(operation -> 'contractVersion') <> 'number'
+           or (operation ->> 'contractVersion') !~ '^(0|[1-9][0-9]*)$'
+           or jsonb_typeof(operation -> 'operationId') <> 'string'
+           or jsonb_typeof(operation -> 'entityType') <> 'string'
+           or jsonb_typeof(operation -> 'entityId') <> 'string'
+           or jsonb_typeof(operation -> 'action') <> 'string'
+           or jsonb_typeof(operation -> 'baseRevision') <> 'number'
+           or (operation ->> 'baseRevision') !~ '^(0|[1-9][0-9]*)$'
+           or jsonb_typeof(operation -> 'occurredAt') <> 'string'
+           or not private.is_canonical_timestamp_v1(operation ->> 'occurredAt') then
+            raise exception using errcode = '22023', message = 'operation scalar types are invalid';
+        end if;
+
         begin
             if (operation ->> 'contractVersion')::integer is distinct from 1 then
                 raise exception using errcode = '22023', message = 'unsupported contract version';
@@ -456,12 +588,18 @@ begin
             field_clocks := operation -> 'fieldClocks';
             occurred_at := (operation ->> 'occurredAt')::timestamptz;
             payload := operation -> 'payload';
-        exception when invalid_text_representation or numeric_value_out_of_range then
+        exception
+            when invalid_text_representation or numeric_value_out_of_range or datetime_field_overflow then
             raise exception using errcode = '22023', message = 'operation contains an invalid identifier, revision, or timestamp';
         end;
 
+        if operation_id = any(seen_operation_ids) then
+            raise exception using errcode = '22023', message = 'operation IDs must be unique within a push batch';
+        end if;
+        seen_operation_ids := array_append(seen_operation_ids, operation_id);
+
         if entity_type is null
-           or entity_type not in ('workspace', 'move', 'appearance', 'primaryGoal', 'asset')
+           or entity_type not in ('workspace', 'move', 'appearance', 'primaryGoal', 'milestone', 'asset')
            or action is null
            or action not in ('upsert', 'delete')
            or operation_id is null
@@ -516,7 +654,7 @@ begin
             select 1
             from jsonb_array_elements_text(changed_fields) as field(value)
             where jsonb_typeof(field_clocks -> field.value) <> 'string'
-               or not isfinite((field_clocks ->> field.value)::timestamptz)
+               or not private.is_canonical_timestamp_v1(field_clocks ->> field.value)
         ) then
             raise exception using errcode = '22023', message = 'field clock is invalid';
         end if;
@@ -554,12 +692,28 @@ begin
                 'title', 'metric', 'currentValue', 'targetValue', 'unit', 'dueOn', 'deletedAt'
             ];
             required_fields := array['title', 'metric', 'unit', 'dueOn'];
+        when 'milestone' then
+            allowed_fields := array['title', 'dueAt', 'deletedAt', 'createdAt'];
+            required_fields := array['title', 'dueAt', 'createdAt'];
         when 'asset' then
             allowed_fields := array[
                 'kind', 'storagePath', 'contentType', 'byteSize', 'sha256', 'deletedAt'
             ];
             required_fields := array['kind', 'storagePath', 'contentType', 'byteSize', 'sha256'];
         end case;
+
+        if entity_type = 'asset' and not exists (
+            select 1
+            from private.product_capabilities as capability
+            where capability.singleton
+              and capability.asset_storage_enabled
+              and capability.asset_export_verified
+              and capability.asset_erasure_verified
+        ) then
+            raise exception using
+                errcode = 'PT503',
+                message = 'asset sync is disabled until private export and erasure are verified';
+        end if;
 
         if exists (
             select 1
@@ -587,30 +741,244 @@ begin
             ) then
                 raise exception using errcode = '22023', message = 'payload keys must match changedFields exactly';
             end if;
+
+            if exists (
+                select 1
+                from jsonb_array_elements_text(changed_fields) as field(value)
+                where not case entity_type
+                    when 'workspace' then
+                        field.value = 'name'
+                        and jsonb_typeof(payload -> field.value) = 'string'
+                    when 'move' then case
+                        when field.value in ('title', 'details', 'status', 'priority', 'source', 'createdAt')
+                            then jsonb_typeof(payload -> field.value) = 'string'
+                        when field.value = 'previousStatus'
+                            then jsonb_typeof(payload -> field.value) in ('string', 'null')
+                        when field.value in ('dueOn', 'completedAt', 'deletedAt')
+                            then jsonb_typeof(payload -> field.value) in ('string', 'null')
+                        else false
+                    end
+                    when 'appearance' then case
+                        when field.value = 'schemaVersion' then
+                            jsonb_typeof(payload -> field.value) = 'number'
+                            and (payload ->> field.value) ~ '^-?(0|[1-9][0-9]*)(\.0+)?$'
+                        when field.value = 'preferences'
+                            then jsonb_typeof(payload -> field.value) = 'object'
+                        when field.value = 'deletedAt'
+                            then jsonb_typeof(payload -> field.value) in ('string', 'null')
+                        else false
+                    end
+                    when 'primaryGoal' then case
+                        when field.value in ('title', 'metric', 'unit', 'dueOn')
+                            then jsonb_typeof(payload -> field.value) = 'string'
+                        when field.value in ('currentValue', 'targetValue')
+                            then jsonb_typeof(payload -> field.value) in ('number', 'null')
+                        when field.value = 'deletedAt'
+                            then jsonb_typeof(payload -> field.value) in ('string', 'null')
+                        else false
+                    end
+                    when 'milestone' then case
+                        when field.value in ('title', 'dueAt', 'createdAt')
+                            then jsonb_typeof(payload -> field.value) = 'string'
+                        when field.value = 'deletedAt'
+                            then jsonb_typeof(payload -> field.value) in ('string', 'null')
+                        else false
+                    end
+                    when 'asset' then case
+                        when field.value in ('kind', 'storagePath', 'contentType', 'sha256')
+                            then jsonb_typeof(payload -> field.value) = 'string'
+                        when field.value = 'byteSize' then
+                            jsonb_typeof(payload -> field.value) = 'number'
+                            and (payload ->> field.value) ~ '^-?(0|[1-9][0-9]*)(\.0+)?$'
+                        when field.value = 'deletedAt'
+                            then jsonb_typeof(payload -> field.value) in ('string', 'null')
+                        else false
+                    end
+                    else false
+                end
+            ) then
+                raise exception using errcode = '22023', message = 'payload field has an invalid JSON type';
+            end if;
+
+            if entity_type = 'appearance'
+               and changed_fields ? 'preferences'
+               and octet_length((payload -> 'preferences')::text) > 262144 then
+                raise exception using errcode = '22023', message = 'appearance preferences exceed the sync limit';
+            end if;
+
+            if entity_type = 'workspace'
+               and changed_fields ? 'name'
+               and char_length(btrim(payload ->> 'name')) not between 1 and 120 then
+                raise exception using errcode = '22023', message = 'workspace name is invalid';
+            elsif entity_type = 'move' then
+                if changed_fields ? 'title'
+                   and char_length(btrim(payload ->> 'title')) not between 1 and 500 then
+                    raise exception using errcode = '22023', message = 'Move title is invalid';
+                end if;
+                if changed_fields ? 'details' and char_length(payload ->> 'details') > 20000 then
+                    raise exception using errcode = '22023', message = 'Move details exceed the sync limit';
+                end if;
+                if changed_fields ? 'status'
+                   and payload ->> 'status' not in ('doing', 'next', 'blocked', 'done') then
+                    raise exception using errcode = '22023', message = 'Move status is invalid';
+                end if;
+                if changed_fields ? 'previousStatus'
+                   and payload ->> 'previousStatus' is not null
+                   and payload ->> 'previousStatus' not in ('doing', 'next', 'blocked', 'done') then
+                    raise exception using errcode = '22023', message = 'Move previous status is invalid';
+                end if;
+                if changed_fields ? 'priority'
+                   and payload ->> 'priority' not in ('P0', 'P1', 'P2', 'P3') then
+                    raise exception using errcode = '22023', message = 'Move priority is invalid';
+                end if;
+                if changed_fields ? 'source'
+                   and char_length(btrim(payload ->> 'source')) not between 1 and 64 then
+                    raise exception using errcode = '22023', message = 'Move source is invalid';
+                end if;
+            elsif entity_type = 'appearance'
+                  and changed_fields ? 'schemaVersion'
+                  and (payload ->> 'schemaVersion')::numeric not between 1 and 2147483647 then
+                raise exception using errcode = '22023', message = 'Appearance schema version is invalid';
+            elsif entity_type = 'primaryGoal' then
+                if changed_fields ? 'title'
+                   and char_length(btrim(payload ->> 'title')) not between 1 and 500 then
+                    raise exception using errcode = '22023', message = 'Primary goal title is invalid';
+                end if;
+                if changed_fields ? 'metric' and char_length(payload ->> 'metric') > 120 then
+                    raise exception using errcode = '22023', message = 'Primary goal metric exceeds the sync limit';
+                end if;
+                if changed_fields ? 'unit'
+                   and payload ->> 'unit' not in ('usd', 'inr', 'number', 'percent') then
+                    raise exception using errcode = '22023', message = 'Primary goal unit is invalid';
+                end if;
+                if exists (
+                    select 1
+                    from jsonb_array_elements_text(changed_fields) as field(value)
+                    where field.value in ('currentValue', 'targetValue')
+                      and payload ->> field.value is not null
+                      and (
+                          (payload ->> field.value)::numeric < 0
+                          or (payload ->> field.value)::numeric
+                              > 9999999999999999999999.99999999::numeric
+                          or scale((payload ->> field.value)::numeric) > 8
+                      )
+                ) then
+                    raise exception using errcode = '22023', message = 'Primary goal value exceeds numeric(30,8)';
+                end if;
+            elsif entity_type = 'milestone' then
+                if changed_fields ? 'title'
+                   and char_length(btrim(payload ->> 'title')) not between 1 and 500 then
+                    raise exception using errcode = '22023', message = 'Milestone title is invalid';
+                end if;
+            elsif entity_type = 'asset' then
+                if changed_fields ? 'kind' and payload ->> 'kind' <> 'visionImage' then
+                    raise exception using errcode = '22023', message = 'Asset kind is invalid';
+                end if;
+                if changed_fields ? 'storagePath'
+                   and payload ->> 'storagePath' <> (
+                       'workspaces/' || p_workspace_id::text || '/vision-images/' || entity_id::text || '.jpg'
+                   ) then
+                    raise exception using errcode = '22023', message = 'Asset storage path is invalid';
+                end if;
+                if changed_fields ? 'contentType'
+                   and payload ->> 'contentType' <> 'image/jpeg' then
+                    raise exception using errcode = '22023', message = 'Asset content type is invalid';
+                end if;
+                if changed_fields ? 'byteSize'
+                   and (payload ->> 'byteSize')::numeric not between 1 and 5242880 then
+                    raise exception using errcode = '22023', message = 'Asset byte size is invalid';
+                end if;
+                if changed_fields ? 'sha256'
+                   and payload ->> 'sha256' !~ '^[a-f0-9]{64}$' then
+                    raise exception using errcode = '22023', message = 'Asset digest is invalid';
+                end if;
+            end if;
+
+            begin
+                if entity_type = 'move' then
+                    if changed_fields ? 'dueOn' and payload ->> 'dueOn' is not null
+                       and not private.is_canonical_date_v1(payload ->> 'dueOn') then
+                        raise exception using errcode = '22023', message = 'Move dueOn must be canonical YYYY-MM-DD';
+                    end if;
+                    if changed_fields ? 'completedAt' and payload ->> 'completedAt' is not null
+                       and not private.is_canonical_timestamp_v1(payload ->> 'completedAt') then
+                        raise exception using errcode = '22023', message = 'Move completedAt must be finite';
+                    end if;
+                    if changed_fields ? 'deletedAt' and payload ->> 'deletedAt' is not null
+                       and not private.is_canonical_timestamp_v1(payload ->> 'deletedAt') then
+                        raise exception using errcode = '22023', message = 'Move deletedAt must be finite';
+                    end if;
+                    if changed_fields ? 'createdAt'
+                       and not private.is_canonical_timestamp_v1(payload ->> 'createdAt') then
+                        raise exception using errcode = '22023', message = 'Move createdAt must be finite';
+                    end if;
+                elsif entity_type = 'appearance' then
+                    if changed_fields ? 'deletedAt' and payload ->> 'deletedAt' is not null
+                       and not private.is_canonical_timestamp_v1(payload ->> 'deletedAt') then
+                        raise exception using errcode = '22023', message = 'Appearance deletedAt must be finite';
+                    end if;
+                elsif entity_type = 'primaryGoal' then
+                    if changed_fields ? 'dueOn'
+                       and not private.is_canonical_date_v1(payload ->> 'dueOn') then
+                        raise exception using errcode = '22023', message = 'Primary goal dueOn must be canonical YYYY-MM-DD';
+                    end if;
+                    if changed_fields ? 'deletedAt' and payload ->> 'deletedAt' is not null
+                       and not private.is_canonical_timestamp_v1(payload ->> 'deletedAt') then
+                        raise exception using errcode = '22023', message = 'Primary goal deletedAt must be finite';
+                    end if;
+                elsif entity_type = 'milestone' then
+                    if changed_fields ? 'dueAt'
+                       and not private.is_canonical_timestamp_v1(payload ->> 'dueAt') then
+                        raise exception using errcode = '22023', message = 'Milestone dueAt must be finite';
+                    end if;
+                    if changed_fields ? 'createdAt'
+                       and not private.is_canonical_timestamp_v1(payload ->> 'createdAt') then
+                        raise exception using errcode = '22023', message = 'Milestone createdAt must be finite';
+                    end if;
+                    if changed_fields ? 'deletedAt' and payload ->> 'deletedAt' is not null
+                       and not private.is_canonical_timestamp_v1(payload ->> 'deletedAt') then
+                        raise exception using errcode = '22023', message = 'Milestone deletedAt must be finite';
+                    end if;
+                elsif entity_type = 'asset'
+                      and changed_fields ? 'deletedAt'
+                      and payload ->> 'deletedAt' is not null
+                      and not private.is_canonical_timestamp_v1(payload ->> 'deletedAt') then
+                    raise exception using errcode = '22023', message = 'Asset deletedAt must be finite';
+                end if;
+            exception
+                when invalid_text_representation or datetime_field_overflow then
+                    raise exception using errcode = '22023', message = 'payload contains an invalid date or timestamp';
+            end;
         end if;
 
         perform pg_advisory_xact_lock(
             hashtextextended(p_workspace_id::text || ':' || operation_id::text, 0)
         );
+
+        select receipt.operation_envelope, receipt.result
+        into operation_receipt
+        from private.sync_operation_receipts as receipt
+        where receipt.workspace_id = p_workspace_id
+          and receipt.operation_id = operation_id;
+
+        if found then
+            if operation_receipt.operation_envelope <> operation then
+                raise exception using
+                    errcode = '22023',
+                    message = 'operation ID was reused with different content';
+            end if;
+
+            result_item := operation_receipt.result;
+            if result_item ->> 'status' = 'accepted' then
+                result_item := jsonb_set(result_item, '{status}', '"duplicate"'::jsonb);
+            end if;
+            results := results || jsonb_build_array(result_item);
+            continue;
+        end if;
+
         perform pg_advisory_xact_lock(
             hashtextextended(p_workspace_id::text || ':' || entity_type || ':' || entity_id::text, 0)
         );
-
-        select change.revision, change.cursor, change.record
-        into duplicate_change
-        from public.change_log as change
-        where change.workspace_id = p_workspace_id
-          and change.operation_id = operation_id;
-
-        if found then
-            results := results || jsonb_build_array(jsonb_build_object(
-                'operationId', operation_id,
-                'status', 'duplicate',
-                'revision', duplicate_change.revision,
-                'cursor', duplicate_change.cursor
-            ));
-            continue;
-        end if;
 
         server_record := private.entity_record(p_workspace_id, entity_type, entity_id);
         current_revision := coalesce((server_record ->> 'revision')::bigint, 0);
@@ -654,7 +1022,16 @@ begin
                changed_fields,
                operation_id
            ) then
-            results := results || jsonb_build_array(jsonb_build_object(
+            select coalesce(
+                jsonb_agg(to_jsonb(field.value) order by field.ordinality),
+                '[]'::jsonb
+            )
+            into conflicting_fields
+            from jsonb_array_elements_text(changed_fields)
+                with ordinality as field(value, ordinality)
+            where current_field_clocks ? field.value;
+
+            result_item := jsonb_build_object(
                 'operationId', operation_id,
                 'status', 'conflict',
                 'conflict', jsonb_build_object(
@@ -679,9 +1056,17 @@ begin
                           ) then 'overlappingChanges'
                         else 'fieldClockLost'
                     end,
+                    'conflictingFields', conflicting_fields,
                     'serverRecord', server_record
                 )
-            ));
+            );
+            insert into private.sync_operation_receipts (
+                workspace_id,
+                operation_id,
+                operation_envelope,
+                result
+            ) values (p_workspace_id, operation_id, operation, result_item);
+            results := results || jsonb_build_array(result_item);
             continue;
         end if;
 
@@ -826,8 +1211,8 @@ begin
                     p_workspace_id,
                     btrim(payload ->> 'title'),
                     coalesce(payload ->> 'metric', ''),
-                    (payload ->> 'currentValue')::double precision,
-                    (payload ->> 'targetValue')::double precision,
+                    (payload ->> 'currentValue')::numeric,
+                    (payload ->> 'targetValue')::numeric,
                     payload ->> 'unit',
                     (payload ->> 'dueOn')::date,
                     (payload ->> 'deletedAt')::timestamptz,
@@ -843,11 +1228,11 @@ begin
                 set title = case when changed_fields ? 'title' then btrim(payload ->> 'title') else title end,
                     metric = case when changed_fields ? 'metric' then coalesce(payload ->> 'metric', '') else metric end,
                     current_value = case
-                        when changed_fields ? 'currentValue' then (payload ->> 'currentValue')::double precision
+                        when changed_fields ? 'currentValue' then (payload ->> 'currentValue')::numeric
                         else current_value
                     end,
                     target_value = case
-                        when changed_fields ? 'targetValue' then (payload ->> 'targetValue')::double precision
+                        when changed_fields ? 'targetValue' then (payload ->> 'targetValue')::numeric
                         else target_value
                     end,
                     unit = case when changed_fields ? 'unit' then payload ->> 'unit' else unit end,
@@ -864,6 +1249,52 @@ begin
                 where workspace_id = p_workspace_id and id = entity_id;
             else
                 update public.primary_goals
+                set deleted_at = (field_clocks ->> 'deletedAt')::timestamptz,
+                    revision = next_revision,
+                    field_clocks = merged_field_clocks,
+                    field_writers = merged_field_writers,
+                    writer_device_id = p_device_id,
+                    updated_at = changed_at
+                where workspace_id = p_workspace_id and id = entity_id;
+            end if;
+
+        when 'milestone' then
+            if action = 'upsert' and current_revision = 0 then
+                insert into public.milestones (
+                    id, workspace_id, title, due_at, deleted_at, revision,
+                    field_clocks, field_writers, writer_device_id, created_at, updated_at
+                ) values (
+                    entity_id,
+                    p_workspace_id,
+                    btrim(payload ->> 'title'),
+                    (payload ->> 'dueAt')::timestamptz,
+                    (payload ->> 'deletedAt')::timestamptz,
+                    next_revision,
+                    merged_field_clocks,
+                    merged_field_writers,
+                    p_device_id,
+                    least((payload ->> 'createdAt')::timestamptz, changed_at),
+                    changed_at
+                );
+            elsif action = 'upsert' then
+                update public.milestones
+                set title = case when changed_fields ? 'title' then btrim(payload ->> 'title') else title end,
+                    due_at = case
+                        when changed_fields ? 'dueAt' then (payload ->> 'dueAt')::timestamptz
+                        else due_at
+                    end,
+                    deleted_at = case
+                        when changed_fields ? 'deletedAt' then (payload ->> 'deletedAt')::timestamptz
+                        else deleted_at
+                    end,
+                    revision = next_revision,
+                    field_clocks = merged_field_clocks,
+                    field_writers = merged_field_writers,
+                    writer_device_id = p_device_id,
+                    updated_at = changed_at
+                where workspace_id = p_workspace_id and id = entity_id;
+            else
+                update public.milestones
                 set deleted_at = (field_clocks ->> 'deletedAt')::timestamptz,
                     revision = next_revision,
                     field_clocks = merged_field_clocks,
@@ -980,15 +1411,22 @@ begin
             entity_type,
             entity_id,
             changed_at,
-            jsonb_build_object('operationId', operation_id, 'revision', next_revision)
+            '{}'::jsonb
         );
 
-        results := results || jsonb_build_array(jsonb_build_object(
+        result_item := jsonb_build_object(
             'operationId', operation_id,
             'status', 'accepted',
             'revision', next_revision,
             'cursor', change_cursor
-        ));
+        );
+        insert into private.sync_operation_receipts (
+            workspace_id,
+            operation_id,
+            operation_envelope,
+            result
+        ) values (p_workspace_id, operation_id, operation, result_item);
+        results := results || jsonb_build_array(result_item);
     end loop;
 
     select coalesce(max(change.cursor), 0)
@@ -997,10 +1435,9 @@ begin
     where change.workspace_id = p_workspace_id;
 
     insert into public.device_cursors (workspace_id, account_id, device_id, cursor, last_seen_at)
-    values (p_workspace_id, account_id, p_device_id, latest_cursor, now())
+    values (p_workspace_id, account_id, p_device_id, 0, now())
     on conflict (workspace_id, account_id, device_id) do update
-    set cursor = greatest(public.device_cursors.cursor, excluded.cursor),
-        last_seen_at = excluded.last_seen_at;
+    set last_seen_at = excluded.last_seen_at;
 
     return jsonb_build_object(
         'contractVersion', 1,
@@ -1035,6 +1472,15 @@ begin
        or p_limit is null
        or p_limit not between 1 and 500 then
         raise exception using errcode = '22023', message = 'pull arguments are invalid';
+    end if;
+
+    select coalesce(max(change.cursor), 0)
+    into latest_cursor
+    from public.change_log as change
+    where change.workspace_id = p_workspace_id;
+
+    if p_cursor > latest_cursor then
+        raise exception using errcode = '22023', message = 'pull cursor is ahead of the workspace feed';
     end if;
 
     select coalesce(jsonb_agg(jsonb_build_object(
@@ -1093,7 +1539,36 @@ set search_path = ''
 as $$
 declare
     account_id uuid := private.require_workspace_owner(p_workspace_id);
+    asset_manifest jsonb := '[]'::jsonb;
+    asset_export_state text := 'notRequired';
 begin
+    select coalesce(jsonb_agg(jsonb_build_object(
+        'id', asset.id,
+        'storagePath', asset.storage_path,
+        'contentType', asset.content_type,
+        'byteSize', asset.byte_size,
+        'sha256', asset.sha256,
+        'deletedAt', asset.deleted_at
+    ) order by asset.id), '[]'::jsonb)
+    into asset_manifest
+    from public.assets as asset
+    where asset.workspace_id = p_workspace_id;
+
+    if jsonb_array_length(asset_manifest) > 0 then
+        if exists (
+            select 1
+            from private.workspace_asset_transfers as transfer
+            where transfer.workspace_id = p_workspace_id
+              and transfer.owner_account_id = account_id
+              and transfer.manifest = asset_manifest
+              and transfer.export_verified_at is not null
+        ) then
+            asset_export_state := 'verified';
+        else
+            asset_export_state := 'requiresPrivateStorageAdapter';
+        end if;
+    end if;
+
     return jsonb_build_object(
         'contractVersion', 1,
         'exportedAt', now(),
@@ -1110,10 +1585,18 @@ begin
             select jsonb_agg(private.entity_record(p_workspace_id, 'primaryGoal', goal.id) order by goal.created_at, goal.id)
             from public.primary_goals as goal where goal.workspace_id = p_workspace_id
         ), '[]'::jsonb),
+        'milestones', coalesce((
+            select jsonb_agg(private.entity_record(p_workspace_id, 'milestone', milestone.id) order by milestone.created_at, milestone.id)
+            from public.milestones as milestone where milestone.workspace_id = p_workspace_id
+        ), '[]'::jsonb),
         'assets', coalesce((
             select jsonb_agg(private.entity_record(p_workspace_id, 'asset', asset.id) order by asset.created_at, asset.id)
             from public.assets as asset where asset.workspace_id = p_workspace_id
         ), '[]'::jsonb),
+        'assetTransfer', jsonb_build_object(
+            'state', asset_export_state,
+            'manifest', asset_manifest
+        ),
         'activityEvents', coalesce((
             select jsonb_agg(jsonb_build_object(
                 'id', event.id,
@@ -1143,12 +1626,96 @@ security definer
 set search_path = ''
 as $$
 declare
-    account_id uuid := private.require_workspace_owner(p_workspace_id);
+    account_id uuid := auth.uid();
     erased_at timestamptz := clock_timestamp();
+    prior_receipt record;
+    asset_manifest jsonb := '[]'::jsonb;
+    asset_object_count integer := 0;
+    asset_cleanup_state text := 'notRequired';
 begin
+    if account_id is null then
+        raise exception using errcode = '28000', message = 'authentication required';
+    end if;
     if p_workspace_id is distinct from p_confirm_workspace_id then
         raise exception using errcode = '22023', message = 'workspace erasure confirmation does not match';
     end if;
+
+    perform pg_advisory_xact_lock(hashtextextended('erase:' || p_workspace_id::text, 0));
+
+    select receipt.erased_at, receipt.asset_object_count, receipt.asset_cleanup_state
+    into prior_receipt
+    from private.workspace_erasure_receipts as receipt
+    where receipt.workspace_id = p_workspace_id
+      and receipt.owner_account_id = account_id;
+
+    if found then
+        return jsonb_build_object(
+            'contractVersion', 1,
+            'workspaceId', p_workspace_id,
+            'erasedAt', prior_receipt.erased_at,
+            'assetObjectCount', prior_receipt.asset_object_count,
+            'assetCleanupState', prior_receipt.asset_cleanup_state
+        );
+    end if;
+
+    if exists (
+        select 1
+        from private.workspace_erasure_receipts as receipt
+        where receipt.workspace_id = p_workspace_id
+    ) then
+        raise exception using errcode = '42501', message = 'workspace access denied';
+    end if;
+
+    perform private.require_workspace_owner(p_workspace_id);
+
+    select coalesce(jsonb_agg(jsonb_build_object(
+        'id', asset.id,
+        'storagePath', asset.storage_path,
+        'contentType', asset.content_type,
+        'byteSize', asset.byte_size,
+        'sha256', asset.sha256,
+        'deletedAt', asset.deleted_at
+    ) order by asset.id), '[]'::jsonb)
+    into asset_manifest
+    from public.assets as asset
+    where asset.workspace_id = p_workspace_id;
+
+    asset_object_count := jsonb_array_length(asset_manifest);
+    if asset_object_count > 0 then
+        if not exists (
+            select 1
+            from private.product_capabilities as capability
+            where capability.singleton
+              and capability.asset_storage_enabled
+              and capability.asset_erasure_verified
+        ) or not exists (
+            select 1
+            from private.workspace_asset_transfers as transfer
+            where transfer.workspace_id = p_workspace_id
+              and transfer.owner_account_id = account_id
+              and transfer.manifest = asset_manifest
+              and transfer.deletion_verified_at is not null
+        ) then
+            raise exception using
+                errcode = 'PT503',
+                message = 'private asset deletion has not been verified for this workspace';
+        end if;
+        asset_cleanup_state := 'verified';
+    end if;
+
+    insert into private.workspace_erasure_receipts (
+        workspace_id,
+        owner_account_id,
+        erased_at,
+        asset_object_count,
+        asset_cleanup_state
+    ) values (
+        p_workspace_id,
+        account_id,
+        erased_at,
+        asset_object_count,
+        asset_cleanup_state
+    );
 
     delete from public.workspaces
     where id = p_workspace_id
@@ -1161,7 +1728,9 @@ begin
     return jsonb_build_object(
         'contractVersion', 1,
         'workspaceId', p_workspace_id,
-        'erasedAt', erased_at
+        'erasedAt', erased_at,
+        'assetObjectCount', asset_object_count,
+        'assetCleanupState', asset_cleanup_state
     );
 end;
 $$;
@@ -1169,6 +1738,8 @@ $$;
 revoke all on function private.require_workspace_owner(uuid) from public, anon, authenticated;
 revoke all on function private.entity_record(uuid, text, uuid) from public, anon, authenticated;
 revoke all on function private.entity_field_writers(uuid, text, uuid) from public, anon, authenticated;
+revoke all on function private.is_canonical_date_v1(text) from public, anon, authenticated;
+revoke all on function private.is_canonical_timestamp_v1(text) from public, anon, authenticated;
 revoke all on function private.operation_field_writers(jsonb, uuid) from public, anon, authenticated;
 revoke all on function private.incoming_field_clocks_win(jsonb, jsonb, jsonb, jsonb, uuid)
     from public, anon, authenticated;

@@ -21,5 +21,6 @@
     "createdAt": "2026-08-31T10:00:00Z",
     "updatedAt": "2026-08-31T10:00:00Z"
   },
+  "startingCursor": 0,
   "latestCursor": 0
 }

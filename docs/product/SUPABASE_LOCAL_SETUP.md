@@ -33,11 +33,16 @@ supabase test db
 `db reset` applies the versioned migrations. `test db` runs the pgTAP suite as
 anonymous, owner, unrelated, and deleted-account identities. The suite covers
 RLS visibility, direct-write denial, RPC ownership checks, idempotent duplicate
-operations, disjoint stale-base merging, same-field conflicts, the five-minute
-future-clock gate, export confirmation, and account/workspace erasure.
+operations, mismatched operation-ID reuse, one-workspace ownership, pull-only
+cursor acknowledgement, disjoint stale-base merging, same-field conflicts, the
+five-minute future-clock gate, exact decimals, content-free activity, fail-closed
+asset transfer, and idempotent/non-resurrectable workspace erasure.
 
 The tests insert synthetic `auth.users` rows inside a rolled-back transaction.
 They do not call Google, Apple, Supabase Cloud, or any live network service.
+On a host without the Supabase CLI and Docker, only the static validator and
+Swift tests run. A passing static check does **not** claim that PostgreSQL, RLS,
+PostgREST error mapping, private-object transfer, or Storage deletion executed.
 
 If a local adapter needs environment variables, copy `.env.example` to the
 gitignored `.env.local`. Leave the publishable key empty until the local CLI emits
@@ -56,14 +61,38 @@ disabled until all of the following are approved and configured outside Git:
 - reviewed account-linking, recovery, reauthentication, session storage,
   account-deletion, abuse prevention, backups, monitoring, and incident response;
 - an asset-storage bucket and policies that match the `assets.storage_path`
-  ownership contract; and
+  ownership contract, plus a privileged adapter that exports and deletes the
+  exact server manifest before it records private transfer proof; and
 - a one-time, verified CloudKit/local-workspace claim and cutover. CloudKit and
-  Supabase must not remain concurrent writers for the same workspace.
+Supabase must not remain concurrent writers for the same workspace.
+
+Session revocation is an explicit **unpassed production release gate**. The
+checked-in local configuration uses a 3,600-second access-token lifetime. Signing
+out, deleting an account, or revoking a refresh token does not by itself prove an
+already-issued JWT unusable before that bounded expiry. Production must document
+and accept the maximum window or implement and integration-test an official
+Supabase-supported immediate-revocation design. This repository intentionally
+does not invent a session-epoch claim that Supabase Auth does not issue.
 
 The first bootstrap requires the customer-reviewed onboarding display name;
 later bootstraps may omit it to preserve the reviewed `profiles.display_name`.
 Do not silently copy a Google or Apple provider name, and never use a display
 name or email as an account or workspace key.
+
+Asset rows are disabled at the RPC boundary until export and erasure capabilities
+are both verified. Exports still return a manifest and
+`requiresPrivateStorageAdapter` so incomplete integrations are visible. Erasure
+returns HTTP 503 and leaves the canonical workspace untouched unless exact
+deletion proof exists.
+
+Full account deletion must use this order: produce the requested export; have the
+privileged private-Storage adapter prove deletion of the exact current manifest;
+call `erase_workspace`; revoke connector grants; then delete the Supabase Auth
+identity through the approved Admin integration. A database trigger returns 409
+if the Auth identity is deleted while its workspace still exists. Successful
+Auth deletion removes the account link from the erasure receipt but deliberately
+retains the opaque workspace-ID tombstone, so another account cannot claim a
+stale erased UUID. Do not expose direct `profiles` deletion as an account API.
 
 ## Identity and connector separation
 
