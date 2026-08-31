@@ -10,6 +10,7 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 - A fail-closed clean-Mac acceptance record that binds restart, upgrade, export, erase, recovery, and staged-update checks to the exact sealed Mac artifact before the website can expose it.
 - A fail-closed schema-4 live-sync core with durable binding, server revisions, pull cursor, exact bootstrap and acknowledgement receipts, conflict evidence, inbound deduplication, and quarantine for malformed historical clock masks.
 - A schema-4 immutable bootstrap-attempt journal that safely replays partial server acceptance across local edits, crashes, and relaunches while retaining later outbox work.
+- Explicit **Keep Mine** and **Use Latest** conflict review which retains exact local evidence until one atomic, user-chosen outcome is durable.
 - A bounded Supabase HTTPS RPC transport and event-driven sync coordinator with strict nested response shapes, cancellation, push-before-pull ordering, coalesced manual/automatic runs, hard continuation budgets, and no polling.
 - A versioned, typed local entity-operation envelope capped at 256 KiB, with strict identity, field, string, number, and date validation plus an explicit transport-adapter seam.
 - A safe schema-1 outbox migration: deterministic single-entity operations upgrade in place, while broad historical snapshots require an exact-revision sync bootstrap before their protected acknowledgement boundary can remove them.
@@ -82,6 +83,10 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 - Primary-goal editors now reopen every meaningful decimal digit instead of rounding non-integers to one place, and malformed, non-finite, over-scale, negative, or out-of-range input fails before changing canonical state.
 - Keyboard-opened colour panels now inherit the notch's interaction lease even when the pointer is elsewhere, and a failed Move or personalization write blocks quit until a later durable retry succeeds.
 - Remote pull now applies field-scoped records, server clocks, dedupe IDs, and its cursor in one transaction without re-enqueuing an outbound operation; failed or interrupted pages roll back without cursor skip.
+- Remote commits now advance the open Mac session exactly once while the sync coordinator ignores their origin, preventing both stale UI and outbox echoes.
+- Sync retry delays now retain their failure streak and last successful run across cancellation and relaunch, and a scheduled status is written only when a live retry trigger exists.
+- Clean sync runs no longer clear unresolved conflict review, **Keep Mine** now creates a fresh reviewed operation with winning clocks, and stale conflict review cannot overwrite a later local edit.
+- Sync acknowledgements and bootstrap receipts now have bounded retention, while applied-operation dedupe, unresolved conflicts, and quarantined evidence fail closed instead of being erased unsafely.
 - An older accepted pull value can no longer hide a newer pending same-field local edit; the local value remains visible while the remote revision and cursor advance safely.
 - Canonical bootstrap can no longer delete pending work from a bare local revision: it requires exact authenticated server proof bound to the current workspace digest, account, device, results, and durable replay receipt.
 - Bootstrap no longer sends a conflicting base-zero workspace rename after creating the singleton; the validated RPC workspace record seeds the positive server revision used by later renames.

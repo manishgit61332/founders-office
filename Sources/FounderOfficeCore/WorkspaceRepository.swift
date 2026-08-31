@@ -210,6 +210,38 @@ public struct WorkspaceChange: Sendable {
     }
 }
 
+/// Identifies why a durable workspace snapshot changed. Remote-origin events
+/// update live UI state but must never wake the outbound sync loop and create
+/// an echo. A reviewed `keepMine` conflict resolution is local-origin because
+/// it intentionally makes the quarantined operation deliverable again.
+public enum WorkspaceChangeOrigin: String, Equatable, Sendable {
+    /// A replay of the repository's current durable snapshot when a consumer
+    /// subscribes. This closes the snapshot-to-subscription race without
+    /// pretending the replay is a new local or remote mutation.
+    case initial
+    case local
+    case remote
+}
+
+/// Unified repository stream consumed by live sessions and sync. Unlike the
+/// legacy local-only `changes()` stream, this includes inbound commits exactly
+/// once and makes the origin explicit.
+public struct WorkspaceRepositoryEvent: Sendable {
+    public var snapshot: WorkspaceRepositorySnapshot
+    public var origin: WorkspaceChangeOrigin
+    public var operationID: UUID?
+
+    public init(
+        snapshot: WorkspaceRepositorySnapshot,
+        origin: WorkspaceChangeOrigin,
+        operationID: UUID? = nil
+    ) {
+        self.snapshot = snapshot
+        self.origin = origin
+        self.operationID = operationID
+    }
+}
+
 public enum WorkspaceTransactionResult: Sendable {
     case committed(WorkspaceChange)
     case unchanged(WorkspaceRepositorySnapshot)
@@ -316,4 +348,5 @@ public protocol WorkspaceRepository: Actor {
     ) throws -> WorkspaceTransactionResult
 
     func changes() -> AsyncStream<WorkspaceChange>
+    func events() -> AsyncStream<WorkspaceRepositoryEvent>
 }

@@ -1,4 +1,5 @@
 import CoreGraphics
+import Combine
 import Foundation
 import ImageIO
 import SQLite3
@@ -134,6 +135,50 @@ struct WorkspaceSessionIntegrationTests {
         ).filter { $0.lastPathComponent.hasPrefix("revision-") }
         #expect(generatedRevisions.count <= 2)
         store.stop()
+        session.stop()
+    }
+
+    @Test
+    func remoteCommitPublishesToTheLiveSessionExactlyOnceWithoutOutboxEcho() async throws {
+        let fixture = try MacStorageFixture()
+        defer { fixture.remove() }
+        let workspaceID = UUID()
+        let session = try await WorkspaceSession.open(
+            rootURL: fixture.root,
+            workspaceID: workspaceID,
+            initialSnapshot: fixture.snapshot(moveCount: 1)
+        )
+        let binding = try WorkspaceSyncBinding(
+            accountID: FounderAccountID(rawValue: UUID()),
+            workspaceID: WorkspaceID(rawValue: workspaceID),
+            deviceID: DeviceID(rawValue: UUID()),
+            identityProvider: .google,
+            boundAt: Date(timeIntervalSince1970: 20)
+        )
+        try await session.repository.bindSync(binding)
+        let move = try #require(session.snapshot.content.openLoops.items.first)
+        var publishedRevisions: [Int64] = []
+        let observation = session.$snapshot
+            .dropFirst()
+            .sink { publishedRevisions.append($0.revision.rawValue) }
+
+        try await session.repository.applyRemotePage(
+            try makeSessionRemoteMovePage(
+                workspaceID: binding.workspaceID,
+                move: move,
+                title: "Visible remote Move"
+            )
+        )
+        for _ in 0..<1_000 where session.snapshot.content.openLoops.items[0].title
+            != "Visible remote Move" {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        try await Task.sleep(for: .milliseconds(20))
+
+        #expect(session.snapshot.content.openLoops.items[0].title == "Visible remote Move")
+        #expect(publishedRevisions == [1])
+        #expect(try await session.repository.pendingOperations().isEmpty)
+        withExtendedLifetime(observation) {}
         session.stop()
     }
 
@@ -478,6 +523,68 @@ private actor ImageCommitGate {
     func release() {
         released = true
     }
+}
+
+private func makeSessionRemoteMovePage(
+    workspaceID: WorkspaceID,
+    move: OpenLoop,
+    title: String
+) throws -> SyncPullResponse {
+    let changedAt = Date(timeIntervalSince1970: 40)
+    let timestamp = WorkspaceV2SyncAdapter.timestamp(changedAt)
+    let change = try SyncChange(
+        cursor: SyncCursor(value: 1),
+        operationID: SyncOperationID(rawValue: UUID()),
+        entityType: .move,
+        entityID: move.id,
+        action: .upsert,
+        revision: 1,
+        changedFields: ["title"],
+        changedAt: changedAt,
+        record: [
+            "id": .string(move.id.uuidString.lowercased()),
+            "title": .string(title),
+            "details": .string(move.details),
+            "status": .string("next"),
+            "previousStatus": .null,
+            "priority": .string(move.priority.rawValue),
+            "dueOn": .null,
+            "completedAt": .null,
+            "deletedAt": .null,
+            "source": .string(move.source),
+            "revision": .integer(1),
+            "fieldClocks": .object(["title": .string(timestamp)]),
+            "createdAt": .string(WorkspaceV2SyncAdapter.timestamp(move.createdAt)),
+            "updatedAt": .string(timestamp),
+        ]
+    )
+    struct Encoded: Encodable {
+        let contractVersion: Int
+        let workspaceId: WorkspaceID
+        let fromCursor: SyncCursor
+        let nextCursor: SyncCursor
+        let latestCursor: SyncCursor
+        let hasMore: Bool
+        let changes: [SyncChange]
+    }
+    let encoder = JSONEncoder()
+    encoder.dateEncodingStrategy = .iso8601
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+    return try decoder.decode(
+        SyncPullResponse.self,
+        from: encoder.encode(
+            Encoded(
+                contractVersion: SyncOperation.contractVersion,
+                workspaceId: workspaceID,
+                fromCursor: SyncCursor(value: 0),
+                nextCursor: SyncCursor(value: 1),
+                latestCursor: SyncCursor(value: 1),
+                hasMore: false,
+                changes: [change]
+            )
+        )
+    )
 }
 
 private struct MacStorageFixture {

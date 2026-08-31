@@ -17,6 +17,7 @@ public enum WorkspaceSyncRunOutcome: Equatable, Sendable {
     case conflicts(Int)
     case blocked(String)
     case retryScheduled(Date)
+    case stateChanged
     case cancelled
 }
 
@@ -108,12 +109,20 @@ public actor WorkspaceSyncCoordinator {
     public func start() async {
         guard stopped else { return }
         stopped = false
-        let stream = await repository.changes()
+        let stream = await repository.events()
         localObservationTask = Task { [weak self] in
-            for await _ in stream {
+            for await event in stream {
                 guard !Task.isCancelled else { return }
+                guard event.origin == .local else { continue }
                 await self?.trigger(.localChange)
             }
+        }
+        if let status = try? await repository.syncStatus(),
+           status.retryAttempt > 0,
+           let retryAt = status.nextRetryAt,
+           retryAt > now() {
+            scheduleRetryTimer(at: retryAt)
+            return
         }
         trigger(.startup)
     }
@@ -165,7 +174,26 @@ public actor WorkspaceSyncCoordinator {
     }
 
     private func performManualRun(runnerID: UUID) async -> WorkspaceSyncRunOutcome {
-        let outcome = await performOneRun(scheduleRetry: false)
+        // An already-started coordinator owns a retry timer. A standalone
+        // one-shot call does not, so it persists a truthful idle failure with
+        // its streak instead of claiming that a retry has been scheduled.
+        var runCount = 0
+        var outcome: WorkspaceSyncRunOutcome = .cancelled
+        repeat {
+            continuationRequested = false
+            outcome = await performOneRun(scheduleRetry: !stopped)
+            runCount += 1
+            if outcome == .stateChanged,
+               runCount < configuration.maximumConsecutiveRunsPerTrigger {
+                // Bootstrap/cursor state changed across an await. A manual
+                // request owns the same bounded fresh-drain behavior as the
+                // automatic runner and does not need a second button press.
+                await Task.yield()
+                continue
+            }
+            break
+        } while !Task.isCancelled
+        continuationRequested = false
         finishRunner(runnerID: runnerID, launchPending: !outcome.isTerminalSyncBlock)
         return outcome
     }
@@ -212,8 +240,10 @@ public actor WorkspaceSyncCoordinator {
     }
 
     private func performOneRun(scheduleRetry: Bool) async -> WorkspaceSyncRunOutcome {
+        var statusBeforeRun: WorkspaceSyncStatus?
         do {
             try Task.checkCancellation()
+            statusBeforeRun = try await repository.syncStatus()
             guard let binding = try await repository.syncBinding() else {
                 try await repository.setSyncStatus(.localOnly)
                 return .localOnly
@@ -222,6 +252,7 @@ public actor WorkspaceSyncCoordinator {
                 try await repository.setSyncStatus(
                     try WorkspaceSyncStatus(
                         phase: .authenticationRequired,
+                        lastSuccessAt: statusBeforeRun?.lastSuccessAt,
                         failureCode: "session_missing"
                     )
                 )
@@ -231,15 +262,29 @@ public actor WorkspaceSyncCoordinator {
                 try await repository.setSyncStatus(
                     try WorkspaceSyncStatus(
                         phase: .authenticationRequired,
+                        lastSuccessAt: statusBeforeRun?.lastSuccessAt,
                         failureCode: "session_binding_mismatch"
                     )
                 )
                 return .authenticationRequired
             }
-            try await repository.setSyncStatus(try WorkspaceSyncStatus(phase: .syncing))
+            try await repository.setSyncStatus(
+                try WorkspaceSyncStatus(
+                    phase: .syncing,
+                    retryAttempt: statusBeforeRun?.retryAttempt ?? 0,
+                    lastSuccessAt: statusBeforeRun?.lastSuccessAt,
+                    failureCode: statusBeforeRun?.failureCode
+                )
+            )
 
-            let conflictCount = try await pushPending(session: session)
+            _ = try await pushPending(session: session)
             try await pullPages(session: session)
+            let retention = try await repository.enforceSyncRetention(.default)
+            guard !retention.acknowledgementLimitReached,
+                  !retention.appliedOperationLimitReached else {
+                throw WorkspaceSyncRepositoryError.syncEvidenceLimitReached
+            }
+            let conflictCount = try await repository.unresolvedSyncConflictCount()
             let successTime = now()
             try await repository.setSyncStatus(
                 try WorkspaceSyncStatus(
@@ -250,55 +295,58 @@ public actor WorkspaceSyncCoordinator {
             )
             return conflictCount > 0 ? .conflicts(conflictCount) : .synchronized
         } catch is CancellationError {
+            await restoreAfterInterruptedRun(statusBeforeRun)
             return .cancelled
         } catch let error as WorkspaceSyncTransportFailure {
-            return await handleTransport(error, scheduleRetry: scheduleRetry)
+            return await handleTransport(
+                error,
+                scheduleRetry: scheduleRetry,
+                statusBeforeRun: statusBeforeRun
+            )
         } catch let error as WorkspaceV2SyncAdapterError {
             let code = adapterCode(error)
-            try? await repository.setSyncStatus(
-                try WorkspaceSyncStatus(phase: .adapterBlocked, failureCode: code)
-            )
+            await setTerminalStatus(.adapterBlocked, code: code, preserving: statusBeforeRun)
             return .blocked(code)
         } catch let error as SyncContractValidationError {
             let code = error == .futureClockSkew ? "clock_skew" : "contract_validation"
-            try? await repository.setSyncStatus(
-                try WorkspaceSyncStatus(phase: .contractBlocked, failureCode: code)
-            )
+            await setTerminalStatus(.contractBlocked, code: code, preserving: statusBeforeRun)
             return .blocked(code)
         } catch let error as WorkspaceSyncRepositoryError {
             let code: String
             switch error {
             case .assetsDisabled: code = "assets_disabled"
             case .bootstrapRevisionChanged, .cursorMismatch:
-                pendingRun = true
-                code = "local_state_changed"
+                continuationRequested = true
+                await restoreAfterStateChange(statusBeforeRun)
+                return .stateChanged
+            case .syncEvidenceLimitReached:
+                code = "sync_evidence_limit"
             default: code = "repository_boundary"
             }
-            try? await repository.setSyncStatus(
-                try WorkspaceSyncStatus(phase: .adapterBlocked, failureCode: code)
-            )
+            await setTerminalStatus(.adapterBlocked, code: code, preserving: statusBeforeRun)
             return .blocked(code)
         } catch let error as WorkspaceRepositoryError {
             switch error {
             case .databaseUnavailable, .exportFailed:
-                if scheduleRetry {
-                    return await scheduleRetryAfterFailure(code: "local_storage_unavailable")
-                }
-                return .blocked("local_storage_unavailable")
+                return await scheduleRetryAfterFailure(
+                    code: "local_storage_unavailable",
+                    scheduleTimer: scheduleRetry,
+                    statusBeforeRun: statusBeforeRun
+                )
             default:
-                try? await repository.setSyncStatus(
-                    try WorkspaceSyncStatus(
-                        phase: .contractBlocked,
-                        failureCode: "local_repository_invalid"
-                    )
+                await setTerminalStatus(
+                    .contractBlocked,
+                    code: "local_repository_invalid",
+                    preserving: statusBeforeRun
                 )
                 return .blocked("local_repository_invalid")
             }
         } catch {
-            if scheduleRetry {
-                return await scheduleRetryAfterFailure(code: "network_or_storage")
-            }
-            return .blocked("network_or_storage")
+            return await scheduleRetryAfterFailure(
+                code: "network_or_storage",
+                scheduleTimer: scheduleRetry,
+                statusBeforeRun: statusBeforeRun
+            )
         }
     }
 
@@ -483,53 +531,58 @@ public actor WorkspaceSyncCoordinator {
 
     private func handleTransport(
         _ error: WorkspaceSyncTransportFailure,
-        scheduleRetry: Bool
+        scheduleRetry: Bool,
+        statusBeforeRun: WorkspaceSyncStatus?
     ) async -> WorkspaceSyncRunOutcome {
         switch error {
         case .unauthorized, .invalidAccessToken:
-            try? await repository.setSyncStatus(
-                try WorkspaceSyncStatus(
-                    phase: .authenticationRequired,
-                    failureCode: "session_revoked"
-                )
+            await setTerminalStatus(
+                .authenticationRequired,
+                code: "session_revoked",
+                preserving: statusBeforeRun
             )
             return .authenticationRequired
         case .forbidden:
-            try? await repository.setSyncStatus(
-                try WorkspaceSyncStatus(
-                    phase: .authenticationRequired,
-                    failureCode: "workspace_forbidden"
-                )
+            await setTerminalStatus(
+                .authenticationRequired,
+                code: "workspace_forbidden",
+                preserving: statusBeforeRun
             )
             return .authenticationRequired
         case .rejected, .invalidResponse, .invalidContentType,
              .unexpectedEndpoint, .redirectRejected, .httpStatus:
-            try? await repository.setSyncStatus(
-                try WorkspaceSyncStatus(
-                    phase: .contractBlocked,
-                    failureCode: "transport_contract"
-                )
+            await setTerminalStatus(
+                .contractBlocked,
+                code: "transport_contract",
+                preserving: statusBeforeRun
             )
             return .blocked("transport_contract")
         case .requestTooLarge, .responseTooLarge, .invalidConfiguration:
-            try? await repository.setSyncStatus(
-                try WorkspaceSyncStatus(
-                    phase: .contractBlocked,
-                    failureCode: "transport_bounds"
-                )
+            await setTerminalStatus(
+                .contractBlocked,
+                code: "transport_bounds",
+                preserving: statusBeforeRun
             )
             return .blocked("transport_bounds")
         case .cancelled:
+            await restoreAfterInterruptedRun(statusBeforeRun)
             return .cancelled
         case .unavailable, .network:
-            return scheduleRetry
-                ? await scheduleRetryAfterFailure(code: "transport_unavailable")
-                : .blocked("transport_unavailable")
+            return await scheduleRetryAfterFailure(
+                code: "transport_unavailable",
+                scheduleTimer: scheduleRetry,
+                statusBeforeRun: statusBeforeRun
+            )
         }
     }
 
-    private func scheduleRetryAfterFailure(code: String) async -> WorkspaceSyncRunOutcome {
-        let previousAttempt = (try? await repository.syncStatus())?.retryAttempt ?? 0
+    private func scheduleRetryAfterFailure(
+        code: String,
+        scheduleTimer: Bool,
+        statusBeforeRun: WorkspaceSyncStatus?
+    ) async -> WorkspaceSyncRunOutcome {
+        let durableStatus = try? await repository.syncStatus()
+        let previousAttempt = statusBeforeRun?.retryAttempt ?? durableStatus?.retryAttempt ?? 0
         let attempt = min(previousAttempt + 1, 32)
         let exponent = min(attempt - 1, 16)
         let base = min(
@@ -539,22 +592,106 @@ public actor WorkspaceSyncCoordinator {
         let jitterFactor = min(max(jitter(), 0.5), 1.5)
         let delay = min(configuration.maximumRetryDelay, base * jitterFactor)
         let retryAt = now().addingTimeInterval(delay)
+        let unresolvedConflicts = (try? await repository.unresolvedSyncConflictCount()) ?? 0
+        let previousSuccess = statusBeforeRun?.lastSuccessAt ?? durableStatus?.lastSuccessAt
+        let phase: WorkspaceSyncPhase
+        if unresolvedConflicts > 0 {
+            phase = .conflictReviewRequired
+        } else {
+            phase = scheduleTimer ? .retryScheduled : .idle
+        }
         try? await repository.setSyncStatus(
             try WorkspaceSyncStatus(
-                phase: .retryScheduled,
+                phase: phase,
                 retryAttempt: attempt,
-                nextRetryAt: retryAt,
-                failureCode: code
+                nextRetryAt: scheduleTimer ? retryAt : nil,
+                lastSuccessAt: previousSuccess,
+                failureCode: unresolvedConflicts > 0 ? "sync_conflict" : code
             )
         )
+        guard scheduleTimer else { return .blocked(code) }
+        scheduleRetryTimer(at: retryAt)
+        return .retryScheduled(retryAt)
+    }
+
+    private func scheduleRetryTimer(at retryAt: Date) {
         retryTask?.cancel()
+        let delay = max(0, retryAt.timeIntervalSince(now()))
         retryTask = Task { [weak self] in
             do {
                 try await Task.sleep(for: .seconds(delay))
             } catch { return }
             await self?.trigger(.retry)
         }
-        return .retryScheduled(retryAt)
+    }
+
+    private func setTerminalStatus(
+        _ phase: WorkspaceSyncPhase,
+        code: String,
+        preserving previous: WorkspaceSyncStatus?
+    ) async {
+        try? await repository.setSyncStatus(
+            try WorkspaceSyncStatus(
+                phase: phase,
+                lastSuccessAt: previous?.lastSuccessAt,
+                failureCode: code
+            )
+        )
+    }
+
+    private func restoreAfterInterruptedRun(_ previous: WorkspaceSyncStatus?) async {
+        let conflicts = (try? await repository.unresolvedSyncConflictCount()) ?? 0
+        if conflicts > 0 {
+            try? await repository.setSyncStatus(
+                try WorkspaceSyncStatus(
+                    phase: .conflictReviewRequired,
+                    retryAttempt: previous?.retryAttempt ?? 0,
+                    nextRetryAt: previous?.nextRetryAt,
+                    lastSuccessAt: previous?.lastSuccessAt,
+                    failureCode: "sync_conflict"
+                )
+            )
+            return
+        }
+        guard let previous else {
+            try? await repository.setSyncStatus(try WorkspaceSyncStatus(phase: .idle))
+            return
+        }
+        if previous.phase == .retryScheduled,
+           !stopped,
+           let retryAt = previous.nextRetryAt,
+           retryAt > now() {
+            try? await repository.setSyncStatus(previous)
+            scheduleRetryTimer(at: retryAt)
+            return
+        }
+        if previous.phase == .syncing || previous.phase == .retryScheduled {
+            // A crash can persist `.syncing`; stopping can cancel the timer
+            // that made `.retryScheduled` truthful. Normalize both to idle,
+            // retaining the durable failure streak and last successful run.
+            try? await repository.setSyncStatus(
+                try WorkspaceSyncStatus(
+                    phase: .idle,
+                    retryAttempt: previous.retryAttempt,
+                    lastSuccessAt: previous.lastSuccessAt,
+                    failureCode: previous.failureCode
+                )
+            )
+            return
+        }
+        try? await repository.setSyncStatus(previous)
+    }
+
+    private func restoreAfterStateChange(_ previous: WorkspaceSyncStatus?) async {
+        let conflicts = (try? await repository.unresolvedSyncConflictCount()) ?? 0
+        try? await repository.setSyncStatus(
+            try WorkspaceSyncStatus(
+                phase: conflicts > 0 ? .conflictReviewRequired : .idle,
+                retryAttempt: previous?.retryAttempt ?? 0,
+                lastSuccessAt: previous?.lastSuccessAt,
+                failureCode: conflicts > 0 ? "sync_conflict" : previous?.failureCode
+            )
+        )
     }
 
     private func adapterCode(_ error: WorkspaceV2SyncAdapterError) -> String {
@@ -573,7 +710,7 @@ private extension WorkspaceSyncRunOutcome {
         switch self {
         case .authenticationRequired, .blocked, .retryScheduled, .cancelled:
             return true
-        case .localOnly, .synchronized, .conflicts:
+        case .localOnly, .synchronized, .conflicts, .stateChanged:
             return false
         }
     }
