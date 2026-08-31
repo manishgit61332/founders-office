@@ -2010,19 +2010,11 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
                 revision: workspaceBaseline.revision,
                 fieldClocks: workspaceBaseline.fieldClocks
             )
-            let resultsByID = Dictionary(uniqueKeysWithValues: results.map { ($0.operationID, $0) })
-            for operation in plan.operations {
-                guard let result = resultsByID[operation.operationID],
-                      let revision = result.revision else {
-                    throw WorkspaceSyncRepositoryError.bootstrapResponseMismatch
-                }
-                try upsertRemoteRevision(
-                    entityType: operation.entityType,
-                    entityID: operation.entityID,
-                    revision: revision,
-                    fieldClocks: operation.fieldClocks
-                )
-            }
+            // `bootstrap_workspace` creates workspace revision 1 without a
+            // change-log entry, so that singleton is the sole seeded applied
+            // horizon. Entity operations may have raced with another device;
+            // their full history must be consumed from cursor zero instead of
+            // treating a push result as an applied snapshot.
 
             let receiptID = UUID()
             try execute(
@@ -2084,6 +2076,16 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
             guard let binding = try syncBinding() else {
                 throw WorkspaceSyncRepositoryError.bindingRequired
             }
+            let bootstrapComplete = try scalarCount(
+                "SELECT bootstrap_complete FROM sync_state WHERE singleton = 1",
+                operation: "validate_acknowledgement_bootstrap"
+            ) == 1
+            guard bootstrapComplete else {
+                // Before canonical bootstrap, a base-zero local operation is
+                // not authorized for normal delivery. Keep its outbox evidence
+                // intact until the pinned bootstrap transaction completes.
+                throw WorkspaceSyncRepositoryError.acknowledgementMismatch
+            }
             let acknowledgedIDs = Set(acknowledgements.map(\.localOperationID))
             let conflictIDs = Set(conflicts.map { $0.conflict.operationID.rawValue })
             guard acknowledgedIDs.isDisjoint(with: conflictIDs),
@@ -2141,12 +2143,10 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
                       expected.fieldClocks == acknowledgement.fieldClocks else {
                     throw WorkspaceSyncRepositoryError.acknowledgementMismatch
                 }
-                try upsertRemoteRevision(
-                    entityType: acknowledgement.entityType,
-                    entityID: acknowledgement.entityID,
-                    revision: acknowledgement.remoteRevision,
-                    fieldClocks: acknowledgement.fieldClocks
-                )
+                // A push acknowledgement proves delivery and is sufficient to
+                // retire this exact outbox row. It does not prove that every
+                // earlier revision for the entity has crossed the pull cursor,
+                // so it must never advance the applied remote horizon.
                 try insertRemoteAcknowledgement(acknowledgement)
                 try deleteV2Outbox(operationID: acknowledgement.localOperationID)
             }
@@ -2216,6 +2216,13 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
             guard response.changes.count <= 500 else {
                 throw WorkspaceSyncRepositoryError.requestBoundsExceeded
             }
+            guard Set(response.changes.map(\.operationID)).count == response.changes.count else {
+                // A page cannot contain the same immutable operation twice at
+                // different cursors. Reject it explicitly before either copy
+                // can enter the dedupe table; the surrounding transaction then
+                // leaves snapshot, revisions, evidence, and cursor untouched.
+                throw WorkspaceSyncRepositoryError.invalidCursor
+            }
 
             let currentStored = try readStoredState()
             guard let currentStored else { throw WorkspaceRepositoryError.invalidDatabase }
@@ -2230,6 +2237,45 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
                     freshChanges.append(change)
                 }
             }
+            // `sync_entity_revisions` is the highest remote entity revision
+            // incorporated into the local canonical snapshot. Validate the
+            // complete page before snapshot, revision, dedupe, or cursor state
+            // can change. Interleaved entities each advance independently.
+            try validateRemoteRevisionContinuity(freshChanges)
+            let bootstrapComplete = try scalarCount(
+                "SELECT bootstrap_complete FROM sync_state WHERE singleton = 1",
+                operation: "validate_pulled_acknowledgement_bootstrap"
+            ) == 1
+            var recoveredAcknowledgements: [SyncOperationID: WorkspaceRemoteOperationAcknowledgement]
+                = [:]
+            for change in freshChanges {
+                if let acknowledgement = try pulledAcknowledgement(
+                    for: change,
+                    workspaceID: binding.workspaceID,
+                    bootstrapComplete: bootstrapComplete
+                ) {
+                    recoveredAcknowledgements[change.operationID] = acknowledgement
+                }
+            }
+            if !recoveredAcknowledgements.isEmpty {
+                let existingConflictCount = try scalarCount(
+                    "SELECT count(*) FROM sync_conflicts",
+                    operation: "inspect_pulled_acknowledgement_evidence_limit"
+                )
+                if existingConflictCount > 0 {
+                    let storedAcknowledgementCount = try scalarCount(
+                        "SELECT count(*) FROM sync_operation_acknowledgements",
+                        operation: "inspect_pulled_acknowledgement_evidence_limit"
+                    )
+                    guard storedAcknowledgementCount
+                            + Int64(recoveredAcknowledgements.count)
+                            <= Int64(
+                                WorkspaceSyncRetentionPolicy.default.acknowledgementLimit
+                            ) else {
+                        throw WorkspaceSyncRepositoryError.syncEvidenceLimitReached
+                    }
+                }
+            }
             let appliedEvidenceCount = try scalarCount(
                 "SELECT count(*) FROM sync_applied_operations",
                 operation: "inspect_applied_operation_limit"
@@ -2242,7 +2288,10 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
                 throw WorkspaceSyncRepositoryError.syncEvidenceLimitReached
             }
             let pendingFieldClocks = try pendingRemoteFieldClocks(
-                workspaceID: binding.workspaceID
+                workspaceID: binding.workspaceID,
+                excludingOperationIDs: Set(
+                    recoveredAcknowledgements.values.map(\.localOperationID)
+                )
             )
             var preservedFields: [SyncOperationID: Set<String>] = [:]
             for change in freshChanges {
@@ -2293,6 +2342,16 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
                     revision: change.revision,
                     fieldClocks: fieldClocks
                 )
+                if let acknowledgement = recoveredAcknowledgements[change.operationID] {
+                    // A pull can be the first durable local proof after the
+                    // server accepted an operation but its push response was
+                    // lost. The exact outbox row is retired only in the same
+                    // transaction that applies and deduplicates that change.
+                    try insertRemoteAcknowledgement(acknowledgement)
+                    try deleteDeliveredV2Outbox(
+                        operationID: acknowledgement.localOperationID
+                    )
+                }
                 try execute(
                     """
                     INSERT INTO sync_applied_operations (operation_id, cursor, applied_at)
@@ -2446,6 +2505,14 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
                 entityType: conflict.entityType,
                 entityID: conflict.entityID
             )
+            // Conflict responses are review evidence, not pull-feed commits.
+            // The user can choose a winner only after the authenticated pull
+            // stream has incorporated at least the server revision described
+            // by that evidence. This keeps the applied horizon and cursor from
+            // being split by a review action.
+            guard knownRemoteRevision >= conflict.currentRevision else {
+                throw WorkspaceSyncRepositoryError.conflictResolutionUnavailable
+            }
             var replacement = current.content
             let origin: WorkspaceChangeOrigin
             var reviewedOperation: WorkspaceOutboxOperation?
@@ -2457,15 +2524,6 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
                 // contract would be lossy, so preserve all evidence instead.
                 guard conflict.currentRevision > 0 || knownRemoteRevision > 0 else {
                     throw WorkspaceSyncRepositoryError.conflictResolutionUnavailable
-                }
-                if conflict.currentRevision >= knownRemoteRevision,
-                   let serverRecord = conflict.serverRecord {
-                    try upsertRemoteRevision(
-                        entityType: conflict.entityType,
-                        entityID: conflict.entityID,
-                        revision: conflict.currentRevision,
-                        fieldClocks: try remoteFieldClocks(serverRecord)
-                    )
                 }
                 let remoteClocks = try remoteEntityFieldClocks(
                     entityType: conflict.entityType,
@@ -2509,6 +2567,19 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
                         throw WorkspaceSyncRepositoryError.conflictResolutionUnavailable
                     }
                     let clocks = try remoteFieldClocks(serverRecord)
+                    let appliedClocks = try remoteEntityFieldClocks(
+                        entityType: conflict.entityType,
+                        entityID: conflict.entityID
+                    )
+                    guard clocks.allSatisfy({ field, incomingClock in
+                        appliedClocks[field].map { incomingClock >= $0 } ?? true
+                    }) else {
+                        // The conflict record can be older than a later,
+                        // authenticated pull at the same entity revision. A
+                        // review action may consume that evidence, but it may
+                        // never regress a clock already in the applied horizon.
+                        throw WorkspaceSyncRepositoryError.invalidRemoteRevision
+                    }
                     let changedAt = conflict.conflictingFields.compactMap { clocks[$0] }.max()
                         ?? clocks.values.max()
                         ?? resolvedAt
@@ -2533,12 +2604,6 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
                     replacement = try WorkspaceRemoteChangeApplicator.apply(
                         [reviewedChange],
                         to: replacement
-                    )
-                    try upsertRemoteRevision(
-                        entityType: conflict.entityType,
-                        entityID: conflict.entityID,
-                        revision: conflict.currentRevision,
-                        fieldClocks: clocks
                     )
                 }
                 try deleteV2Outbox(operationID: operationID)
@@ -2775,6 +2840,29 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
             )
         } catch {
             throw WorkspaceSyncRepositoryError.invalidRemoteRevision
+        }
+    }
+
+    private func validateRemoteRevisionContinuity(
+        _ changes: [SyncChange]
+    ) throws {
+        var appliedRevisions: [RemoteEntityKey: Int64] = [:]
+        for change in changes {
+            let key = RemoteEntityKey(type: change.entityType, id: change.entityID)
+            let appliedRevision: Int64
+            if let revision = appliedRevisions[key] {
+                appliedRevision = revision
+            } else {
+                appliedRevision = try remoteRevision(
+                    entityType: change.entityType,
+                    entityID: change.entityID
+                )
+            }
+            guard appliedRevision < Int64.max,
+                  change.revision == appliedRevision + 1 else {
+                throw WorkspaceSyncRepositoryError.invalidRemoteRevision
+            }
+            appliedRevisions[key] = change.revision
         }
     }
 
@@ -3750,11 +3838,16 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
         default:
             throw WorkspaceSyncRepositoryError.bootstrapResponseMismatch
         }
-        let fieldClocks = try remoteFieldClocks(bootstrap.workspace)
-        guard revision > 0, fieldClocks["name"] != nil else {
+        let returnedFieldClocks = try remoteFieldClocks(bootstrap.workspace)
+        guard revision > 0, returnedFieldClocks["name"] != nil else {
             throw WorkspaceSyncRepositoryError.bootstrapResponseMismatch
         }
-        return (revision, fieldClocks)
+        // The RPC creates workspace revision 1 without a change-log row. A
+        // replay can return revision 2+ after another device has changed the
+        // workspace; only the synthetic revision-1 baseline may be seeded.
+        // Later returned clocks are not revision-1 evidence and would reject
+        // the older, contiguous feed that must now be pulled from cursor zero.
+        return (1, revision == 1 ? returnedFieldClocks : [:])
     }
 
     private func bootstrapReceipt(
@@ -3828,6 +3921,14 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
         operation: WorkspaceOutboxOperation,
         workspaceID: WorkspaceID
     ) throws -> (type: SyncEntityType, id: UUID, fieldClocks: [String: Date]) {
+        let wire = try remoteWireOperation(operation: operation, workspaceID: workspaceID)
+        return (wire.entityType, wire.entityID, wire.fieldClocks)
+    }
+
+    private func remoteWireOperation(
+        operation: WorkspaceOutboxOperation,
+        workspaceID: WorkspaceID
+    ) throws -> SyncOperation {
         guard case let .localEntity(envelope) = try operation.decodedLocalPayload() else {
             throw WorkspaceSyncRepositoryError.acknowledgementMismatch
         }
@@ -3847,20 +3948,169 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
             entityType: identity.type,
             entityID: identity.id
         )
-        // A server acknowledgement or conflict cannot predate the canonical
-        // bootstrap which establishes a positive server revision. Treat such
-        // evidence as unbound rather than adapting a partial local update as a
-        // remote create.
-        guard baseRevision > 0 else {
-            throw WorkspaceSyncRepositoryError.acknowledgementMismatch
-        }
+        // A post-bootstrap entity can legitimately be accepted at remote
+        // revision 1 while its applied horizon remains zero until final pull.
+        // Adapting at base zero is safe because the frozen contract itself
+        // requires the complete create field set; partial updates fail closed.
         let wire = try WorkspaceV2SyncAdapter.adapt(
             operation: operation,
             envelope: envelope,
             remoteBaseRevision: baseRevision,
             workspaceID: workspaceID
         )
-        return (wire.entityType, wire.entityID, wire.fieldClocks)
+        return wire
+    }
+
+    private func pulledAcknowledgement(
+        for change: SyncChange,
+        workspaceID: WorkspaceID,
+        bootstrapComplete: Bool
+    ) throws -> WorkspaceRemoteOperationAcknowledgement? {
+        guard let operation = try v2OutboxOperation(
+            operationID: change.operationID.rawValue
+        ) else {
+            return nil
+        }
+        // A UUID collision with an unsent local operation is not delivery
+        // evidence. Neither is a pre-bootstrap or quarantined operation.
+        guard bootstrapComplete,
+              operation.deliveryAttempts > 0,
+              try persistedConflict(operationID: operation.operationID) == nil,
+              try remoteAcknowledgement(operationID: operation.operationID) == nil else {
+            throw WorkspaceSyncRepositoryError.acknowledgementMismatch
+        }
+
+        let mapped: WorkspaceV2SyncAdapter.MappedMutation
+        let remoteClocks: [String: Date]
+        do {
+            guard case let .localEntity(envelope) = try operation.decodedLocalPayload() else {
+                throw WorkspaceSyncRepositoryError.acknowledgementMismatch
+            }
+            mapped = try WorkspaceV2SyncAdapter.mappedMutation(
+                envelope: envelope,
+                localClocks: operation.fieldClocks,
+                workspaceID: workspaceID
+            )
+            remoteClocks = try remoteFieldClocks(change.record)
+        } catch {
+            throw WorkspaceSyncRepositoryError.acknowledgementMismatch
+        }
+        guard SyncOperationID(rawValue: operation.operationID) == change.operationID,
+              mapped.entityType == change.entityType,
+              mapped.entityID == change.entityID,
+              mapped.action == change.action,
+              mapped.changedFields == change.changedFields,
+              mapped.fieldClocks.allSatisfy({ field, clock in
+                  guard let remoteClock = remoteClocks[field] else { return false }
+                  return WorkspaceV2SyncAdapter.timestamp(remoteClock)
+                      == WorkspaceV2SyncAdapter.timestamp(clock)
+              }) else {
+            throw WorkspaceSyncRepositoryError.acknowledgementMismatch
+        }
+
+        switch mapped.action {
+        case .upsert:
+            guard let payload = mapped.payload,
+                  payload.allSatisfy({ field, value in
+                      pulledPayloadValueMatches(
+                          expected: value,
+                          actual: change.record[field],
+                          entityType: mapped.entityType,
+                          field: field,
+                          revision: change.revision,
+                          changedAt: change.changedAt
+                      )
+                  }) else {
+                throw WorkspaceSyncRepositoryError.acknowledgementMismatch
+            }
+        case .delete:
+            guard mapped.payload == nil,
+                  let deletedAt = mapped.fieldClocks["deletedAt"],
+                  pulledPayloadValueMatches(
+                      expected: .string(WorkspaceV2SyncAdapter.timestamp(deletedAt)),
+                      actual: change.record["deletedAt"],
+                      entityType: mapped.entityType,
+                      field: "deletedAt",
+                      revision: change.revision,
+                      changedAt: change.changedAt
+                  ) else {
+                throw WorkspaceSyncRepositoryError.acknowledgementMismatch
+            }
+        }
+
+        do {
+            return try WorkspaceRemoteOperationAcknowledgement(
+                localOperationID: operation.operationID,
+                entityType: mapped.entityType,
+                entityID: mapped.entityID,
+                remoteRevision: change.revision,
+                fieldClocks: mapped.fieldClocks
+            )
+        } catch {
+            throw WorkspaceSyncRepositoryError.acknowledgementMismatch
+        }
+    }
+
+    private func pulledPayloadValueMatches(
+        expected: SyncJSONValue,
+        actual: SyncJSONValue?,
+        entityType: SyncEntityType,
+        field: String,
+        revision: Int64,
+        changedAt: Date
+    ) -> Bool {
+        guard let actual else { return false }
+        if expected == .null || actual == .null {
+            return expected == actual
+        }
+
+        let timestampFields: Set<String> = [
+            "completedAt", "deletedAt", "dueAt", "createdAt",
+        ]
+        if timestampFields.contains(field) {
+            guard case let .string(expectedString) = expected,
+                  case let .string(actualString) = actual,
+                  var expectedDate = try? WorkspaceV2SyncAdapter.parseTimestamp(expectedString),
+                  let actualDate = try? WorkspaceV2SyncAdapter.parseTimestamp(actualString) else {
+                return false
+            }
+            // PostgreSQL bounds create timestamps by the authoritative write
+            // time. Reproduce that normalization without weakening ordinary
+            // string comparisons.
+            if field == "createdAt", revision == 1,
+               entityType == .move || entityType == .milestone {
+                expectedDate = min(expectedDate, changedAt)
+            }
+            return WorkspaceV2SyncAdapter.timestamp(expectedDate)
+                == WorkspaceV2SyncAdapter.timestamp(actualDate)
+        }
+
+        if let expectedNumber = decimalValue(expected),
+           let actualNumber = decimalValue(actual) {
+            return expectedNumber == actualNumber
+        }
+
+        let serverTrimmed = (entityType == .workspace && field == "name")
+            || (entityType == .move && field == "title")
+            || (entityType == .primaryGoal && field == "title")
+            || (entityType == .milestone && field == "title")
+        if serverTrimmed,
+           case let .string(expectedString) = expected,
+           case let .string(actualString) = actual {
+            return actualString
+                == expectedString.trimmingCharacters(
+                    in: CharacterSet(charactersIn: " ")
+                )
+        }
+        return expected == actual
+    }
+
+    private func decimalValue(_ value: SyncJSONValue) -> Decimal? {
+        switch value {
+        case let .integer(integer): Decimal(integer)
+        case let .number(number): number
+        default: nil
+        }
     }
 
     private func insertRemoteAcknowledgement(
@@ -3957,6 +4207,24 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
         )
     }
 
+    private func deleteDeliveredV2Outbox(operationID: UUID) throws {
+        try execute(
+            """
+            DELETE FROM operation_outbox
+            WHERE operation_id = ? AND payload_format_version = ?
+              AND delivery_attempts > 0
+            """,
+            bindings: [
+                .text(operationID.uuidString.lowercased()),
+                .integer(Int64(WorkspaceLocalOperationEnvelopeV2.formatVersion)),
+            ],
+            operation: "acknowledge_pulled_remote_operation"
+        )
+        guard sqlite3_changes(connection) == 1 else {
+            throw WorkspaceSyncRepositoryError.acknowledgementMismatch
+        }
+    }
+
     private func appliedCursor(operationID: UUID) throws -> Int64? {
         let statement = try prepare(
             "SELECT cursor FROM sync_applied_operations WHERE operation_id = ?",
@@ -3971,7 +4239,8 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
     }
 
     private func pendingRemoteFieldClocks(
-        workspaceID: WorkspaceID
+        workspaceID: WorkspaceID,
+        excludingOperationIDs: Set<UUID> = []
     ) throws -> [RemoteEntityKey: [String: Date]] {
         // Keep all durable sources of locally protected remote fields behind
         // this one extension point. Retained unresolved-conflict payloads can
@@ -3993,6 +4262,12 @@ private final class SQLiteWorkspaceDatabase: @unchecked Sendable {
                 statement,
                 operation: "read_pending_field_clocks"
             )
+            if excludingOperationIDs.contains(operation.operationID) {
+                // The authenticated pull is canonical for the operation it
+                // proves delivered. A newer queued operation remains in this
+                // scan and can still protect its later field clock.
+                continue
+            }
             guard case let .localEntity(envelope) = try operation.decodedLocalPayload() else {
                 throw WorkspaceSyncRepositoryError.bootstrapResponseMismatch
             }

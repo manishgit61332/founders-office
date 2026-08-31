@@ -329,6 +329,974 @@ struct WorkspaceSyncRepositoryBoundaryTests {
     }
 
     @Test
+    func acceptedRevisionFourRemainsUnappliedUntilContiguousPullSurvivesRelaunches() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.remove() }
+        let repository = try await fixture.open(initial: fixture.snapshot(title: "Before"))
+        let binding = try fixture.syncBinding()
+        try await repository.bindSync(binding)
+        try await completeCanonicalBootstrap(repository: repository, binding: binding)
+
+        let baseline = try await repository.snapshot()
+        let moveID = try #require(baseline.content.openLoops.items.first?.id)
+        let baseRevision = try await repository.remoteRevision(
+            entityType: .move,
+            entityID: moveID
+        )
+        let baseCursor = try await repository.syncCursor()
+        let evidenceBeforeAck = try readSyncEvidenceCounts(databaseURL: fixture.databaseURL)
+        var local = baseline.content
+        local.openLoops.items[0].title = "Accepted local revision four"
+        let mutation = fixture.mutation(replacement: local)
+        _ = try await repository.transact(
+            expectedRevision: baseline.revision,
+            mutation: mutation
+        )
+        let operation = try #require(try await repository.pendingOperations().first)
+        guard case let .localEntity(envelope) = try operation.decodedLocalPayload() else {
+            Issue.record("Expected a v2 Move operation")
+            return
+        }
+        let wire = try WorkspaceV2SyncAdapter.adapt(
+            operation: operation,
+            envelope: envelope,
+            remoteBaseRevision: baseRevision,
+            workspaceID: binding.workspaceID
+        )
+        let acknowledgement = try WorkspaceRemoteOperationAcknowledgement(
+            localOperationID: operation.operationID,
+            entityType: .move,
+            entityID: moveID,
+            remoteRevision: baseRevision + 3,
+            fieldClocks: wire.fieldClocks
+        )
+        try await repository.acknowledgeRemoteOperations([acknowledgement], conflicts: [])
+
+        #expect(try await repository.pendingOperations().isEmpty)
+        #expect(try await repository.remoteRevision(entityType: .move, entityID: moveID)
+            == baseRevision)
+        #expect(try await repository.syncCursor() == baseCursor)
+        let evidenceAfterAck = try readSyncEvidenceCounts(databaseURL: fixture.databaseURL)
+        #expect(evidenceAfterAck.applied == evidenceBeforeAck.applied)
+        #expect(evidenceAfterAck.acknowledged == evidenceBeforeAck.acknowledged + 1)
+
+        // A crash after the accepted response leaves durable idempotent proof,
+        // but the applied entity horizon and cursor still wait for pull.
+        let afterAckRelaunch = try await fixture.open(initial: nil)
+        try await afterAckRelaunch.acknowledgeRemoteOperations(
+            [acknowledgement],
+            conflicts: []
+        )
+        #expect(try await afterAckRelaunch.remoteRevision(entityType: .move, entityID: moveID)
+            == baseRevision)
+
+        let remoteRevisionTwo = try makeMoveChange(
+            cursor: baseCursor.value + 1,
+            operationID: UUID(),
+            moveID: moveID,
+            revision: baseRevision + 1,
+            changedFields: ["details"],
+            title: "Before",
+            details: "Remote revision two",
+            priority: .p1,
+            dueOn: nil,
+            clock: fixture.date(30)
+        )
+        try await afterAckRelaunch.applyRemotePage(
+            try makePullResponse(
+                workspaceID: binding.workspaceID,
+                from: baseCursor.value,
+                changes: [remoteRevisionTwo]
+            )
+        )
+
+        // A second interruption between pull pages must resume from the stored
+        // per-entity applied revision, not from the already accepted revision.
+        let betweenPagesRelaunch = try await fixture.open(initial: nil)
+        let remoteRevisionThree = try makeMoveChange(
+            cursor: baseCursor.value + 2,
+            operationID: UUID(),
+            moveID: moveID,
+            revision: baseRevision + 2,
+            changedFields: ["priority"],
+            title: "Before",
+            details: "Remote revision two",
+            priority: .p0,
+            dueOn: nil,
+            clock: fixture.date(40)
+        )
+        let acceptedRevisionFour = try makeMoveChange(
+            cursor: baseCursor.value + 3,
+            operationID: operation.operationID,
+            moveID: moveID,
+            revision: baseRevision + 3,
+            changedFields: ["title"],
+            title: "Accepted local revision four",
+            details: "Remote revision two",
+            priority: .p0,
+            dueOn: nil,
+            clock: fixture.date(20)
+        )
+        try await betweenPagesRelaunch.applyRemotePage(
+            try makePullResponse(
+                workspaceID: binding.workspaceID,
+                from: baseCursor.value + 1,
+                changes: [remoteRevisionThree, acceptedRevisionFour]
+            )
+        )
+
+        let converged = try await fixture.open(initial: nil)
+        let move = try #require(try await converged.snapshot().content.openLoops.items.first)
+        #expect(move.title == "Accepted local revision four")
+        #expect(move.details == "Remote revision two")
+        #expect(move.priority == .p0)
+        #expect(try await converged.remoteRevision(entityType: .move, entityID: moveID)
+            == baseRevision + 3)
+        #expect(try await converged.syncCursor() == SyncCursor(value: baseCursor.value + 3))
+        let finalEvidence = try readSyncEvidenceCounts(databaseURL: fixture.databaseURL)
+        #expect(finalEvidence.applied == evidenceBeforeAck.applied + 3)
+        #expect(finalEvidence.acknowledged == evidenceBeforeAck.acknowledged + 1)
+    }
+
+    @Test
+    func authenticatedPullRecoversAcceptedOperationAfterLostPushResponseAndRelaunch() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.remove() }
+        let repository = try await fixture.open(initial: fixture.snapshot(title: "Before"))
+        let binding = try fixture.syncBinding()
+        try await repository.bindSync(binding)
+        try await completeCanonicalBootstrap(repository: repository, binding: binding)
+
+        let baseline = try await repository.snapshot()
+        let moveID = try #require(baseline.content.openLoops.items.first?.id)
+        let baseRevision = try await repository.remoteRevision(
+            entityType: .move,
+            entityID: moveID
+        )
+        let baseCursor = try await repository.syncCursor()
+        var replacement = baseline.content
+        replacement.openLoops.items[0].title = "  Accepted before response loss  "
+        replacement.openLoops.items[0].completedAt = fixture.date(40)
+        _ = try await repository.transact(
+            expectedRevision: baseline.revision,
+            mutation: fixture.mutation(
+                replacement: replacement,
+                changedFields: ["completedAt", "title"]
+            )
+        )
+        let operation = try #require(try await repository.pendingOperations().first)
+        guard case let .localEntity(envelope) = try operation.decodedLocalPayload() else {
+            Issue.record("Expected a v2 Move operation")
+            return
+        }
+        let wire = try WorkspaceV2SyncAdapter.adapt(
+            operation: operation,
+            envelope: envelope,
+            remoteBaseRevision: baseRevision,
+            workspaceID: binding.workspaceID
+        )
+        try await repository.recordDeliveryAttempt(operationIDs: [operation.operationID])
+        let evidenceBeforePull = try readSyncEvidenceCounts(databaseURL: fixture.databaseURL)
+
+        // The server accepted this exact wire operation, but the process died
+        // before the push response could be acknowledged locally.
+        let relaunched = try await fixture.open(initial: nil)
+        let clock = try #require(wire.fieldClocks["title"])
+        var acceptedRecord = moveRecord(
+            moveID: moveID,
+            revision: baseRevision + 1,
+            title: "Accepted before response loss",
+            details: replacement.openLoops.items[0].details,
+            priority: replacement.openLoops.items[0].priority,
+            dueOn: nil,
+            clockFields: wire.changedFields,
+            clock: clock
+        )
+        // PostgreSQL emits an equivalent timestamptz representation rather
+        // than preserving the operation's original `Z` spelling.
+        acceptedRecord["completedAt"] = .string("1970-01-01T00:00:40.000000+00:00")
+        let acceptedChange = try SyncChange(
+            cursor: SyncCursor(value: baseCursor.value + 1),
+            operationID: SyncOperationID(rawValue: operation.operationID),
+            entityType: .move,
+            entityID: moveID,
+            action: .upsert,
+            revision: baseRevision + 1,
+            changedFields: wire.changedFields,
+            changedAt: clock,
+            record: acceptedRecord
+        )
+        try await relaunched.applyRemotePage(
+            try makePullResponse(
+                workspaceID: binding.workspaceID,
+                from: baseCursor.value,
+                changes: [acceptedChange]
+            )
+        )
+
+        #expect(try await relaunched.pendingOperations().isEmpty)
+        #expect(try await relaunched.remoteRevision(entityType: .move, entityID: moveID)
+            == baseRevision + 1)
+        #expect(try await relaunched.syncCursor() == SyncCursor(value: baseCursor.value + 1))
+        let evidenceAfterPull = try readSyncEvidenceCounts(databaseURL: fixture.databaseURL)
+        #expect(evidenceAfterPull.applied == evidenceBeforePull.applied + 1)
+        #expect(evidenceAfterPull.acknowledged == evidenceBeforePull.acknowledged + 1)
+
+        let acknowledgement = try WorkspaceRemoteOperationAcknowledgement(
+            localOperationID: operation.operationID,
+            entityType: wire.entityType,
+            entityID: wire.entityID,
+            remoteRevision: baseRevision + 1,
+            fieldClocks: wire.fieldClocks
+        )
+        let converged = try await fixture.open(initial: nil)
+        try await converged.acknowledgeRemoteOperations([acknowledgement], conflicts: [])
+        #expect(try await converged.pendingOperations().isEmpty)
+        #expect(try await converged.snapshot().content.openLoops.items[0].title
+            == "Accepted before response loss")
+        #expect(try await converged.snapshot().content.openLoops.items[0].completedAt
+            == fixture.date(40))
+        #expect(try readSyncEvidenceCounts(databaseURL: fixture.databaseURL)
+            == evidenceAfterPull)
+    }
+
+    @Test
+    func pulledOperationWithMatchingIDButDifferentPayloadFailsClosed() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.remove() }
+        let repository = try await fixture.open(initial: fixture.snapshot(title: "Before"))
+        let binding = try fixture.syncBinding()
+        try await repository.bindSync(binding)
+        try await completeCanonicalBootstrap(repository: repository, binding: binding)
+
+        let baseline = try await repository.snapshot()
+        let moveID = try #require(baseline.content.openLoops.items.first?.id)
+        let baseRevision = try await repository.remoteRevision(
+            entityType: .move,
+            entityID: moveID
+        )
+        let baseCursor = try await repository.syncCursor()
+        var replacement = baseline.content
+        replacement.openLoops.items[0].title = "Locally delivered title"
+        _ = try await repository.transact(
+            expectedRevision: baseline.revision,
+            mutation: fixture.mutation(replacement: replacement)
+        )
+        let operation = try #require(try await repository.pendingOperations().first)
+        guard case let .localEntity(envelope) = try operation.decodedLocalPayload() else {
+            Issue.record("Expected a v2 Move operation")
+            return
+        }
+        let wire = try WorkspaceV2SyncAdapter.adapt(
+            operation: operation,
+            envelope: envelope,
+            remoteBaseRevision: baseRevision,
+            workspaceID: binding.workspaceID
+        )
+        let unsentCollision = try makeMoveChange(
+            cursor: baseCursor.value + 1,
+            operationID: operation.operationID,
+            moveID: moveID,
+            revision: baseRevision + 1,
+            changedFields: wire.changedFields,
+            title: "Locally delivered title",
+            details: replacement.openLoops.items[0].details,
+            priority: replacement.openLoops.items[0].priority,
+            dueOn: nil,
+            clock: try #require(wire.fieldClocks["title"])
+        )
+        #expect(
+            await captureSyncError {
+                try await repository.applyRemotePage(
+                    try makePullResponse(
+                        workspaceID: binding.workspaceID,
+                        from: baseCursor.value,
+                        changes: [unsentCollision]
+                    )
+                )
+            } == .acknowledgementMismatch
+        )
+        #expect(try #require(try await repository.pendingOperations().first).deliveryAttempts == 0)
+        #expect(try await repository.syncCursor() == baseCursor)
+
+        try await repository.recordDeliveryAttempt(operationIDs: [operation.operationID])
+        let before = try await repository.snapshot()
+        let evidenceBefore = try readSyncEvidenceCounts(databaseURL: fixture.databaseURL)
+
+        let forgedChange = try makeMoveChange(
+            cursor: baseCursor.value + 1,
+            operationID: operation.operationID,
+            moveID: moveID,
+            revision: baseRevision + 1,
+            changedFields: wire.changedFields,
+            title: "Different server payload",
+            details: replacement.openLoops.items[0].details,
+            priority: replacement.openLoops.items[0].priority,
+            dueOn: nil,
+            clock: try #require(wire.fieldClocks["title"])
+        )
+        #expect(
+            await captureSyncError {
+                try await repository.applyRemotePage(
+                    try makePullResponse(
+                        workspaceID: binding.workspaceID,
+                        from: baseCursor.value,
+                        changes: [forgedChange]
+                    )
+                )
+            } == .acknowledgementMismatch
+        )
+
+        let after = try await repository.snapshot()
+        #expect(after.revision == before.revision)
+        #expect(try fixture.compactEncoder.encode(after.content)
+            == fixture.compactEncoder.encode(before.content))
+        #expect(try await repository.syncCursor() == baseCursor)
+        #expect(try await repository.remoteRevision(entityType: .move, entityID: moveID)
+            == baseRevision)
+        #expect(try readSyncEvidenceCounts(databaseURL: fixture.databaseURL) == evidenceBefore)
+        let retained = try #require(try await repository.pendingOperations().first)
+        #expect(retained.operationID == operation.operationID)
+        #expect(retained.deliveryAttempts == 1)
+
+        let relaunched = try await fixture.open(initial: nil)
+        #expect(try await relaunched.pendingOperations().map(\.operationID)
+            == [operation.operationID])
+        #expect(try await relaunched.syncCursor() == baseCursor)
+        #expect(try readSyncEvidenceCounts(databaseURL: fixture.databaseURL) == evidenceBefore)
+    }
+
+    @Test
+    func pulledAcknowledgementRollsBackWithLaterPageWriteFailure() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.remove() }
+        let repository = try await fixture.open(initial: fixture.snapshot(title: "Before"))
+        let binding = try fixture.syncBinding()
+        try await repository.bindSync(binding)
+        try await completeCanonicalBootstrap(repository: repository, binding: binding)
+
+        let baseline = try await repository.snapshot()
+        let moveID = try #require(baseline.content.openLoops.items.first?.id)
+        let moveRevision = try await repository.remoteRevision(
+            entityType: .move,
+            entityID: moveID
+        )
+        let workspaceRevision = try await repository.remoteRevision(
+            entityType: .workspace,
+            entityID: binding.workspaceID.rawValue
+        )
+        let baseCursor = try await repository.syncCursor()
+        var replacement = baseline.content
+        replacement.openLoops.items[0].title = "Accepted but transaction interrupted"
+        _ = try await repository.transact(
+            expectedRevision: baseline.revision,
+            mutation: fixture.mutation(replacement: replacement)
+        )
+        let operation = try #require(try await repository.pendingOperations().first)
+        guard case let .localEntity(envelope) = try operation.decodedLocalPayload() else {
+            Issue.record("Expected a v2 Move operation")
+            return
+        }
+        let wire = try WorkspaceV2SyncAdapter.adapt(
+            operation: operation,
+            envelope: envelope,
+            remoteBaseRevision: moveRevision,
+            workspaceID: binding.workspaceID
+        )
+        try await repository.recordDeliveryAttempt(operationIDs: [operation.operationID])
+        let before = try await repository.snapshot()
+        let evidenceBefore = try readSyncEvidenceCounts(databaseURL: fixture.databaseURL)
+
+        let acceptedChange = try makeMoveChange(
+            cursor: baseCursor.value + 1,
+            operationID: operation.operationID,
+            moveID: moveID,
+            revision: moveRevision + 1,
+            changedFields: wire.changedFields,
+            title: "Accepted but transaction interrupted",
+            details: replacement.openLoops.items[0].details,
+            priority: replacement.openLoops.items[0].priority,
+            dueOn: nil,
+            clock: try #require(wire.fieldClocks["title"])
+        )
+        let laterOperationID = UUID()
+        let laterChange = try makeWorkspaceChange(
+            cursor: baseCursor.value + 2,
+            operationID: laterOperationID,
+            workspaceID: binding.workspaceID,
+            revision: workspaceRevision + 1,
+            name: "Write that will be interrupted",
+            clock: fixture.date(30)
+        )
+        try installAppliedOperationFailureTrigger(
+            databaseURL: fixture.databaseURL,
+            operationID: laterOperationID
+        )
+
+        var rejected = false
+        do {
+            try await repository.applyRemotePage(
+                try makePullResponse(
+                    workspaceID: binding.workspaceID,
+                    from: baseCursor.value,
+                    changes: [acceptedChange, laterChange]
+                )
+            )
+        } catch {
+            rejected = true
+        }
+        #expect(rejected)
+
+        let after = try await repository.snapshot()
+        #expect(after.revision == before.revision)
+        #expect(try fixture.compactEncoder.encode(after.content)
+            == fixture.compactEncoder.encode(before.content))
+        #expect(try await repository.syncCursor() == baseCursor)
+        #expect(try await repository.remoteRevision(entityType: .move, entityID: moveID)
+            == moveRevision)
+        #expect(try await repository.remoteRevision(
+            entityType: .workspace,
+            entityID: binding.workspaceID.rawValue
+        ) == workspaceRevision)
+        #expect(try readSyncEvidenceCounts(databaseURL: fixture.databaseURL) == evidenceBefore)
+        let retained = try #require(try await repository.pendingOperations().first)
+        #expect(retained.operationID == operation.operationID)
+        #expect(retained.deliveryAttempts == 1)
+
+        let relaunched = try await fixture.open(initial: nil)
+        #expect(try await relaunched.pendingOperations().map(\.operationID)
+            == [operation.operationID])
+        #expect(try await relaunched.syncCursor() == baseCursor)
+        #expect(try readSyncEvidenceCounts(databaseURL: fixture.databaseURL) == evidenceBefore)
+    }
+
+    @Test
+    func withinPageRevisionGapRollsBackSnapshotCursorRevisionAndDedupeEvidence() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.remove() }
+        let repository = try await fixture.open(initial: fixture.snapshot(title: "Before"))
+        let binding = try fixture.syncBinding()
+        try await repository.bindSync(binding)
+        let moveID = try #require(try await repository.snapshot().content.openLoops.items.first?.id)
+        let before = try await repository.snapshot()
+        let evidenceBefore = try readSyncEvidenceCounts(databaseURL: fixture.databaseURL)
+        let revisionOne = try makeMoveChange(
+            cursor: 1,
+            operationID: UUID(),
+            moveID: moveID,
+            revision: 1,
+            changedFields: ["title"],
+            title: "Must roll back",
+            details: "",
+            priority: .p1,
+            dueOn: nil,
+            clock: fixture.date(20)
+        )
+        let revisionThree = try makeMoveChange(
+            cursor: 2,
+            operationID: UUID(),
+            moveID: moveID,
+            revision: 3,
+            changedFields: ["details"],
+            title: "Must roll back",
+            details: "Gap",
+            priority: .p1,
+            dueOn: nil,
+            clock: fixture.date(30)
+        )
+
+        #expect(
+            await captureSyncError {
+                try await repository.applyRemotePage(
+                    try makePullResponse(
+                        workspaceID: binding.workspaceID,
+                        from: 0,
+                        changes: [revisionOne, revisionThree]
+                    )
+                )
+            } == .invalidRemoteRevision
+        )
+        let afterRejectedPage = try await repository.snapshot()
+        #expect(afterRejectedPage.revision == before.revision)
+        #expect(try fixture.compactEncoder.encode(afterRejectedPage.content)
+            == fixture.compactEncoder.encode(before.content))
+        #expect(try await repository.syncCursor() == SyncCursor(value: 0))
+        #expect(try await repository.remoteRevision(entityType: .move, entityID: moveID) == 0)
+        #expect(try readSyncEvidenceCounts(databaseURL: fixture.databaseURL) == evidenceBefore)
+
+        let reopened = try await fixture.open(initial: nil)
+        let reopenedSnapshot = try await reopened.snapshot()
+        #expect(reopenedSnapshot.revision == before.revision)
+        #expect(try fixture.compactEncoder.encode(reopenedSnapshot.content)
+            == fixture.compactEncoder.encode(before.content))
+        #expect(try await reopened.syncCursor() == SyncCursor(value: 0))
+        #expect(try readSyncEvidenceCounts(databaseURL: fixture.databaseURL) == evidenceBefore)
+    }
+
+    @Test
+    func crossPageRevisionGapRejectsOnlyTheGapPageAndPreservesAppliedEvidence() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.remove() }
+        let repository = try await fixture.open(initial: fixture.snapshot(title: "Before"))
+        let binding = try fixture.syncBinding()
+        try await repository.bindSync(binding)
+        let moveID = try #require(try await repository.snapshot().content.openLoops.items.first?.id)
+        let revisionOne = try makeMoveChange(
+            cursor: 1,
+            operationID: UUID(),
+            moveID: moveID,
+            revision: 1,
+            changedFields: ["title"],
+            title: "Applied revision one",
+            details: "",
+            priority: .p1,
+            dueOn: nil,
+            clock: fixture.date(20)
+        )
+        try await repository.applyRemotePage(
+            try makePullResponse(workspaceID: binding.workspaceID, from: 0, changes: [revisionOne])
+        )
+        let afterFirstPage = try await repository.snapshot()
+        let evidenceAfterFirstPage = try readSyncEvidenceCounts(databaseURL: fixture.databaseURL)
+        let revisionThree = try makeMoveChange(
+            cursor: 2,
+            operationID: UUID(),
+            moveID: moveID,
+            revision: 3,
+            changedFields: ["details"],
+            title: "Applied revision one",
+            details: "Must not apply",
+            priority: .p1,
+            dueOn: nil,
+            clock: fixture.date(30)
+        )
+
+        #expect(
+            await captureSyncError {
+                try await repository.applyRemotePage(
+                    try makePullResponse(
+                        workspaceID: binding.workspaceID,
+                        from: 1,
+                        changes: [revisionThree]
+                    )
+                )
+            } == .invalidRemoteRevision
+        )
+        let afterRejectedPage = try await repository.snapshot()
+        #expect(afterRejectedPage.revision == afterFirstPage.revision)
+        #expect(try fixture.compactEncoder.encode(afterRejectedPage.content)
+            == fixture.compactEncoder.encode(afterFirstPage.content))
+        #expect(try await repository.syncCursor() == SyncCursor(value: 1))
+        #expect(try await repository.remoteRevision(entityType: .move, entityID: moveID) == 1)
+        #expect(try readSyncEvidenceCounts(databaseURL: fixture.databaseURL)
+            == evidenceAfterFirstPage)
+
+        let reopened = try await fixture.open(initial: nil)
+        let reopenedSnapshot = try await reopened.snapshot()
+        #expect(reopenedSnapshot.revision == afterFirstPage.revision)
+        #expect(try fixture.compactEncoder.encode(reopenedSnapshot.content)
+            == fixture.compactEncoder.encode(afterFirstPage.content))
+        #expect(try await reopened.syncCursor() == SyncCursor(value: 1))
+        #expect(try readSyncEvidenceCounts(databaseURL: fixture.databaseURL)
+            == evidenceAfterFirstPage)
+    }
+
+    @Test
+    func interleavedEntitiesAdvanceIndependentContiguousRevisionHistories() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.remove() }
+        var initial = fixture.snapshot(title: "Move A")
+        let moveA = try #require(initial.openLoops.items.first)
+        let moveB = TestFixtures.loop(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000002")!,
+            title: "Move B",
+            details: "",
+            createdAt: fixture.date(10),
+            updatedAt: fixture.date(10)
+        )
+        initial.openLoops.items.append(moveB)
+        let repository = try await fixture.open(initial: initial)
+        let binding = try fixture.syncBinding()
+        try await repository.bindSync(binding)
+
+        let changes = try [
+            makeMoveChange(
+                cursor: 1, operationID: UUID(), moveID: moveA.id, revision: 1,
+                changedFields: ["title"], title: "Move A one", details: "",
+                priority: .p1, dueOn: nil, clock: fixture.date(20)
+            ),
+            makeMoveChange(
+                cursor: 2, operationID: UUID(), moveID: moveB.id, revision: 1,
+                changedFields: ["title"], title: "Move B one", details: "",
+                priority: .p1, dueOn: nil, clock: fixture.date(21)
+            ),
+            makeMoveChange(
+                cursor: 3, operationID: UUID(), moveID: moveA.id, revision: 2,
+                changedFields: ["details"], title: "Move A one", details: "Move A two",
+                priority: .p1, dueOn: nil, clock: fixture.date(30)
+            ),
+            makeMoveChange(
+                cursor: 4, operationID: UUID(), moveID: moveB.id, revision: 2,
+                changedFields: ["details"], title: "Move B one", details: "Move B two",
+                priority: .p1, dueOn: nil, clock: fixture.date(31)
+            ),
+        ]
+        try await repository.applyRemotePage(
+            try makePullResponse(workspaceID: binding.workspaceID, from: 0, changes: changes)
+        )
+
+        let converged = try await repository.snapshot().content.openLoops.items
+        #expect(converged.first(where: { $0.id == moveA.id })?.details == "Move A two")
+        #expect(converged.first(where: { $0.id == moveB.id })?.details == "Move B two")
+        #expect(try await repository.remoteRevision(entityType: .move, entityID: moveA.id) == 2)
+        #expect(try await repository.remoteRevision(entityType: .move, entityID: moveB.id) == 2)
+        #expect(try await repository.syncCursor() == SyncCursor(value: 4))
+        #expect(try readSyncEvidenceCounts(databaseURL: fixture.databaseURL).applied == 4)
+    }
+
+    @Test
+    func canonicalBootstrapPullsSameEntityRaceInsteadOfSeedingOrDedupingAcceptedRevisionTwo() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.remove() }
+        let repository = try await fixture.open(initial: fixture.snapshot(title: "Local bootstrap"))
+        let binding = try fixture.syncBinding()
+        try await repository.bindSync(binding)
+        let plan = try await repository.canonicalBootstrapPlan()
+        let moveOperation = try #require(plan.operations.first { $0.entityType == .move })
+        let otherOperations = plan.operations.filter { $0.operationID != moveOperation.operationID }
+        let results = try [
+            SyncOperationResult(
+                operationID: moveOperation.operationID,
+                status: .accepted,
+                revision: 2,
+                cursor: SyncCursor(value: 2),
+                conflict: nil
+            ),
+        ] + otherOperations.enumerated().map { index, operation in
+            try SyncOperationResult(
+                operationID: operation.operationID,
+                status: .accepted,
+                revision: 1,
+                cursor: SyncCursor(value: Int64(index + 3)),
+                conflict: nil
+            )
+        }
+        let acceptedCursor = Int64(plan.operations.count + 1)
+        let push = try makeExactPushResponse(
+            workspaceID: binding.workspaceID,
+            latestCursor: acceptedCursor,
+            results: results
+        )
+        _ = try await repository.acknowledgeCanonicalBootstrap(
+            plan: plan,
+            bootstrap: makeBootstrapResponse(
+                binding: binding,
+                plan: plan,
+                latestCursor: acceptedCursor
+            ),
+            responses: [push]
+        )
+
+        // The accepted result is durable bootstrap proof, not applied history.
+        #expect(try await repository.remoteRevision(
+            entityType: .move,
+            entityID: moveOperation.entityID
+        ) == 0)
+        #expect(try await repository.syncCursor() == SyncCursor(value: 0))
+        #expect(try readSyncEvidenceCounts(databaseURL: fixture.databaseURL).applied == 0)
+
+        let racedRevisionOne = try makeMoveChange(
+            cursor: 1,
+            operationID: UUID(),
+            moveID: moveOperation.entityID,
+            revision: 1,
+            changedFields: ["details"],
+            title: "Remote device title",
+            details: "Concurrent remote revision one",
+            priority: .p1,
+            dueOn: nil,
+            clock: fixture.date(15)
+        )
+        // Model a normalized change-log entry for the accepted bootstrap write:
+        // its operation identity is unchanged, while only the disjoint field
+        // accepted at revision two is emitted by the hostile server history.
+        let acceptedBootstrapRevisionTwo = try makeMoveChange(
+            cursor: 2,
+            operationID: moveOperation.operationID.rawValue,
+            moveID: moveOperation.entityID,
+            revision: 2,
+            changedFields: ["title"],
+            title: "Local bootstrap",
+            details: "Concurrent remote revision one",
+            priority: .p1,
+            dueOn: nil,
+            clock: fixture.date(20)
+        )
+        let otherResults = Dictionary(uniqueKeysWithValues: results.map { ($0.operationID, $0) })
+        let otherChanges = try otherOperations.map { operation in
+            try makeCanonicalBootstrapChange(
+                operation: operation,
+                result: #require(otherResults[operation.operationID])
+            )
+        }
+        let feed = ([racedRevisionOne, acceptedBootstrapRevisionTwo] + otherChanges)
+            .sorted { $0.cursor.value < $1.cursor.value }
+        try await repository.applyRemotePage(
+            try makePullResponse(
+                workspaceID: binding.workspaceID,
+                from: 0,
+                changes: feed
+            )
+        )
+
+        let converged = try #require(try await repository.snapshot().content.openLoops.items.first)
+        #expect(converged.title == "Local bootstrap")
+        #expect(converged.details == "Concurrent remote revision one")
+        #expect(try await repository.remoteRevision(
+            entityType: .move,
+            entityID: moveOperation.entityID
+        ) == 2)
+        #expect(try await repository.syncCursor() == SyncCursor(value: acceptedCursor))
+        #expect(try readSyncEvidenceCounts(databaseURL: fixture.databaseURL).applied
+            == Int64(plan.operations.count + 1))
+    }
+
+    @Test
+    func replayedBootstrapReturningWorkspaceRevisionTwoSeedsOnlySyntheticRevisionOne() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.remove() }
+        let repository = try await fixture.open(initial: fixture.snapshot(title: "Bootstrap"))
+        let binding = try fixture.syncBinding()
+        try await repository.bindSync(binding)
+        let plan = try await repository.canonicalBootstrapPlan()
+        let response = try makeCanonicalBootstrapPushResponse(
+            workspaceID: binding.workspaceID,
+            operations: plan.operations,
+            startingCursor: 2
+        )
+        _ = try await repository.acknowledgeCanonicalBootstrap(
+            plan: plan,
+            bootstrap: makeBootstrapResponse(
+                binding: binding,
+                plan: plan,
+                latestCursor: 1,
+                workspaceRevision: 2
+            ),
+            responses: [response]
+        )
+
+        #expect(try await repository.remoteRevision(
+            entityType: .workspace,
+            entityID: binding.workspaceID.rawValue
+        ) == 1)
+        #expect(try readRemoteFieldClocks(
+            databaseURL: fixture.databaseURL,
+            entityType: .workspace,
+            entityID: binding.workspaceID.rawValue
+        ).isEmpty)
+
+        let workspaceRevisionTwo = try makeWorkspaceChange(
+            cursor: 1,
+            operationID: UUID(),
+            workspaceID: binding.workspaceID,
+            revision: 2,
+            name: plan.workspaceName,
+            clock: fixture.date(20)
+        )
+        let planChanges = try response.results.map { result in
+            let operation = try #require(
+                plan.operations.first(where: { $0.operationID == result.operationID })
+            )
+            return try makeCanonicalBootstrapChange(operation: operation, result: result)
+        }
+        try await repository.applyRemotePage(
+            try makePullResponse(
+                workspaceID: binding.workspaceID,
+                from: 0,
+                changes: [workspaceRevisionTwo] + planChanges
+            )
+        )
+
+        #expect(try await repository.remoteRevision(
+            entityType: .workspace,
+            entityID: binding.workspaceID.rawValue
+        ) == 2)
+        #expect(try readRemoteFieldClocks(
+            databaseURL: fixture.databaseURL,
+            entityType: .workspace,
+            entityID: binding.workspaceID.rawValue
+        )["name"] == fixture.date(20))
+        #expect(try await repository.syncCursor()
+            == SyncCursor(value: Int64(plan.operations.count + 1)))
+    }
+
+    @Test
+    func postBootstrapCreateAcknowledgementWaitsAtRevisionZeroUntilFinalPull() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.remove() }
+        let repository = try await fixture.open(initial: fixture.snapshot(title: "Existing"))
+        let binding = try fixture.syncBinding()
+        try await repository.bindSync(binding)
+        try await completeCanonicalBootstrap(repository: repository, binding: binding)
+        let baseline = try await repository.snapshot()
+        let newMove = TestFixtures.loop(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000099")!,
+            title: "Created after bootstrap",
+            details: "Complete create",
+            createdAt: fixture.date(50),
+            updatedAt: fixture.date(50)
+        )
+        var replacement = baseline.content
+        replacement.openLoops.items.append(newMove)
+        replacement.openLoops.updatedAt = fixture.date(50)
+        let createFields = ["createdAt", "details", "priority", "source", "status", "title"]
+        let mutation = WorkspaceMutation(
+            entityKind: "move",
+            entityID: newMove.id.uuidString.lowercased(),
+            changedFields: createFields,
+            fieldClocks: Dictionary(
+                uniqueKeysWithValues: createFields.map { ($0, fixture.date(50)) }
+            ),
+            replacement: replacement,
+            createdAt: fixture.date(50)
+        )
+        _ = try await repository.transact(
+            expectedRevision: baseline.revision,
+            mutation: mutation
+        )
+        let operation = try #require(try await repository.pendingOperations().first)
+        guard case let .localEntity(envelope) = try operation.decodedLocalPayload() else {
+            Issue.record("Expected post-bootstrap Move create")
+            return
+        }
+        let wire = try WorkspaceV2SyncAdapter.adapt(
+            operation: operation,
+            envelope: envelope,
+            remoteBaseRevision: 0,
+            workspaceID: binding.workspaceID
+        )
+        #expect(wire.baseRevision == 0)
+        let acknowledgement = try WorkspaceRemoteOperationAcknowledgement(
+            localOperationID: operation.operationID,
+            entityType: .move,
+            entityID: newMove.id,
+            remoteRevision: 1,
+            fieldClocks: wire.fieldClocks
+        )
+        try await repository.acknowledgeRemoteOperations([acknowledgement], conflicts: [])
+
+        #expect(try await repository.pendingOperations().isEmpty)
+        #expect(try await repository.remoteRevision(entityType: .move, entityID: newMove.id) == 0)
+        let cursor = try await repository.syncCursor()
+        let pulledCreate = try makeMoveChange(
+            cursor: cursor.value + 1,
+            operationID: operation.operationID,
+            moveID: newMove.id,
+            revision: 1,
+            changedFields: wire.changedFields,
+            title: newMove.title,
+            details: newMove.details,
+            priority: newMove.priority,
+            dueOn: nil,
+            clock: fixture.date(50)
+        )
+        try await repository.applyRemotePage(
+            try makePullResponse(
+                workspaceID: binding.workspaceID,
+                from: cursor.value,
+                changes: [pulledCreate]
+            )
+        )
+
+        let reopened = try await fixture.open(initial: nil)
+        #expect(try await reopened.remoteRevision(entityType: .move, entityID: newMove.id) == 1)
+        #expect(try await reopened.snapshot().content.openLoops.items.contains(where: {
+            $0.id == newMove.id && $0.title == newMove.title
+        }))
+    }
+
+    @Test
+    func normalAcknowledgementCannotRetireOutboxBeforeCanonicalBootstrapCompletes() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.remove() }
+        let repository = try await fixture.open(initial: fixture.snapshot(title: "Before"))
+        let baseline = try await repository.snapshot()
+        var replacement = baseline.content
+        replacement.openLoops.items[0].title = "Pending bootstrap"
+        let mutation = fixture.mutation(replacement: replacement)
+        _ = try await repository.transact(
+            expectedRevision: baseline.revision,
+            mutation: mutation
+        )
+        let binding = try fixture.syncBinding()
+        try await repository.bindSync(binding)
+        let operation = try #require(try await repository.pendingOperations().first)
+        let acknowledgement = try WorkspaceRemoteOperationAcknowledgement(
+            localOperationID: operation.operationID,
+            entityType: .move,
+            entityID: replacement.openLoops.items[0].id,
+            remoteRevision: 1,
+            fieldClocks: ["title": fixture.date(20)]
+        )
+
+        #expect(
+            await captureSyncError {
+                try await repository.acknowledgeRemoteOperations(
+                    [acknowledgement],
+                    conflicts: []
+                )
+            } == .acknowledgementMismatch
+        )
+        #expect(try await repository.pendingOperations().map(\.operationID)
+            == [operation.operationID])
+        #expect(try readSyncEvidenceCounts(databaseURL: fixture.databaseURL).acknowledged == 0)
+        #expect(try await repository.pendingSyncBatch().requiresCanonicalBootstrap)
+    }
+
+    @Test
+    func duplicateOperationIdentityInsideOnePageFailsBeforeAnyMutation() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.remove() }
+        let repository = try await fixture.open(initial: fixture.snapshot(title: "Before"))
+        let binding = try fixture.syncBinding()
+        try await repository.bindSync(binding)
+        let before = try await repository.snapshot()
+        let moveID = try #require(before.content.openLoops.items.first?.id)
+        let duplicateID = UUID()
+        let changes = try [
+            makeMoveChange(
+                cursor: 1, operationID: duplicateID, moveID: moveID, revision: 1,
+                changedFields: ["title"], title: "First copy", details: "",
+                priority: .p1, dueOn: nil, clock: fixture.date(20)
+            ),
+            makeMoveChange(
+                cursor: 2, operationID: duplicateID, moveID: moveID, revision: 2,
+                changedFields: ["details"], title: "First copy", details: "Second copy",
+                priority: .p1, dueOn: nil, clock: fixture.date(30)
+            ),
+        ]
+        let evidence = try readSyncEvidenceCounts(databaseURL: fixture.databaseURL)
+        #expect(
+            await captureSyncError {
+                try await repository.applyRemotePage(
+                    try makePullResponse(
+                        workspaceID: binding.workspaceID,
+                        from: 0,
+                        changes: changes
+                    )
+                )
+            } == .invalidCursor
+        )
+        let after = try await repository.snapshot()
+        #expect(after.revision == before.revision)
+        #expect(try fixture.compactEncoder.encode(after.content)
+            == fixture.compactEncoder.encode(before.content))
+        #expect(try await repository.syncCursor() == SyncCursor(value: 0))
+        #expect(try await repository.remoteRevision(entityType: .move, entityID: moveID) == 0)
+        #expect(try readSyncEvidenceCounts(databaseURL: fixture.databaseURL) == evidence)
+    }
+
+    @Test
     func repositoryEventSubscriptionReplaysLatestSnapshotAfterACommitInTheConstructionGap() async throws {
         let fixture = try RepositoryFixture()
         defer { fixture.remove() }
@@ -467,25 +1435,9 @@ struct WorkspaceSyncRepositoryBoundaryTests {
         let binding = try fixture.syncBinding()
         try await repository.bindSync(binding)
 
-        // Conflicts are meaningful only after the server has accepted the
-        // canonical bootstrap and established positive entity revisions.
-        let bootstrapPlan = try await repository.canonicalBootstrapPlan()
-        let bootstrap = try makeBootstrapResponse(
-            binding: binding,
-            plan: bootstrapPlan,
-            latestCursor: 0
-        )
-        let bootstrapResponse = try makePushResponse(
-            workspaceID: binding.workspaceID,
-            operations: bootstrapPlan.operations,
-            startingCursor: 1,
-            revisionOffset: 0
-        )
-        _ = try await repository.acknowledgeCanonicalBootstrap(
-            plan: bootstrapPlan,
-            bootstrap: bootstrap,
-            responses: [bootstrapResponse]
-        )
+        // Conflicts are meaningful only after the accepted bootstrap history
+        // has been pulled and established positive applied entity revisions.
+        try await completeCanonicalBootstrap(repository: repository, binding: binding)
 
         var firstContent = try await repository.snapshot().content
         firstContent.openLoops.items[0].title = "First local"
@@ -587,8 +1539,21 @@ struct WorkspaceSyncRepositoryBoundaryTests {
 
         // A later pull may replace the visible field, but it must not erase
         // the exact quarantined local payload required by Keep Mine.
+        let pullCursor = try await reopened.syncCursor()
+        let conflictedServerChange = try makeMoveChange(
+            cursor: pullCursor.value + 1,
+            operationID: UUID(),
+            moveID: moveID,
+            revision: baseRemoteRevision + 1,
+            changedFields: ["title"],
+            title: "Server",
+            details: "",
+            priority: .p1,
+            dueOn: nil,
+            clock: fixture.date(40)
+        )
         let laterServerChange = try makeMoveChange(
-            cursor: 1,
+            cursor: pullCursor.value + 2,
             operationID: UUID(),
             moveID: moveID,
             revision: baseRemoteRevision + 2,
@@ -602,8 +1567,8 @@ struct WorkspaceSyncRepositoryBoundaryTests {
         try await reopened.applyRemotePage(
             try makePullResponse(
                 workspaceID: binding.workspaceID,
-                from: 0,
-                changes: [laterServerChange]
+                from: pullCursor.value,
+                changes: [conflictedServerChange, laterServerChange]
             )
         )
         let afterPull = try await fixture.open(initial: nil)
@@ -614,7 +1579,9 @@ struct WorkspaceSyncRepositoryBoundaryTests {
                 appliedOperationLimit: 1
             )
         )
-        #expect(retainedEvidence.appliedOperationCount == 1)
+        // Bootstrap history plus both contiguous server revisions remain
+        // protected while unresolved review evidence exists.
+        #expect(retainedEvidence.appliedOperationCount == 4)
         #expect(retainedEvidence.appliedOperationLimitReached)
         #expect(retainedEvidence.unresolvedConflictCount == 1)
         #expect(try await afterPull.pendingOperations().count == 2)
@@ -756,6 +1723,40 @@ struct WorkspaceSyncRepositoryBoundaryTests {
         let exactConflict = try #require(
             try await reopened.persistedSyncConflicts().first
         )
+        #expect(
+            await captureSyncError {
+                try await reopened.resolveSyncConflict(
+                    id: exactConflict.id,
+                    resolution: .useLatest,
+                    resolvedAt: fixture.date(49)
+                )
+            } == .conflictResolutionUnavailable
+        )
+
+        // Conflict evidence is not authenticated applied history. Pull the
+        // exact server revision before the review action can consume it.
+        let pullCursor = try await reopened.syncCursor()
+        let authenticatedConflict = try makeMoveChange(
+            cursor: pullCursor.value + 1,
+            operationID: UUID(),
+            moveID: moveID,
+            revision: baseRevision + 1,
+            changedFields: ["title"],
+            title: "Reviewed server value",
+            details: "",
+            priority: .p1,
+            dueOn: nil,
+            clock: fixture.date(30)
+        )
+        try await reopened.applyRemotePage(
+            try makePullResponse(
+                workspaceID: binding.workspaceID,
+                from: pullCursor.value,
+                changes: [authenticatedConflict]
+            )
+        )
+        #expect((await iterator.next())?.origin == .remote)
+
         let result = try await reopened.resolveSyncConflict(
             id: exactConflict.id,
             resolution: .useLatest,
@@ -797,8 +1798,9 @@ struct WorkspaceSyncRepositoryBoundaryTests {
 
         let baseline = try await repository.snapshot()
         let moveID = baseline.content.openLoops.items[0].id
+        let bootstrapCursor = try await repository.syncCursor()
         let newerRemote = try makeMoveChange(
-            cursor: 1,
+            cursor: bootstrapCursor.value + 1,
             operationID: UUID(),
             moveID: moveID,
             revision: try await repository.remoteRevision(
@@ -815,7 +1817,7 @@ struct WorkspaceSyncRepositoryBoundaryTests {
         try await repository.applyRemotePage(
             try makePullResponse(
                 workspaceID: binding.workspaceID,
-                from: 0,
+                from: bootstrapCursor.value,
                 changes: [newerRemote]
             )
         )
@@ -867,6 +1869,26 @@ struct WorkspaceSyncRepositoryBoundaryTests {
                     recordedAt: fixture.date(60)
                 ),
             ]
+        )
+        let conflictCursor = try await repository.syncCursor()
+        let authenticatedDisjointRevision = try makeMoveChange(
+            cursor: conflictCursor.value + 1,
+            operationID: UUID(),
+            moveID: moveID,
+            revision: knownRevision + 1,
+            changedFields: ["details"],
+            title: "Authenticated newer server value",
+            details: "Authenticated disjoint field",
+            priority: .p1,
+            dueOn: nil,
+            clock: fixture.date(60)
+        )
+        try await repository.applyRemotePage(
+            try makePullResponse(
+                workspaceID: binding.workspaceID,
+                from: conflictCursor.value,
+                changes: [authenticatedDisjointRevision]
+            )
         )
         let unresolved = try #require(
             try await repository.persistedSyncConflicts().first
@@ -1391,6 +2413,7 @@ struct WorkspaceSyncRepositoryBoundaryTests {
             remoteBaseRevision: baseA,
             workspaceID: binding.workspaceID
         )
+        try await repository.recordDeliveryAttempt(operationIDs: [operationA.operationID])
 
         let afterA = try await repository.snapshot()
         var pendingB = afterA.content
@@ -1409,20 +2432,9 @@ struct WorkspaceSyncRepositoryBoundaryTests {
             )
         )
 
-        try await repository.acknowledgeRemoteOperations(
-            [
-                try WorkspaceRemoteOperationAcknowledgement(
-                    localOperationID: operationA.operationID,
-                    entityType: .move,
-                    entityID: wireA.entityID,
-                    remoteRevision: baseA + 1,
-                    fieldClocks: wireA.fieldClocks
-                )
-            ],
-            conflicts: []
-        )
+        let pullCursor = try await repository.syncCursor()
         let acceptedA = try makeMoveChange(
-            cursor: 1,
+            cursor: pullCursor.value + 1,
             operationID: operationA.operationID,
             moveID: wireA.entityID,
             revision: baseA + 1,
@@ -1436,7 +2448,7 @@ struct WorkspaceSyncRepositoryBoundaryTests {
         try await repository.applyRemotePage(
             try makePullResponse(
                 workspaceID: binding.workspaceID,
-                from: 0,
+                from: pullCursor.value,
                 changes: [acceptedA]
             )
         )
@@ -1930,26 +2942,208 @@ struct WorkspaceSyncCoordinatorTests {
     }
 
     @Test
+    func pullPageCapReportsStateChangedAndDoesNotPushAgainstAnIncompleteHorizon() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.remove() }
+        let repository = try await fixture.open(initial: fixture.snapshot(title: "Move"))
+        let binding = try fixture.syncBinding()
+        try await repository.bindSync(binding)
+        try await completeCanonicalBootstrap(repository: repository, binding: binding)
+        let baseline = try await repository.snapshot()
+        var replacement = baseline.content
+        replacement.openLoops.items[0].title = "Must wait for catch-up"
+        _ = try await repository.transact(
+            expectedRevision: baseline.revision,
+            mutation: fixture.mutation(replacement: replacement)
+        )
+        let transport = EndlessPullTransport(workspaceID: binding.workspaceID)
+        let coordinator = try WorkspaceSyncCoordinator(
+            repository: repository,
+            auth: FixedAuthSession(session: binding.session),
+            transport: transport,
+            configuration: WorkspaceSyncCoordinatorConfiguration(
+                maximumPushBatchesPerRun: 1,
+                maximumPullPagesPerRun: 1,
+                maximumConsecutiveRunsPerTrigger: 1
+            )
+        )
+
+        #expect(await coordinator.synchronizeNow() == .stateChanged)
+        #expect(await transport.pullCount() == 1)
+        #expect(try await repository.pendingOperations().count == 1)
+        let status = try await repository.syncStatus()
+        #expect(status.phase == .idle)
+        #expect(status.lastSuccessAt == nil)
+    }
+
+    @Test
+    func normalBatchesPullBetweenPushesAndAdaptSameEntityAgainstAppliedRevision() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.remove() }
+        let repository = try await fixture.open(initial: fixture.snapshot(title: "Move"))
+        let binding = try fixture.syncBinding()
+        try await repository.bindSync(binding)
+        try await completeCanonicalBootstrap(repository: repository, binding: binding)
+        let baseline = try await repository.snapshot()
+        let moveID = try #require(baseline.content.openLoops.items.first?.id)
+        let baseRevision = try await repository.remoteRevision(
+            entityType: .move,
+            entityID: moveID
+        )
+        var first = baseline.content
+        first.openLoops.items[0].title = "First batch"
+        _ = try await repository.transact(
+            expectedRevision: baseline.revision,
+            mutation: fixture.mutation(replacement: first)
+        )
+        let afterFirst = try await repository.snapshot()
+        var second = afterFirst.content
+        second.openLoops.items[0].title = "Second batch"
+        second.openLoops.items[0].updatedAt = fixture.date(30)
+        second.openLoops.updatedAt = fixture.date(30)
+        _ = try await repository.transact(
+            expectedRevision: afterFirst.revision,
+            mutation: WorkspaceMutation(
+                entityKind: "move",
+                entityID: moveID.uuidString.lowercased(),
+                changedFields: ["title"],
+                fieldClocks: ["title": fixture.date(30)],
+                replacement: second,
+                createdAt: fixture.date(30)
+            )
+        )
+        let transport = ContiguousSameEntityTransport(
+            workspaceID: binding.workspaceID,
+            startingCursor: try await repository.syncCursor(),
+            startingRevision: baseRevision
+        )
+        let coordinator = try WorkspaceSyncCoordinator(
+            repository: repository,
+            auth: FixedAuthSession(session: binding.session),
+            transport: transport,
+            configuration: WorkspaceSyncCoordinatorConfiguration(
+                pushOperationLimit: 1,
+                maximumPushBatchesPerRun: 2
+            ),
+            jitter: { 1 }
+        )
+
+        #expect(await coordinator.synchronizeNow() == .synchronized)
+        #expect(await transport.pushedBaseRevisions() == [baseRevision, baseRevision + 1])
+        #expect(await transport.callOrder() == ["pull", "push", "pull", "push", "pull"])
+        #expect(try await repository.pendingOperations().isEmpty)
+        #expect(try await repository.remoteRevision(entityType: .move, entityID: moveID)
+            == baseRevision + 2)
+        #expect(try await repository.snapshot().content.openLoops.items[0].title
+            == "Second batch")
+    }
+
+    @Test
+    func relaunchPullRetiresServerAcceptedOperationAfterPushResponseLossWithoutRetrying() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.remove() }
+        let repository = try await fixture.open(initial: fixture.snapshot(title: "Move"))
+        let binding = try fixture.syncBinding()
+        try await repository.bindSync(binding)
+        try await completeCanonicalBootstrap(repository: repository, binding: binding)
+        let baseline = try await repository.snapshot()
+        let moveID = try #require(baseline.content.openLoops.items.first?.id)
+        let baseRevision = try await repository.remoteRevision(
+            entityType: .move,
+            entityID: moveID
+        )
+        var replacement = baseline.content
+        replacement.openLoops.items[0].title = "Accepted despite lost response"
+        let mutation = fixture.mutation(replacement: replacement)
+        _ = try await repository.transact(
+            expectedRevision: baseline.revision,
+            mutation: mutation
+        )
+        let transport = LostPushResponseTransport(
+            workspaceID: binding.workspaceID,
+            startingCursor: try await repository.syncCursor(),
+            startingRevision: baseRevision
+        )
+        let interrupted = try WorkspaceSyncCoordinator(
+            repository: repository,
+            auth: FixedAuthSession(session: binding.session),
+            transport: transport,
+            jitter: { 1 }
+        )
+
+        #expect(await interrupted.synchronizeNow() == .blocked("transport_unavailable"))
+        #expect(await transport.pushCount() == 1)
+        let pendingAfterLoss = try #require(try await repository.pendingOperations().first)
+        #expect(pendingAfterLoss.operationID == mutation.operationID)
+        #expect(pendingAfterLoss.deliveryAttempts == 1)
+
+        let relaunchedRepository = try await fixture.open(initial: nil)
+        let relaunched = try WorkspaceSyncCoordinator(
+            repository: relaunchedRepository,
+            auth: FixedAuthSession(session: binding.session),
+            transport: transport,
+            jitter: { 1 }
+        )
+        #expect(await relaunched.synchronizeNow() == .synchronized)
+        #expect(await transport.pushCount() == 1)
+        #expect(try await relaunchedRepository.pendingOperations().isEmpty)
+        #expect(try await relaunchedRepository.remoteRevision(
+            entityType: .move,
+            entityID: moveID
+        ) == baseRevision + 1)
+        #expect(try await relaunchedRepository.snapshot().content.openLoops.items[0].title
+            == "Accepted despite lost response")
+    }
+
+    @Test
+    func remoteRevisionGapProducesActionableTerminalFailureCode() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.remove() }
+        let repository = try await fixture.open(initial: fixture.snapshot(title: "Move"))
+        let binding = try fixture.syncBinding()
+        try await repository.bindSync(binding)
+        try await completeCanonicalBootstrap(repository: repository, binding: binding)
+        let cursor = try await repository.syncCursor()
+        let gap = try makeWorkspaceChange(
+            cursor: cursor.value + 1,
+            operationID: UUID(),
+            workspaceID: binding.workspaceID,
+            revision: 3,
+            name: "Skipped revision two",
+            clock: fixture.date(40)
+        )
+        let transport = FixedPullTransport(
+            response: try makePullResponse(
+                workspaceID: binding.workspaceID,
+                from: cursor.value,
+                changes: [gap]
+            )
+        )
+        let coordinator = try WorkspaceSyncCoordinator(
+            repository: repository,
+            auth: FixedAuthSession(session: binding.session),
+            transport: transport
+        )
+
+        #expect(await coordinator.synchronizeNow() == .blocked("remote_revision_gap"))
+        let status = try await repository.syncStatus()
+        #expect(status.phase == .adapterBlocked)
+        #expect(status.failureCode == "remote_revision_gap")
+        #expect(try await repository.syncCursor() == cursor)
+    }
+
+    @Test
     func externalLocalChangeDuringFinalRunIsPreservedAsFreshBoundedDrain() async throws {
         let fixture = try RepositoryFixture()
         defer { fixture.remove() }
         let repository = try await fixture.open(initial: fixture.snapshot(title: "Move"))
         let binding = try fixture.syncBinding()
         try await repository.bindSync(binding)
-        let plan = try await repository.canonicalBootstrapPlan()
-        _ = try await repository.acknowledgeCanonicalBootstrap(
-            plan: plan,
-            bootstrap: makeBootstrapResponse(binding: binding, plan: plan, latestCursor: 0),
-            responses: [
-                makePushResponse(
-                    workspaceID: binding.workspaceID,
-                    operations: plan.operations,
-                    startingCursor: 1,
-                    revisionOffset: 0
-                ),
-            ]
+        try await completeCanonicalBootstrap(repository: repository, binding: binding)
+        let transport = GatedEndlessPullTransport(
+            workspaceID: binding.workspaceID,
+            startingCursor: try await repository.syncCursor()
         )
-        let transport = GatedEndlessPullTransport(workspaceID: binding.workspaceID)
         let coordinator = try WorkspaceSyncCoordinator(
             repository: repository,
             auth: FixedAuthSession(session: binding.session),
@@ -2231,10 +3425,11 @@ struct WorkspaceSyncCoordinatorTests {
         await coordinator.start()
         try await waitUntil { await transport.isWaiting() }
 
+        let currentCursor = try await repository.syncCursor()
         try await repository.applyRemotePage(
             try hostileWorkspacePage(
                 workspaceID: binding.workspaceID,
-                after: SyncCursor(value: 0),
+                after: currentCursor,
                 sequence: 1
             )
         )
@@ -2248,7 +3443,8 @@ struct WorkspaceSyncCoordinatorTests {
         await coordinator.stop()
 
         #expect(await transport.pullCount() == 2)
-        #expect(try await repository.syncCursor() == SyncCursor(value: 1))
+        #expect(try await repository.syncCursor()
+            == SyncCursor(value: currentCursor.value + 1))
         #expect(try await repository.pendingOperations().isEmpty)
         #expect(try await repository.snapshot().content.personalization.workspaceName
             == "Gated hostile page 1")
@@ -2258,6 +3454,231 @@ struct WorkspaceSyncCoordinatorTests {
 private struct FixedAuthSession: AuthSessionProviding {
     let session: AuthSession?
     func currentSession() async throws -> AuthSession? { session }
+}
+
+private actor ContiguousSameEntityTransport: WorkspaceSyncTransport {
+    private let workspaceID: WorkspaceID
+    private var serverCursor: Int64
+    private var entityRevision: Int64
+    private var pendingChanges: [SyncChange] = []
+    private var bases: [Int64] = []
+    private var calls: [String] = []
+
+    init(workspaceID: WorkspaceID, startingCursor: SyncCursor, startingRevision: Int64) {
+        self.workspaceID = workspaceID
+        serverCursor = startingCursor.value
+        entityRevision = startingRevision
+    }
+
+    func pushedBaseRevisions() -> [Int64] { bases }
+    func callOrder() -> [String] { calls }
+
+    func bootstrapWorkspace(
+        deviceID: DeviceID,
+        localWorkspaceID: WorkspaceID?,
+        workspaceName: String,
+        displayName: String?
+    ) async throws -> WorkspaceBootstrap {
+        throw WorkspaceSyncTransportFailure.rejected
+    }
+
+    func pushOperations(
+        session: AuthSession,
+        operations: [SyncOperation]
+    ) async throws -> SyncPushResponse {
+        calls.append("push")
+        guard operations.count == 1, let operation = operations.first,
+              operation.entityType == .move,
+              operation.baseRevision == entityRevision else {
+            throw WorkspaceSyncTransportFailure.invalidResponse
+        }
+        bases.append(operation.baseRevision)
+        entityRevision += 1
+        serverCursor += 1
+        let title: String
+        if case let .string(value)? = operation.payload?["title"] {
+            title = value
+        } else {
+            throw WorkspaceSyncTransportFailure.invalidResponse
+        }
+        pendingChanges.append(
+            try makeMoveChange(
+                cursor: serverCursor,
+                operationID: operation.operationID.rawValue,
+                moveID: operation.entityID,
+                revision: entityRevision,
+                changedFields: operation.changedFields,
+                title: title,
+                details: "",
+                priority: .p1,
+                dueOn: nil,
+                clock: operation.fieldClocks.values.max() ?? operation.occurredAt
+            )
+        )
+        return try makeExactPushResponse(
+            workspaceID: session.workspaceID,
+            latestCursor: serverCursor,
+            results: [
+                try SyncOperationResult(
+                    operationID: operation.operationID,
+                    status: .accepted,
+                    revision: entityRevision,
+                    cursor: SyncCursor(value: serverCursor),
+                    conflict: nil
+                ),
+            ]
+        )
+    }
+
+    func pullChanges(
+        session: AuthSession,
+        after cursor: SyncCursor,
+        limit: Int
+    ) async throws -> SyncPullResponse {
+        calls.append("pull")
+        let changes = pendingChanges.filter { $0.cursor.value > cursor.value }
+        if let appliedThrough = changes.last?.cursor.value {
+            pendingChanges.removeAll { $0.cursor.value <= appliedThrough }
+        }
+        return try makePullResponse(
+            workspaceID: workspaceID,
+            from: cursor.value,
+            changes: changes
+        )
+    }
+
+    func exportWorkspace(session: AuthSession) async throws -> WorkspaceExport {
+        throw WorkspaceSyncTransportFailure.rejected
+    }
+
+    func eraseWorkspace(
+        session: AuthSession,
+        confirming workspaceID: WorkspaceID
+    ) async throws -> WorkspaceEraseReceipt {
+        throw WorkspaceSyncTransportFailure.rejected
+    }
+}
+
+private actor LostPushResponseTransport: WorkspaceSyncTransport {
+    private let workspaceID: WorkspaceID
+    private var serverCursor: Int64
+    private var entityRevision: Int64
+    private var pendingChanges: [SyncChange] = []
+    private var pushes = 0
+
+    init(workspaceID: WorkspaceID, startingCursor: SyncCursor, startingRevision: Int64) {
+        self.workspaceID = workspaceID
+        serverCursor = startingCursor.value
+        entityRevision = startingRevision
+    }
+
+    func pushCount() -> Int { pushes }
+
+    func bootstrapWorkspace(
+        deviceID: DeviceID,
+        localWorkspaceID: WorkspaceID?,
+        workspaceName: String,
+        displayName: String?
+    ) async throws -> WorkspaceBootstrap {
+        throw WorkspaceSyncTransportFailure.rejected
+    }
+
+    func pushOperations(
+        session: AuthSession,
+        operations: [SyncOperation]
+    ) async throws -> SyncPushResponse {
+        pushes += 1
+        guard pushes == 1,
+              operations.count == 1,
+              let operation = operations.first,
+              operation.entityType == .move,
+              operation.baseRevision == entityRevision,
+              case let .string(title)? = operation.payload?["title"] else {
+            throw WorkspaceSyncTransportFailure.invalidResponse
+        }
+        entityRevision += 1
+        serverCursor += 1
+        pendingChanges = [
+            try makeMoveChange(
+                cursor: serverCursor,
+                operationID: operation.operationID.rawValue,
+                moveID: operation.entityID,
+                revision: entityRevision,
+                changedFields: operation.changedFields,
+                title: title,
+                details: "",
+                priority: .p1,
+                dueOn: nil,
+                clock: operation.fieldClocks.values.max() ?? operation.occurredAt
+            ),
+        ]
+        // Model server commit followed by connection loss before the response
+        // reaches the coordinator.
+        throw WorkspaceSyncTransportFailure.network
+    }
+
+    func pullChanges(
+        session: AuthSession,
+        after cursor: SyncCursor,
+        limit: Int
+    ) async throws -> SyncPullResponse {
+        let changes = pendingChanges.filter { $0.cursor.value > cursor.value }
+        return try makePullResponse(
+            workspaceID: workspaceID,
+            from: cursor.value,
+            changes: changes
+        )
+    }
+
+    func exportWorkspace(session: AuthSession) async throws -> WorkspaceExport {
+        throw WorkspaceSyncTransportFailure.rejected
+    }
+
+    func eraseWorkspace(
+        session: AuthSession,
+        confirming workspaceID: WorkspaceID
+    ) async throws -> WorkspaceEraseReceipt {
+        throw WorkspaceSyncTransportFailure.rejected
+    }
+}
+
+private struct FixedPullTransport: WorkspaceSyncTransport {
+    let response: SyncPullResponse
+
+    func bootstrapWorkspace(
+        deviceID: DeviceID,
+        localWorkspaceID: WorkspaceID?,
+        workspaceName: String,
+        displayName: String?
+    ) async throws -> WorkspaceBootstrap {
+        throw WorkspaceSyncTransportFailure.rejected
+    }
+
+    func pushOperations(
+        session: AuthSession,
+        operations: [SyncOperation]
+    ) async throws -> SyncPushResponse {
+        throw WorkspaceSyncTransportFailure.rejected
+    }
+
+    func pullChanges(
+        session: AuthSession,
+        after cursor: SyncCursor,
+        limit: Int
+    ) async throws -> SyncPullResponse {
+        response
+    }
+
+    func exportWorkspace(session: AuthSession) async throws -> WorkspaceExport {
+        throw WorkspaceSyncTransportFailure.rejected
+    }
+
+    func eraseWorkspace(
+        session: AuthSession,
+        confirming workspaceID: WorkspaceID
+    ) async throws -> WorkspaceEraseReceipt {
+        throw WorkspaceSyncTransportFailure.rejected
+    }
 }
 
 private actor RecordingSyncTransport: WorkspaceSyncTransport {
@@ -2490,13 +3911,13 @@ private actor EndlessPullTransport: WorkspaceSyncTransport {
             entityType: .workspace,
             entityID: workspaceID.rawValue,
             action: .upsert,
-            revision: next + 10,
+            revision: Int64(pulls + 1),
             changedFields: ["name"],
             changedAt: clock,
             record: [
                 "id": .string(workspaceID.rawValue.uuidString.lowercased()),
                 "name": .string("Hostile page \(next)"),
-                "revision": .integer(next + 10),
+                "revision": .integer(Int64(pulls + 1)),
                 "fieldClocks": .object(["name": .string(timestamp)]),
                 "createdAt": .string(WorkspaceV2SyncAdapter.timestamp(Date(timeIntervalSince1970: 10))),
                 "updatedAt": .string(timestamp),
@@ -2525,12 +3946,17 @@ private actor EndlessPullTransport: WorkspaceSyncTransport {
 
 private actor GatedEndlessPullTransport: WorkspaceSyncTransport {
     private let workspaceID: WorkspaceID
+    private var serverCursor: Int64
     private var pulls = 0
     private var pushes = 0
+    private var pendingMoveChange: SyncChange?
     private var secondPullWaiting = false
     private var secondPullContinuation: CheckedContinuation<Void, Never>?
 
-    init(workspaceID: WorkspaceID) { self.workspaceID = workspaceID }
+    init(workspaceID: WorkspaceID, startingCursor: SyncCursor) {
+        self.workspaceID = workspaceID
+        serverCursor = startingCursor.value
+    }
     func pullCount() -> Int { pulls }
     func pushCount() -> Int { pushes }
     func isSecondPullWaiting() -> Bool { secondPullWaiting }
@@ -2554,11 +3980,39 @@ private actor GatedEndlessPullTransport: WorkspaceSyncTransport {
         operations: [SyncOperation]
     ) async throws -> SyncPushResponse {
         pushes += 1
-        return try makePushResponse(
+        let operation = try #require(operations.first)
+        let revision = operation.baseRevision + 1
+        serverCursor += 1
+        let title: String
+        if case let .string(value)? = operation.payload?["title"] {
+            title = value
+        } else {
+            title = "Created during final pull"
+        }
+        pendingMoveChange = try makeMoveChange(
+            cursor: serverCursor,
+            operationID: operation.operationID.rawValue,
+            moveID: operation.entityID,
+            revision: revision,
+            changedFields: operation.changedFields,
+            title: title,
+            details: "",
+            priority: .p1,
+            dueOn: nil,
+            clock: operation.fieldClocks.values.max() ?? operation.occurredAt
+        )
+        return try makeExactPushResponse(
             workspaceID: session.workspaceID,
-            operations: operations,
-            startingCursor: 100,
-            revisionOffset: 10
+            latestCursor: serverCursor,
+            results: [
+                try SyncOperationResult(
+                    operationID: operation.operationID,
+                    status: .accepted,
+                    revision: revision,
+                    cursor: SyncCursor(value: serverCursor),
+                    conflict: nil
+                ),
+            ]
         )
     }
 
@@ -2572,10 +4026,36 @@ private actor GatedEndlessPullTransport: WorkspaceSyncTransport {
             secondPullWaiting = true
             await withCheckedContinuation { secondPullContinuation = $0 }
         }
-        return try hostileWorkspacePage(
+        if pulls <= 3 {
+            let change = try makeWorkspaceChange(
+                cursor: cursor.value + 1,
+                operationID: deterministicUUID(Int64(800 + pulls)),
+                workspaceID: workspaceID,
+                revision: Int64(pulls + 1),
+                name: "Gated finite page \(pulls)",
+                clock: Date(timeIntervalSince1970: TimeInterval(200 + pulls))
+            )
+            serverCursor = change.cursor.value
+            return try makePullResponse(
+                workspaceID: workspaceID,
+                from: cursor.value,
+                changes: [change],
+                hasMore: pulls < 3,
+                latestCursor: pulls < 3 ? change.cursor.value + 1 : change.cursor.value
+            )
+        }
+        if let pendingMoveChange, pendingMoveChange.cursor.value > cursor.value {
+            self.pendingMoveChange = nil
+            return try makePullResponse(
+                workspaceID: workspaceID,
+                from: cursor.value,
+                changes: [pendingMoveChange]
+            )
+        }
+        return try makePullResponse(
             workspaceID: workspaceID,
-            after: cursor,
-            sequence: Int64(pulls)
+            from: cursor.value,
+            changes: []
         )
     }
 
@@ -2596,6 +4076,8 @@ private actor GatedBootstrapTransport: WorkspaceSyncTransport {
     private var pushes = 0
     private var pulls = 0
     private var operationIDs: [UUID] = []
+    private var serverCursor: Int64 = 0
+    private var pendingChanges: [SyncChange] = []
     private var bootstrapWaiting = false
     private var bootstrapContinuation: CheckedContinuation<Void, Never>?
 
@@ -2641,11 +4123,57 @@ private actor GatedBootstrapTransport: WorkspaceSyncTransport {
     ) async throws -> SyncPushResponse {
         pushes += 1
         operationIDs.append(contentsOf: operations.map { $0.operationID.rawValue })
-        return try makePushResponse(
+        if pushes == 1 {
+            let response = try makeCanonicalBootstrapPushResponse(
+                workspaceID: session.workspaceID,
+                operations: operations,
+                startingCursor: serverCursor + 1
+            )
+            let byID = Dictionary(uniqueKeysWithValues: operations.map { ($0.operationID, $0) })
+            pendingChanges = try response.results.map { result in
+                try makeCanonicalBootstrapChange(
+                    operation: #require(byID[result.operationID]),
+                    result: result
+                )
+            }
+            serverCursor = response.latestCursor.value
+            return response
+        }
+        let operation = try #require(operations.first)
+        let revision = operation.baseRevision + 1
+        serverCursor += 1
+        let title: String
+        if case let .string(value)? = operation.payload?["title"] {
+            title = value
+        } else {
+            title = "Changed during bootstrap"
+        }
+        pendingChanges = [
+            try makeMoveChange(
+                cursor: serverCursor,
+                operationID: operation.operationID.rawValue,
+                moveID: operation.entityID,
+                revision: revision,
+                changedFields: operation.changedFields,
+                title: title,
+                details: "",
+                priority: .p1,
+                dueOn: nil,
+                clock: operation.fieldClocks.values.max() ?? operation.occurredAt
+            ),
+        ]
+        return try makeExactPushResponse(
             workspaceID: session.workspaceID,
-            operations: operations,
-            startingCursor: 1,
-            revisionOffset: 0
+            latestCursor: serverCursor,
+            results: [
+                try SyncOperationResult(
+                    operationID: operation.operationID,
+                    status: .accepted,
+                    revision: revision,
+                    cursor: SyncCursor(value: serverCursor),
+                    conflict: nil
+                ),
+            ]
         )
     }
 
@@ -2655,10 +4183,12 @@ private actor GatedBootstrapTransport: WorkspaceSyncTransport {
         limit: Int
     ) async throws -> SyncPullResponse {
         pulls += 1
+        let changes = pendingChanges.filter { $0.cursor.value > cursor.value }
+        pendingChanges.removeAll { $0.cursor.value <= (changes.last?.cursor.value ?? cursor.value) }
         return try makePullResponse(
             workspaceID: session.workspaceID,
             from: cursor.value,
-            changes: []
+            changes: changes
         )
     }
 
@@ -2678,17 +4208,21 @@ private func completeCanonicalBootstrap(
     binding: WorkspaceSyncBinding
 ) async throws {
     let plan = try await repository.canonicalBootstrapPlan()
+    let response = try makeCanonicalBootstrapPushResponse(
+        workspaceID: binding.workspaceID,
+        operations: plan.operations,
+        startingCursor: 1
+    )
     _ = try await repository.acknowledgeCanonicalBootstrap(
         plan: plan,
         bootstrap: makeBootstrapResponse(binding: binding, plan: plan, latestCursor: 0),
-        responses: [
-            makePushResponse(
-                workspaceID: binding.workspaceID,
-                operations: plan.operations,
-                startingCursor: 1,
-                revisionOffset: 0
-            ),
-        ]
+        responses: [response]
+    )
+    try await applyCanonicalBootstrapFeed(
+        repository: repository,
+        workspaceID: binding.workspaceID,
+        operations: plan.operations,
+        response: response
     )
 }
 
@@ -2741,18 +4275,57 @@ private func completeBootstrap(
     repository: SQLiteWorkspaceRepository,
     binding: WorkspaceSyncBinding
 ) async throws {
-    let plan = try await repository.canonicalBootstrapPlan()
-    _ = try await repository.acknowledgeCanonicalBootstrap(
-        plan: plan,
-        bootstrap: makeBootstrapResponse(binding: binding, plan: plan, latestCursor: 0),
-        responses: [
-            makePushResponse(
-                workspaceID: binding.workspaceID,
-                operations: plan.operations,
-                startingCursor: 1,
-                revisionOffset: 0
-            )
-        ]
+    try await completeCanonicalBootstrap(
+        repository: repository,
+        binding: binding
+    )
+}
+
+private func applyCanonicalBootstrapFeed(
+    repository: SQLiteWorkspaceRepository,
+    workspaceID: WorkspaceID,
+    operations: [SyncOperation],
+    response: SyncPushResponse
+) async throws {
+    let operationsByID = Dictionary(uniqueKeysWithValues: operations.map { ($0.operationID, $0) })
+    let changes = try response.results.map { result -> SyncChange in
+        let operation = try #require(operationsByID[result.operationID])
+        return try makeCanonicalBootstrapChange(operation: operation, result: result)
+    }
+    try await repository.applyRemotePage(
+        try makePullResponse(workspaceID: workspaceID, from: 0, changes: changes)
+    )
+}
+
+private func makeCanonicalBootstrapChange(
+    operation: SyncOperation,
+    result: SyncOperationResult
+) throws -> SyncChange {
+    let revision = try #require(result.revision)
+    let cursor = try #require(result.cursor)
+    var record = operation.payload ?? [:]
+    record["id"] = .string(operation.entityID.uuidString.lowercased())
+    record["revision"] = .integer(revision)
+    record["fieldClocks"] = .object(
+        operation.fieldClocks.mapValues {
+            .string(WorkspaceV2SyncAdapter.timestamp($0))
+        }
+    )
+    let changedAt = operation.fieldClocks.values.max() ?? operation.occurredAt
+    if record["createdAt"] == nil {
+        record["createdAt"] = .string(WorkspaceV2SyncAdapter.timestamp(operation.occurredAt))
+    }
+    record["updatedAt"] = .string(WorkspaceV2SyncAdapter.timestamp(changedAt))
+    return try SyncChange(
+        cursor: cursor,
+        operationID: operation.operationID,
+        entityType: operation.entityType,
+        entityID: operation.entityID,
+        action: operation.action,
+        revision: revision,
+        changedFields: operation.changedFields,
+        changedAt: changedAt,
+        record: record
     )
 }
 
@@ -2787,6 +4360,37 @@ private func makeMoveChange(
             clockFields: changedFields,
             clock: clock
         )
+    )
+}
+
+private func makeWorkspaceChange(
+    cursor: Int64,
+    operationID: UUID,
+    workspaceID: WorkspaceID,
+    revision: Int64,
+    name: String,
+    clock: Date
+) throws -> SyncChange {
+    let timestamp = WorkspaceV2SyncAdapter.timestamp(clock)
+    return try SyncChange(
+        cursor: SyncCursor(value: cursor),
+        operationID: SyncOperationID(rawValue: operationID),
+        entityType: .workspace,
+        entityID: workspaceID.rawValue,
+        action: .upsert,
+        revision: revision,
+        changedFields: ["name"],
+        changedAt: clock,
+        record: [
+            "id": .string(workspaceID.rawValue.uuidString.lowercased()),
+            "name": .string(name),
+            "revision": .integer(revision),
+            "fieldClocks": .object(["name": .string(timestamp)]),
+            "createdAt": .string(
+                WorkspaceV2SyncAdapter.timestamp(Date(timeIntervalSince1970: 10))
+            ),
+            "updatedAt": .string(timestamp),
+        ]
     )
 }
 
@@ -2955,13 +4559,13 @@ private func hostileWorkspacePage(
         entityType: .workspace,
         entityID: workspaceID.rawValue,
         action: .upsert,
-        revision: next + 100,
+        revision: sequence + 1,
         changedFields: ["name"],
         changedAt: clock,
         record: [
             "id": .string(workspaceID.rawValue.uuidString.lowercased()),
-            "name": .string("Gated hostile page \(next)"),
-            "revision": .integer(next + 100),
+            "name": .string("Gated hostile page \(sequence)"),
+            "revision": .integer(sequence + 1),
             "fieldClocks": .object(["name": .string(timestamp)]),
             "createdAt": .string(WorkspaceV2SyncAdapter.timestamp(Date(timeIntervalSince1970: 10))),
             "updatedAt": .string(timestamp),
@@ -3025,10 +4629,69 @@ private func makePushResponse(
     )
 }
 
+private func makeExactPushResponse(
+    workspaceID: WorkspaceID,
+    latestCursor: Int64,
+    results: [SyncOperationResult]
+) throws -> SyncPushResponse {
+    struct Encoded: Encodable {
+        let contractVersion: Int
+        let workspaceId: WorkspaceID
+        let latestCursor: SyncCursor
+        let results: [SyncOperationResult]
+    }
+    return try syncDecoder.decode(
+        SyncPushResponse.self,
+        from: syncEncoder.encode(
+            Encoded(
+                contractVersion: SyncOperation.contractVersion,
+                workspaceId: workspaceID,
+                latestCursor: SyncCursor(value: latestCursor),
+                results: results
+            )
+        )
+    )
+}
+
+private func makeCanonicalBootstrapPushResponse(
+    workspaceID: WorkspaceID,
+    operations: [SyncOperation],
+    startingCursor: Int64
+) throws -> SyncPushResponse {
+    struct Encoded: Encodable {
+        let contractVersion: Int
+        let workspaceId: WorkspaceID
+        let latestCursor: SyncCursor
+        let results: [SyncOperationResult]
+    }
+    let results = try operations.enumerated().map { index, operation in
+        try SyncOperationResult(
+            operationID: operation.operationID,
+            status: .accepted,
+            revision: 1,
+            cursor: SyncCursor(value: startingCursor + Int64(index)),
+            conflict: nil
+        )
+    }
+    let latest = startingCursor + Int64(max(0, operations.count - 1))
+    return try syncDecoder.decode(
+        SyncPushResponse.self,
+        from: syncEncoder.encode(
+            Encoded(
+                contractVersion: SyncOperation.contractVersion,
+                workspaceId: workspaceID,
+                latestCursor: try SyncCursor(value: latest),
+                results: results
+            )
+        )
+    )
+}
+
 private func makeBootstrapResponse(
     binding: WorkspaceSyncBinding,
     plan: WorkspaceCanonicalBootstrapPlan,
-    latestCursor: Int64
+    latestCursor: Int64,
+    workspaceRevision: Int64 = 1
 ) throws -> WorkspaceBootstrap {
     struct Encoded: Encodable {
         let contractVersion: Int
@@ -3048,7 +4711,7 @@ private func makeBootstrapResponse(
     let workspace: [String: SyncJSONValue] = [
         "id": .string(binding.workspaceID.rawValue.uuidString.lowercased()),
         "name": .string(plan.workspaceName),
-        "revision": .integer(1),
+        "revision": .integer(workspaceRevision),
         "fieldClocks": .object(["name": .string(timestamp)]),
         "createdAt": .string(timestamp),
         "updatedAt": .string(timestamp),
@@ -3177,4 +4840,82 @@ private func readRemoteFieldClocks(
         [String: Date].self,
         from: Data(bytes: bytes, count: count)
     )
+}
+
+private struct SyncEvidenceCounts: Equatable {
+    let applied: Int64
+    let acknowledged: Int64
+}
+
+private func readSyncEvidenceCounts(databaseURL: URL) throws -> SyncEvidenceCounts {
+    var connection: OpaquePointer?
+    guard sqlite3_open_v2(
+        databaseURL.path,
+        &connection,
+        SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX,
+        nil
+    ) == SQLITE_OK,
+    let connection else {
+        throw WorkspaceRepositoryError.invalidDatabase
+    }
+    defer { sqlite3_close_v2(connection) }
+
+    var statement: OpaquePointer?
+    guard sqlite3_prepare_v2(
+        connection,
+        """
+        SELECT
+            (SELECT count(*) FROM sync_applied_operations),
+            (SELECT count(*) FROM sync_operation_acknowledgements)
+        """,
+        -1,
+        &statement,
+        nil
+    ) == SQLITE_OK,
+    let statement else {
+        throw WorkspaceRepositoryError.invalidDatabase
+    }
+    defer { sqlite3_finalize(statement) }
+    guard sqlite3_step(statement) == SQLITE_ROW else {
+        throw WorkspaceRepositoryError.invalidDatabase
+    }
+    return SyncEvidenceCounts(
+        applied: sqlite3_column_int64(statement, 0),
+        acknowledged: sqlite3_column_int64(statement, 1)
+    )
+}
+
+private func installAppliedOperationFailureTrigger(
+    databaseURL: URL,
+    operationID: UUID
+) throws {
+    var connection: OpaquePointer?
+    guard sqlite3_open_v2(
+        databaseURL.path,
+        &connection,
+        SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX,
+        nil
+    ) == SQLITE_OK,
+    let connection else {
+        throw WorkspaceRepositoryError.invalidDatabase
+    }
+    defer { sqlite3_close_v2(connection) }
+    let operation = operationID.uuidString.lowercased()
+    let result = sqlite3_exec(
+        connection,
+        """
+        CREATE TRIGGER fail_selected_applied_operation
+        BEFORE INSERT ON sync_applied_operations
+        WHEN NEW.operation_id = '\(operation)'
+        BEGIN
+            SELECT RAISE(ABORT, 'injected applied evidence failure');
+        END
+        """,
+        nil,
+        nil,
+        nil
+    )
+    guard result == SQLITE_OK else {
+        throw WorkspaceRepositoryError.invalidDatabase
+    }
 }

@@ -277,8 +277,41 @@ public actor WorkspaceSyncCoordinator {
                 )
             )
 
-            _ = try await pushPending(session: session)
-            try await pullPages(session: session)
+            // A first-time workspace must be created before it can be pulled.
+            // Every established workspace instead catches up its applied
+            // entity horizons before local operations are adapted. This keeps
+            // an acknowledgement/pull interruption from producing a later
+            // operation with a stale remote base revision.
+            let bootstrapBatchCount = try await bootstrapIfRequired(session: session)
+            guard try await pullPages(session: session) else {
+                await restoreAfterStateChange(statusBeforeRun)
+                return .stateChanged
+            }
+            var pushBatchCount = bootstrapBatchCount
+            while pushBatchCount < configuration.maximumPushBatchesPerRun {
+                let didPush = try await pushNextPendingBatch(session: session)
+                guard didPush else { break }
+                pushBatchCount += 1
+                // Acknowledgement proves delivery but intentionally does not
+                // advance an applied entity horizon. Pull after every batch so
+                // the next same-entity batch is adapted against the revision
+                // that is now durably represented by the local cursor.
+                guard try await pullPages(session: session) else {
+                    await restoreAfterStateChange(statusBeforeRun)
+                    return .stateChanged
+                }
+            }
+            if pushBatchCount == configuration.maximumPushBatchesPerRun {
+                let remainder = try await repository.pendingSyncBatch(
+                    maximumCount: configuration.pushOperationLimit,
+                    maximumByteCount: configuration.pushByteLimit
+                )
+                if remainder.requiresCanonicalBootstrap || !remainder.operations.isEmpty {
+                    continuationRequested = true
+                    await restoreAfterStateChange(statusBeforeRun)
+                    return .stateChanged
+                }
+            }
             let retention = try await repository.enforceSyncRetention(.default)
             guard !retention.acknowledgementLimitReached,
                   !retention.appliedOperationLimitReached else {
@@ -321,6 +354,8 @@ public actor WorkspaceSyncCoordinator {
                 return .stateChanged
             case .syncEvidenceLimitReached:
                 code = "sync_evidence_limit"
+            case .invalidRemoteRevision:
+                code = "remote_revision_gap"
             default: code = "repository_boundary"
             }
             await setTerminalStatus(.adapterBlocked, code: code, preserving: statusBeforeRun)
@@ -350,127 +385,128 @@ public actor WorkspaceSyncCoordinator {
         }
     }
 
-    private func pushPending(session: AuthSession) async throws -> Int {
-        var conflictCount = 0
-        var batches = 0
-        while batches < configuration.maximumPushBatchesPerRun {
-            try Task.checkCancellation()
-            let batch = try await repository.pendingSyncBatch(
-                maximumCount: configuration.pushOperationLimit,
-                maximumByteCount: configuration.pushByteLimit
-            )
-            if batch.requiresCanonicalBootstrap {
-                let plan = try await repository.canonicalBootstrapPlan()
-                let bootstrap = try await transport.bootstrapWorkspace(
-                    deviceID: session.deviceID,
-                    localWorkspaceID: WorkspaceID(rawValue: plan.localWorkspaceID),
-                    workspaceName: plan.workspaceName,
-                    displayName: plan.profileDisplayName
-                )
-                guard bootstrap.session == session else {
-                    throw WorkspaceSyncTransportFailure.invalidResponse
-                }
-                let chunks = try operationChunks(plan.operations)
-                guard !chunks.isEmpty,
-                      chunks.count <= configuration.maximumPushBatchesPerRun else {
-                    throw WorkspaceSyncRepositoryError.requestBoundsExceeded
-                }
-                var responses: [SyncPushResponse] = []
-                for operations in chunks {
-                    responses.append(
-                        try await transport.pushOperations(session: session, operations: operations)
-                    )
-                }
-                _ = try await repository.acknowledgeCanonicalBootstrap(
-                    plan: plan,
-                    bootstrap: bootstrap,
-                    responses: responses
-                )
-                batches += max(1, chunks.count)
-                continue
-            }
-            guard !batch.operations.isEmpty else { return conflictCount }
-
-            var wireByID: [UUID: SyncOperation] = [:]
-            var operations: [SyncOperation] = []
-            for local in batch.operations {
-                switch try local.decodedLocalPayload() {
-                case .requiresBootstrap:
-                    throw WorkspaceSyncRepositoryError.bootstrapResponseMismatch
-                case let .localEntity(envelope):
-                    let entity = try mappedIdentity(
-                        local: local,
-                        envelope: envelope,
-                        workspaceID: session.workspaceID
-                    )
-                    let remoteRevision = try await repository.remoteRevision(
-                        entityType: entity.type,
-                        entityID: entity.id
-                    )
-                    let wire = try WorkspaceV2SyncAdapter.adapt(
-                        operation: local,
-                        envelope: envelope,
-                        remoteBaseRevision: remoteRevision,
-                        workspaceID: session.workspaceID
-                    )
-                    try wire.validateClockSkew(relativeTo: now())
-                    wireByID[local.operationID] = wire
-                    operations.append(wire)
-                }
-            }
-            let chunks = try operationChunks(operations)
-            guard chunks.count == 1 else {
-                // pendingSyncBatch is already byte bounded. A mismatch means
-                // the estimate no longer matches the wire contract.
-                throw WorkspaceSyncRepositoryError.requestBoundsExceeded
-            }
-            try await repository.recordDeliveryAttempt(operationIDs: batch.operations.map(\.operationID))
-            let response = try await transport.pushOperations(session: session, operations: operations)
-            var acknowledgements: [WorkspaceRemoteOperationAcknowledgement] = []
-            var conflicts: [WorkspacePersistedSyncConflict] = []
-            for result in response.results {
-                guard let wire = wireByID[result.operationID.rawValue] else {
-                    throw WorkspaceSyncTransportFailure.invalidResponse
-                }
-                switch result.status {
-                case .accepted, .duplicate:
-                    guard let revision = result.revision else {
-                        throw WorkspaceSyncTransportFailure.invalidResponse
-                    }
-                    acknowledgements.append(
-                        try WorkspaceRemoteOperationAcknowledgement(
-                            localOperationID: result.operationID.rawValue,
-                            entityType: wire.entityType,
-                            entityID: wire.entityID,
-                            remoteRevision: revision,
-                            fieldClocks: wire.fieldClocks
-                        )
-                    )
-                case .conflict:
-                    guard let conflict = result.conflict else {
-                        throw WorkspaceSyncTransportFailure.invalidResponse
-                    }
-                    conflicts.append(
-                        try WorkspacePersistedSyncConflict(
-                            workspaceID: session.workspaceID,
-                            conflict: conflict,
-                            recordedAt: now()
-                        )
-                    )
-                }
-            }
-            try await repository.acknowledgeRemoteOperations(
-                acknowledgements,
-                conflicts: conflicts
-            )
-            conflictCount += conflicts.count
-            batches += 1
+    private func bootstrapIfRequired(session: AuthSession) async throws -> Int {
+        let batch = try await repository.pendingSyncBatch(
+            maximumCount: configuration.pushOperationLimit,
+            maximumByteCount: configuration.pushByteLimit
+        )
+        guard batch.requiresCanonicalBootstrap else { return 0 }
+        let plan = try await repository.canonicalBootstrapPlan()
+        let bootstrap = try await transport.bootstrapWorkspace(
+            deviceID: session.deviceID,
+            localWorkspaceID: WorkspaceID(rawValue: plan.localWorkspaceID),
+            workspaceName: plan.workspaceName,
+            displayName: plan.profileDisplayName
+        )
+        guard bootstrap.session == session else {
+            throw WorkspaceSyncTransportFailure.invalidResponse
         }
-        continuationRequested = true
-        return conflictCount
+        let chunks = try operationChunks(plan.operations)
+        guard !chunks.isEmpty,
+              chunks.count <= configuration.maximumPushBatchesPerRun else {
+            throw WorkspaceSyncRepositoryError.requestBoundsExceeded
+        }
+        var responses: [SyncPushResponse] = []
+        for operations in chunks {
+            responses.append(
+                try await transport.pushOperations(session: session, operations: operations)
+            )
+        }
+        _ = try await repository.acknowledgeCanonicalBootstrap(
+            plan: plan,
+            bootstrap: bootstrap,
+            responses: responses
+        )
+        return chunks.count
     }
 
-    private func pullPages(session: AuthSession) async throws {
+    private func pushNextPendingBatch(session: AuthSession) async throws -> Bool {
+        try Task.checkCancellation()
+        let batch = try await repository.pendingSyncBatch(
+            maximumCount: configuration.pushOperationLimit,
+            maximumByteCount: configuration.pushByteLimit
+        )
+        if batch.requiresCanonicalBootstrap {
+            throw WorkspaceSyncRepositoryError.bootstrapRevisionChanged
+        }
+        guard !batch.operations.isEmpty else { return false }
+
+        var wireByID: [UUID: SyncOperation] = [:]
+        var operations: [SyncOperation] = []
+        for local in batch.operations {
+            switch try local.decodedLocalPayload() {
+            case .requiresBootstrap:
+                throw WorkspaceSyncRepositoryError.bootstrapResponseMismatch
+            case let .localEntity(envelope):
+                let entity = try mappedIdentity(
+                    local: local,
+                    envelope: envelope,
+                    workspaceID: session.workspaceID
+                )
+                let remoteRevision = try await repository.remoteRevision(
+                    entityType: entity.type,
+                    entityID: entity.id
+                )
+                let wire = try WorkspaceV2SyncAdapter.adapt(
+                    operation: local,
+                    envelope: envelope,
+                    remoteBaseRevision: remoteRevision,
+                    workspaceID: session.workspaceID
+                )
+                try wire.validateClockSkew(relativeTo: now())
+                wireByID[local.operationID] = wire
+                operations.append(wire)
+            }
+        }
+        let chunks = try operationChunks(operations)
+        guard chunks.count == 1 else {
+            // pendingSyncBatch is already byte bounded. A mismatch means
+            // the estimate no longer matches the wire contract.
+            throw WorkspaceSyncRepositoryError.requestBoundsExceeded
+        }
+        try await repository.recordDeliveryAttempt(operationIDs: batch.operations.map(\.operationID))
+        let response = try await transport.pushOperations(session: session, operations: operations)
+        var acknowledgements: [WorkspaceRemoteOperationAcknowledgement] = []
+        var conflicts: [WorkspacePersistedSyncConflict] = []
+        for result in response.results {
+            guard let wire = wireByID[result.operationID.rawValue] else {
+                throw WorkspaceSyncTransportFailure.invalidResponse
+            }
+            switch result.status {
+            case .accepted, .duplicate:
+                guard let revision = result.revision else {
+                    throw WorkspaceSyncTransportFailure.invalidResponse
+                }
+                acknowledgements.append(
+                    try WorkspaceRemoteOperationAcknowledgement(
+                        localOperationID: result.operationID.rawValue,
+                        entityType: wire.entityType,
+                        entityID: wire.entityID,
+                        remoteRevision: revision,
+                        fieldClocks: wire.fieldClocks
+                    )
+                )
+            case .conflict:
+                guard let conflict = result.conflict else {
+                    throw WorkspaceSyncTransportFailure.invalidResponse
+                }
+                conflicts.append(
+                    try WorkspacePersistedSyncConflict(
+                        workspaceID: session.workspaceID,
+                        conflict: conflict,
+                        recordedAt: now()
+                    )
+                )
+            }
+        }
+        try await repository.acknowledgeRemoteOperations(
+            acknowledgements,
+            conflicts: conflicts
+        )
+        return true
+    }
+
+    private func pullPages(session: AuthSession) async throws -> Bool {
         var pages = 0
         while pages < configuration.maximumPullPagesPerRun {
             try Task.checkCancellation()
@@ -482,9 +518,10 @@ public actor WorkspaceSyncCoordinator {
             )
             try await repository.applyRemotePage(page)
             pages += 1
-            if !page.hasMore { return }
+            if !page.hasMore { return true }
         }
         continuationRequested = true
+        return false
     }
 
     private func operationChunks(_ operations: [SyncOperation]) throws -> [[SyncOperation]] {

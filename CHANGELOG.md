@@ -83,6 +83,7 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Fixed
 
+- A server-accepted Move whose push response is lost is now verified and acknowledged from the authenticated pull feed in one transaction, preventing the immutable operation from being retried with a different base revision after relaunch.
 - Corrupt or missing generated projections now rebuild through a verified reversible backup without changing SQLite, while linked paths are refused and timed-out non-cooperative repairs cannot overlap another attempt.
 - **Use Latest** now adopts the exact durable Appearance returned by a save
   conflict instead of depending on a second store read that could be stale.
