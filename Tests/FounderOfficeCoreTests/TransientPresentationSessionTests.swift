@@ -36,12 +36,33 @@ struct TransientPresentationSessionTests {
     @Test
     func cancellationReturnsDirectlyToIdle() {
         var session = TransientPresentationSession()
-        session.begin("photo", hostIsExpanded: false)
+        let lease = session.begin("photo", hostIsExpanded: true, suspendsHost: true)
 
         session.cancelAll()
 
         #expect(session.phase == .idle)
         #expect(!session.isActive)
+        let staleEndRestored = session.end(lease)
+        #expect(!staleEndRestored)
+        #expect(session.phase == .idle)
+    }
+
+    @Test
+    func restoringCannotFinishWhileAnotherLeaseIsActive() {
+        var session = TransientPresentationSession()
+        let first = session.begin("colour", hostIsExpanded: true, suspendsHost: true)
+        let second = session.begin("menu", hostIsExpanded: false, suspendsHost: true)
+
+        let restoredAfterFirst = session.end(first)
+        #expect(!restoredAfterFirst)
+        session.finishRestoring()
+        #expect(session.phase == .presenting)
+        #expect(session.activeCount == 1)
+
+        let restoredAfterSecond = session.end(second)
+        #expect(restoredAfterSecond)
+        session.finishRestoring()
+        #expect(session.phase == .idle)
     }
 
     @Test

@@ -56,6 +56,89 @@ final class FoundersOfficeMacUITests: XCTestCase {
         XCTAssertTrue(app.buttons["nav.home"].isSelected)
     }
 
+    func testUncommittedAppearanceIsNeverRestoredAfterRelaunch() {
+        let root = makeTemporaryRoot()
+        var app = launch(root: root, environment: appearanceEnvironment)
+        let nativePreset = app.descendants(matching: .any)["appearance.preset.native"]
+        XCTAssertTrue(nativePreset.waitForExistence(timeout: 4))
+        nativePreset.click()
+        XCTAssertTrue(app.buttons["appearance.save"].isEnabled)
+
+        // UI-test termination deliberately bypasses the customer quit prompt,
+        // which proves an uncommitted in-memory draft cannot leak to storage.
+        app.terminate()
+        app = launch(root: root, environment: appearanceEnvironment)
+
+        XCTAssertTrue(
+            app.descendants(matching: .any)["appearance.preset.manish"]
+                .waitForExistence(timeout: 4)
+        )
+        XCTAssertTrue(app.descendants(matching: .any)["appearance.preset.manish"].isSelected)
+        XCTAssertFalse(app.buttons["appearance.save"].isEnabled)
+    }
+
+    func testEscapeFromUnsavedAppearanceReturnsToTheDraftWithoutDiscardingIt() {
+        let app = launch(root: makeTemporaryRoot(), environment: appearanceEnvironment)
+        let nativePreset = app.descendants(matching: .any)["appearance.preset.native"]
+        XCTAssertTrue(nativePreset.waitForExistence(timeout: 4))
+        nativePreset.click()
+
+        app.typeKey(XCUIKeyboardKey.escape, modifierFlags: [])
+        let editor = app.descendants(matching: .any)["appearance.unsaved.editor"]
+        XCTAssertTrue(editor.waitForExistence(timeout: 2))
+        app.typeKey(XCUIKeyboardKey.escape, modifierFlags: [])
+
+        XCTAssertTrue(editor.waitForNonExistence(timeout: 2))
+        XCTAssertTrue(nativePreset.isSelected)
+        XCTAssertTrue(app.buttons["appearance.save"].isEnabled)
+    }
+
+    func testExplicitCloseRequiresAnAppearanceOutcome() {
+        let app = launch(root: makeTemporaryRoot(), environment: appearanceEnvironment)
+        let nativePreset = app.descendants(matching: .any)["appearance.preset.native"]
+        XCTAssertTrue(nativePreset.waitForExistence(timeout: 4))
+        nativePreset.click()
+
+        app.buttons["notch.close"].click()
+        XCTAssertTrue(
+            app.staticTexts["Save your appearance before closing?"]
+                .waitForExistence(timeout: 2)
+        )
+        let cancel = app.buttons["Cancel"]
+        XCTAssertTrue(cancel.isHittable)
+        cancel.click()
+        XCTAssertTrue(nativePreset.waitForExistence(timeout: 2))
+        XCTAssertTrue(app.buttons["appearance.save"].isEnabled)
+    }
+
+    func testReducedEffectsKeepAppearanceAndPopupLifecycleUsable() throws {
+        let app = launch(
+            root: makeTemporaryRoot(),
+            environment: appearanceEnvironment.merging([
+                "OPENLOOPS_UI_TEST_REDUCE_MOTION": "1",
+                "OPENLOOPS_UI_TEST_REDUCE_TRANSPARENCY": "1"
+            ]) { current, _ in current }
+        )
+        let nativePreset = app.descendants(matching: .any)["appearance.preset.native"]
+        XCTAssertTrue(nativePreset.waitForExistence(timeout: 4))
+        nativePreset.click()
+
+        let colourWell = app.descendants(matching: .any)["appearance.colour.0"]
+        colourWell.click()
+        let colours = app.windows["Colors"]
+        guard colours.waitForExistence(timeout: 2) else {
+            throw XCTSkip("The SDK did not expose NSColorPanel as an accessibility window.")
+        }
+        colours.typeKey(XCUIKeyboardKey.escape, modifierFlags: [])
+        XCTAssertTrue(colours.waitForNonExistence(timeout: 2))
+
+        let save = app.buttons["appearance.save"]
+        XCTAssertTrue(save.waitForExistence(timeout: 2))
+        XCTAssertTrue(save.isHittable)
+        save.click()
+        XCTAssertFalse(save.isEnabled)
+    }
+
     func testTaskPlanningEditsPriorityAndDeadline() {
         let app = launch(
             root: makeTemporaryRoot(),

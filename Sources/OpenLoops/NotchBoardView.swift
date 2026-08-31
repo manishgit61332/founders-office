@@ -167,6 +167,7 @@ struct NotchBoardView: View {
     @ObservedObject var presentation: NotchPresentationModel
     let onClose: () -> Void
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     @State private var selectedSection: BoardSection = {
@@ -240,7 +241,6 @@ struct NotchBoardView: View {
     }()
     @State private var isFinishDatePickerPresented = false
     @State private var finishDateInteractionLease: UUID?
-    @State private var photoInteractionLease: UUID?
     @State private var accentSliderInteractionLease: UUID?
     @State private var supportReportPreview: RedactedSupportReport?
     @State private var supportReportSaveError: String?
@@ -284,7 +284,26 @@ struct NotchBoardView: View {
     @FocusState private var addFieldFocused: Bool
 
     private var theme: FounderTheme {
-        FounderTheme(appearance: personalization.appearance, reduceTransparency: reduceTransparency)
+        FounderTheme(
+            appearance: personalization.appearance,
+            reduceTransparency: effectiveReduceTransparency
+        )
+    }
+    private var effectiveReduceMotion: Bool {
+        #if FOUNDER_OFFICE_DISTRIBUTION
+        reduceMotion
+        #else
+        reduceMotion
+            || ProcessInfo.processInfo.environment["OPENLOOPS_UI_TEST_REDUCE_MOTION"] == "1"
+        #endif
+    }
+    private var effectiveReduceTransparency: Bool {
+        #if FOUNDER_OFFICE_DISTRIBUTION
+        reduceTransparency
+        #else
+        reduceTransparency
+            || ProcessInfo.processInfo.environment["OPENLOOPS_UI_TEST_REDUCE_TRANSPARENCY"] == "1"
+        #endif
     }
     private var groupedBackground: Color { theme.groupedBackground }
     private let border = Color.white.opacity(0.085)
@@ -478,11 +497,11 @@ struct NotchBoardView: View {
                         editorShape.fill(.regularMaterial)
                         editorShape.fill(
                             Color(red: 0.018, green: 0.020, blue: 0.026)
-                                .opacity(reduceTransparency ? 0.98 : 0.84)
+                                .opacity(effectiveReduceTransparency ? 0.98 : 0.84)
                         )
                         editorShape
                             .fill(theme.accentGradient)
-                            .opacity(reduceTransparency ? 0 : 0.055)
+                            .opacity(effectiveReduceTransparency ? 0 : 0.055)
                     }
                 }
                 .overlay(
@@ -524,10 +543,10 @@ struct NotchBoardView: View {
                         editorShape.fill(.regularMaterial)
                         editorShape.fill(
                             Color(red: 0.018, green: 0.020, blue: 0.026)
-                                .opacity(reduceTransparency ? 0.98 : 0.84)
+                                .opacity(effectiveReduceTransparency ? 0.98 : 0.84)
                         )
                         editorShape.fill(theme.accentGradient)
-                            .opacity(reduceTransparency ? 0 : 0.055)
+                            .opacity(effectiveReduceTransparency ? 0 : 0.055)
                     }
                 }
                 .overlay(
@@ -558,7 +577,7 @@ struct NotchBoardView: View {
                         editorShape.fill(.regularMaterial)
                         editorShape.fill(
                             Color(red: 0.018, green: 0.020, blue: 0.026)
-                                .opacity(reduceTransparency ? 0.98 : 0.88)
+                                .opacity(effectiveReduceTransparency ? 0.98 : 0.88)
                         )
                     }
                 }
@@ -591,7 +610,7 @@ struct NotchBoardView: View {
                         editorShape.fill(.regularMaterial)
                         editorShape.fill(
                             Color(red: 0.018, green: 0.020, blue: 0.026)
-                                .opacity(reduceTransparency ? 0.98 : 0.88)
+                                .opacity(effectiveReduceTransparency ? 0.98 : 0.88)
                         )
                     }
                 }
@@ -605,10 +624,10 @@ struct NotchBoardView: View {
             }
         }
         .frame(width: 720, height: 350)
-        .animation(.spring(response: 0.27, dampingFraction: 0.84), value: planningItemID)
-        .animation(.spring(response: 0.27, dampingFraction: 0.84), value: isCreatingCalendarEvent)
-        .animation(.spring(response: 0.27, dampingFraction: 0.84), value: pendingAppearanceExit)
-        .animation(.spring(response: 0.27, dampingFraction: 0.84), value: supportReportPreview)
+        .animation(effectiveReduceMotion ? nil : .spring(response: 0.27, dampingFraction: 0.84), value: planningItemID)
+        .animation(effectiveReduceMotion ? nil : .spring(response: 0.27, dampingFraction: 0.84), value: isCreatingCalendarEvent)
+        .animation(effectiveReduceMotion ? nil : .spring(response: 0.27, dampingFraction: 0.84), value: pendingAppearanceExit)
+        .animation(effectiveReduceMotion ? nil : .spring(response: 0.27, dampingFraction: 0.84), value: supportReportPreview)
     }
 
     private var isModalEditorPresented: Bool {
@@ -687,6 +706,7 @@ struct NotchBoardView: View {
             }
             .buttonStyle(CloseButtonStyle())
             .help("Close")
+            .accessibilityIdentifier("notch.close")
         }
         .padding(.horizontal, 20)
         .frame(height: 66)
@@ -2592,29 +2612,29 @@ struct NotchBoardView: View {
     }
 
     private func choosePhotoWithLease() {
-        if photoInteractionLease == nil {
-            photoInteractionLease = presentation.beginInteraction("photo-picker")
-        }
-        personalization.choosePhoto {
-            Task { @MainActor in
-                guard let lease = photoInteractionLease else { return }
-                presentation.endInteraction(lease)
-                photoInteractionLease = nil
+        personalization.choosePhoto(
+            onPresent: { panel in
+                presentation.transients.present(panel, reason: "photo-picker")
+            },
+            onCompletion: { panel in
+                Task { @MainActor in
+                    presentation.transients.endScoped(to: panel)
+                }
             }
-        }
+        )
     }
 
     private func exportOriginalPhotoWithLease() {
-        if photoInteractionLease == nil {
-            photoInteractionLease = presentation.beginInteraction("photo-export")
-        }
-        personalization.exportOriginalPhoto {
-            Task { @MainActor in
-                guard let lease = photoInteractionLease else { return }
-                presentation.endInteraction(lease)
-                photoInteractionLease = nil
+        personalization.exportOriginalPhoto(
+            onPresent: { panel in
+                presentation.transients.present(panel, reason: "photo-export")
+            },
+            onCompletion: { panel in
+                Task { @MainActor in
+                    presentation.transients.endScoped(to: panel)
+                }
             }
-        }
+        )
     }
 
     private func presentCalendarEventEditor() {
@@ -2786,10 +2806,6 @@ struct NotchBoardView: View {
         closePlanningEditor()
         releaseFinishDateInteraction()
         setAccentAngleEditing(false)
-        if let lease = photoInteractionLease {
-            presentation.endInteraction(lease)
-            photoInteractionLease = nil
-        }
     }
 
     private func settingsSectionTitle(_ title: String) -> some View {
@@ -2962,6 +2978,10 @@ struct NotchBoardView: View {
         }
 
         presentation.closeNativeColorPanels()
+        if action == .closeNotch {
+            onClose()
+            return
+        }
         if personalizePage == .appearance,
            isSettingsPresented,
            personalization.hasUnsavedAppearanceChanges {

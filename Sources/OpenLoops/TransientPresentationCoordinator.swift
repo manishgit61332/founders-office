@@ -3,6 +3,10 @@ import FounderOfficeCore
 
 @MainActor
 final class TransientPresentationCoordinator {
+    nonisolated static let statusMenuIdentifier = NSUserInterfaceItemIdentifier(
+        "foundersOffice.status-menu"
+    )
+
     @MainActor
     private final class TrackedWindow {
         let window: NSWindow
@@ -30,6 +34,9 @@ final class TransientPresentationCoordinator {
     var phase: TransientPresentationPhase { session.phase }
     var preventsAutoDismiss: Bool { session.isActive }
     var activeCount: Int { session.activeCount }
+    var hasVisiblePresentedWindow: Bool {
+        trackedWindows.values.contains { $0.window.isVisible }
+    }
 
     func configure(
         hostWindow: NSWindow,
@@ -108,9 +115,9 @@ final class TransientPresentationCoordinator {
             elevate(window)
             return
         }
-        let lease = beginScoped(to: window, reason: reason, suspendsHost: true)
+        _ = beginScoped(to: window, reason: reason, suspendsHost: true)
         guard let hostWindow else {
-            end(lease)
+            endScoped(key: key)
             return
         }
         trackedWindows[key] = TrackedWindow(window: window, hostWindow: hostWindow)
@@ -136,17 +143,58 @@ final class TransientPresentationCoordinator {
         window.collectionBehavior.formUnion([.canJoinAllSpaces, .fullScreenAuxiliary])
         if window.parent == nil, hostWindow.isVisible {
             hostWindow.addChildWindow(window, ordered: .above)
-        } else {
-            window.orderFrontRegardless()
         }
+        // Keep the transient independently visible at its elevated level. A
+        // modal must not depend only on child ordering while the host is
+        // visually collapsed into the notch.
+        window.orderFrontRegardless()
     }
 
     /// SwiftUI menus and popovers do not expose their source view. Scope their
-    /// process-wide notifications to a visible/key Founder’s Office host or a
-    /// presentation already owned by it.
-    func shouldTrackCurrentOrigin() -> Bool {
+    /// process-wide notifications to the notch or to a window already owned by
+    /// this coordinator. The app's status menu is explicitly excluded because
+    /// it does not originate from the notch window.
+    func shouldTrack(_ menu: NSMenu) -> Bool {
+        var current: NSMenu? = menu
+        while let candidate = current {
+            if candidate.identifier == Self.statusMenuIdentifier {
+                return shouldTrackMenuOrigin(isStatusMenuTree: true)
+            }
+            current = candidate.supermenu
+        }
+        return shouldTrackMenuOrigin(isStatusMenuTree: false)
+    }
+
+    func shouldTrackMenuOrigin(isStatusMenuTree: Bool) -> Bool {
+        !isStatusMenuTree && shouldTrackCurrentOrigin()
+    }
+
+    func shouldTrack(_ popover: NSPopover) -> Bool {
+        _ = popover
+        return shouldTrackCurrentOrigin()
+    }
+
+    /// File panels are registered explicitly before they are shown. A native
+    /// colour panel is owned only when it was already registered or when it was
+    /// opened directly from the visible notch hit area.
+    func shouldTrack(_ window: NSWindow) -> Bool {
+        if owns(window) { return true }
+        guard window is NSColorPanel, let hostWindow, hostWindow.isVisible else {
+            return false
+        }
+        return hostWindow.frame.insetBy(dx: -12, dy: -12).contains(NSEvent.mouseLocation)
+    }
+
+    func isTracking(_ window: NSWindow) -> Bool {
+        objectLeases[ObjectIdentifier(window)] != nil || owns(window)
+    }
+
+    private func shouldTrackCurrentOrigin() -> Bool {
         guard let hostWindow, hostWindow.isVisible else { return false }
-        if session.isActive || hostWindow.isKeyWindow || NSApp.keyWindow === hostWindow {
+        if hostWindow.isKeyWindow || NSApp.keyWindow === hostWindow {
+            return true
+        }
+        if let keyWindow = NSApp.keyWindow, owns(keyWindow) {
             return true
         }
         return hostWindow.frame.insetBy(dx: -12, dy: -12).contains(NSEvent.mouseLocation)
@@ -188,13 +236,27 @@ final class TransientPresentationCoordinator {
     }
 
     private func restoreWindow(_ tracked: TrackedWindow) {
-        guard let hostWindow else { return }
-        if tracked.window.parent === hostWindow {
+        if let hostWindow, tracked.window.parent === hostWindow {
             if !tracked.wasChildOfHost {
                 hostWindow.removeChildWindow(tracked.window)
             }
         }
         tracked.window.level = tracked.originalLevel
         tracked.window.collectionBehavior = tracked.originalCollectionBehavior
+    }
+
+    private func owns(_ window: NSWindow) -> Bool {
+        guard let hostWindow else { return false }
+        if window === hostWindow { return true }
+        if trackedWindows.values.contains(where: { $0.window === window }) {
+            return true
+        }
+
+        var ancestor = window.parent ?? window.sheetParent
+        while let current = ancestor {
+            if current === hostWindow { return true }
+            ancestor = current.parent ?? current.sheetParent
+        }
+        return false
     }
 }
