@@ -23,6 +23,7 @@ workspace-identity.json
 support-bundles/
 exports/
 Recovery/
+Generated/
 *.log
 *.jsonl
 *.sqlite

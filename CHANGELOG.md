@@ -36,6 +36,9 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Changed
 
+- The Mac app now uses one transactional SQLite workspace for Moves, personalization, goals, Appearance, tombstones, revisions, idempotency receipts, and sync outbox operations. Legacy JSON and Recovery files remain byte-for-byte migration inputs; JSON and Markdown are generated as immutable revision projections.
+- The legacy polling-based Mac CloudKit JSON bridge has been removed so it cannot compete with the canonical workspace. Cross-device sync remains unavailable until the new authenticated sync contract passes its release gate.
+
 - App-owned Mac and iPhone typography now uses one three-role hierarchy: a 28-point primary title, a secondary size divided by 1.62, and a tertiary size divided again by 1.6.
 - The Appearance accent editor now uses one compact macOS-style control surface with a native segmented mode picker, exact colour wells, and a focused gradient-direction slider instead of loose oversized controls and technical helper copy.
 - Codex runs are now scoped to the Founder’s Office workspace instead of the parent Application Support directory.
@@ -48,6 +51,8 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 - The ambiguous “Waiting” state is now **Blocked** in the current interface.
 
 ### Fixed
+
+- Rapid Mac mutations now serialize through component-scoped repository patches instead of racing whole-workspace JSON writes, and failed Appearance commits retain both the retryable draft and untouched committed value.
 
 - Appearance controls no longer write personalization data or advance modification timestamps before Save Changes succeeds.
 - Native colour, date, menu, and file-picker surfaces now remain above the physical notch instead of falling outside its hover lifecycle.

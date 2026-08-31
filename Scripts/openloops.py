@@ -16,6 +16,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 JSON_PATH = ROOT / "openloops.json"
 CONTEXT_PATH = ROOT / "OPEN_LOOPS_CONTEXT.md"
+DATABASE_PATH = ROOT / "founders-office.sqlite3"
+GENERATED_PATH = ROOT / "Generated"
 STATUSES = ("doing", "next", "waiting", "done")
 STATUS_TITLES = {
     "doing": "Doing",
@@ -31,7 +33,8 @@ def now_iso() -> str:
 
 
 def load_document() -> dict:
-    with JSON_PATH.open(encoding="utf-8") as handle:
+    source = latest_projection_path() if DATABASE_PATH.exists() else JSON_PATH
+    with source.open(encoding="utf-8") as handle:
         document = json.load(handle)
     upgrade_planning_schema(document)
     return document
@@ -66,6 +69,11 @@ def find_item(document: dict, query: str, *, include_deleted: bool = False) -> d
 
 
 def save_document(document: dict) -> None:
+    if DATABASE_PATH.exists():
+        raise SystemExit(
+            "This workspace uses the transactional Founder’s Office database. "
+            "Generated JSON is read-only; make this change in the app."
+        )
     upgrade_planning_schema(document)
     document["schemaVersion"] = max(document.get("schemaVersion", 1), 3)
     document["updatedAt"] = now_iso()
@@ -80,6 +88,16 @@ def save_document(document: dict) -> None:
         if os.path.exists(temporary_name):
             os.unlink(temporary_name)
     write_context(document)
+
+
+def latest_projection_path() -> Path:
+    revisions = sorted(GENERATED_PATH.glob("revision-*/openloops.json"))
+    if not revisions:
+        raise SystemExit(
+            "The transactional workspace has no generated projection yet. "
+            "Open Founder’s Office once and retry."
+        )
+    return revisions[-1]
 
 
 def parse_due(value: str | None) -> str | None:

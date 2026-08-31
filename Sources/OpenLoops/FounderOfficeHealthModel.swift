@@ -1,6 +1,5 @@
 import AppKit
 import Combine
-import FounderOfficeCloud
 import FounderOfficeCore
 import Foundation
 import ServiceManagement
@@ -11,29 +10,23 @@ final class FounderOfficeHealthModel: ObservableObject {
     private let personalization: PersonalizationStore
     private let calendar: CalendarProvider
     private let assistant: CodexRunner
-    private let cloud: CloudSyncBridge?
     private var cancellables = Set<AnyCancellable>()
 
     init(
         store: OpenLoopStore,
         personalization: PersonalizationStore,
         calendar: CalendarProvider,
-        assistant: CodexRunner,
-        cloud: CloudSyncBridge?
+        assistant: CodexRunner
     ) {
         self.store = store
         self.personalization = personalization
         self.calendar = calendar
         self.assistant = assistant
-        self.cloud = cloud
 
         observe(store.objectWillChange)
         observe(personalization.objectWillChange)
         observe(calendar.objectWillChange)
         observe(assistant.objectWillChange)
-        if let cloud {
-            observe(cloud.objectWillChange)
-        }
     }
 
     var snapshot: HealthSnapshot {
@@ -74,11 +67,10 @@ final class FounderOfficeHealthModel: ObservableObject {
             store.reload()
             personalization.reload()
         case .retrySync:
-            guard let cloud else { return }
-            Task { @MainActor [weak self] in
-                await cloud.retrySync()
-                self?.objectWillChange.send()
-            }
+            // Cross-device sync is deliberately unavailable until the
+            // Supabase operation transport passes its release gate. Health
+            // must not revive the retired CloudKit JSON writer.
+            break
         case .refreshCalendar:
             calendar.refresh()
         case .openCalendarSettings:
@@ -116,49 +108,10 @@ final class FounderOfficeHealthModel: ObservableObject {
     }
 
     private var syncStatus: HealthComponentStatus {
-        guard let cloud else {
-            return HealthComponentStatus(
-                component: .sync,
-                condition: .off,
-                detail: "Stored on this Mac"
-            )
-        }
-
-        let condition: HealthCondition
-        let detail: String
-        let remediation: HealthRemediation
-        switch cloud.status {
-        case .preparing:
-            condition = .working
-            detail = "Preparing iCloud"
-            remediation = .none
-        case .syncing:
-            condition = .working
-            detail = "Uploading changes"
-            remediation = .none
-        case .ready:
-            condition = .ready
-            detail = "iCloud is current"
-            remediation = .retrySync
-        case .offline:
-            condition = .attention
-            detail = "Waiting for a connection"
-            remediation = .retrySync
-        case .accountReviewRequired:
-            condition = .attention
-            detail = "Review the iCloud account"
-            remediation = .none
-        case .error:
-            condition = .attention
-            detail = "iCloud needs another try"
-            remediation = .retrySync
-        }
         return HealthComponentStatus(
             component: .sync,
-            condition: condition,
-            detail: detail,
-            lastSuccessAt: cloud.lastSuccessfulSyncAt,
-            remediation: remediation
+            condition: .off,
+            detail: "Stored on this Mac"
         )
     }
 

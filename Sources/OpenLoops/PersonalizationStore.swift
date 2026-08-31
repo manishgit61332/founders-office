@@ -1,6 +1,8 @@
 import AppKit
+import Combine
 import Foundation
 import FounderOfficeCore
+import ImageIO
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -20,47 +22,74 @@ extension AccentPalette {
 final class PersonalizationStore: ObservableObject {
     @Published private(set) var document: PersonalizationDocument
     @Published private(set) var appearanceDraftSession: AppearanceDraftSession?
+    @Published private(set) var isSavingAppearance = false
     @Published private(set) var message = "Saved locally"
     @Published private(set) var recoveryState: WorkspaceRecoveryState = .ready
 
+    let session: WorkspaceSession
     let rootURL: URL
-    let documentURL: URL
     let assetsURL: URL
 
     private var previewPhotoURL: URL?
-    private var watcher: Timer?
-    private var lastKnownModificationDate: Date?
-    private let encoder: JSONEncoder
-    private let decoder: JSONDecoder
+    private var cancellable: AnyCancellable?
+    private var writes: [PendingWrite] = []
+    private var isWriting = false
+    private var lastWriteSucceeded = true
 
-    init(rootURL: URL) {
-        self.rootURL = rootURL
-        documentURL = rootURL.appendingPathComponent("personalization.json")
+    private struct PendingWrite {
+        var document: PersonalizationDocument
+        var entityKind: String
+        var entityID: String
+        var changedFields: [String]
+        var fieldClocks: [String: Date]
+        var precondition: WorkspacePatchPrecondition
+        var completion: ((Result<WorkspaceTransactionResult, Error>) -> Void)?
+    }
+
+    init(session: WorkspaceSession) {
+        self.session = session
+        rootURL = session.rootURL
         assetsURL = rootURL.appendingPathComponent("Personalization", isDirectory: true)
 
-        encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-        encoder.dateEncodingStrategy = .iso8601
-        decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-
-        document = Self.defaultDocument
+        document = session.snapshot.content.personalization
         appearanceDraftSession = nil
-        load()
+        cancellable = session.$snapshot
+            .dropFirst()
+            .sink { [weak self] snapshot in
+                guard let self, self.writes.isEmpty, !self.isWriting else { return }
+                self.apply(snapshot.content.personalization)
+            }
         #if !FOUNDER_OFFICE_DISTRIBUTION
         applyPreviewOverrides()
         #endif
-        startWatching()
     }
 
     func stop() {
-        watcher?.invalidate()
-        watcher = nil
+        for write in writes {
+            write.completion?(.failure(CancellationError()))
+        }
+        writes.removeAll()
+        cancellable?.cancel()
+        cancellable = nil
         appearanceDraftSession = nil
     }
 
     func reload() {
-        load(force: true)
+        Task { [weak self] in
+            guard let self else { return }
+            _ = await session.refresh()
+            guard writes.isEmpty, !isWriting else { return }
+            apply(session.snapshot.content.personalization)
+        }
+    }
+
+    var hasPendingWrites: Bool { isWriting || !writes.isEmpty }
+
+    func waitForPendingWrites() async -> Bool {
+        for _ in 0..<500 where hasPendingWrites {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return !hasPendingWrites && lastWriteSucceeded
     }
 
     var preferredName: String { document.resolvedPreferredName ?? "" }
@@ -91,19 +120,7 @@ final class PersonalizationStore: ObservableObject {
     var photoURL: URL? {
         if let previewPhotoURL { return previewPhotoURL }
         guard let fileName = document.photoFileName.flatMap(AssetFileName.validated) else { return nil }
-        let url = assetsURL.appendingPathComponent(fileName)
-        return FileManager.default.fileExists(atPath: url.path) ? url : nil
-    }
-
-    /// Fresh workspace bootstrap is the only path allowed to materialize the
-    /// default document. The caller checks this write before committing the
-    /// durable workspace identity or starting onboarding/cloud services.
-    func ensureCanonicalDocumentExists() throws {
-        guard !FileManager.default.fileExists(atPath: documentURL.path) else { return }
-        guard !recoveryState.requiresRecovery else {
-            throw CocoaError(.fileWriteNoPermission)
-        }
-        try writeCanonicalDocument()
+        return assetsURL.appendingPathComponent(fileName)
     }
 
     func updatePreferredName(_ value: String) {
@@ -222,12 +239,12 @@ final class PersonalizationStore: ObservableObject {
     }
 
     @discardableResult
-    func keepMineAppearance() -> AppearanceSaveResult {
-        saveAppearanceChanges(overwritingConflict: true)
+    func keepMineAppearance() async -> AppearanceSaveResult {
+        await saveAppearanceChanges(overwritingConflict: true)
     }
 
     @discardableResult
-    func saveAppearanceChanges(overwritingConflict: Bool = false) -> AppearanceSaveResult {
+    func saveAppearanceChanges(overwritingConflict: Bool = false) async -> AppearanceSaveResult {
         guard var session = appearanceDraftSession, session.isDirty else {
             return .unchanged
         }
@@ -254,15 +271,33 @@ final class PersonalizationStore: ObservableObject {
         candidate.accent = Self.nearestLegacyAccent(to: committedAppearance.accent.primaryColor)
         candidate.updatedAt = now
 
-        do {
-            try write(candidate)
+        isSavingAppearance = true
+        defer { isSavingAppearance = false }
+        let result = await persist(
+            candidate,
+            entityKind: "appearance",
+            entityID: "appearance",
+            changedFields: ["appearance", "accent", "updatedAt"],
+            at: now,
+            precondition: overwritingConflict ? .none : .appearanceRevision(session.baselineRevision)
+        )
+
+        switch result {
+        case .success:
+            lastWriteSucceeded = true
             document = candidate
-            lastKnownModificationDate = fileModificationDate()
             session.markSaved(committedAppearance)
             appearanceDraftSession = session
             message = "Saved locally"
             return .saved
-        } catch {
+        case let .failure(error):
+            lastWriteSucceeded = false
+            if let repositoryError = error as? WorkspaceRepositoryError,
+               case .componentConflict = repositoryError {
+                session.observeCommitted(self.session.snapshot.content.personalization.resolvedAppearance)
+                appearanceDraftSession = session
+                return .conflict
+            }
             let failure = "Couldn’t save changes"
             session.markFailed(failure)
             appearanceDraftSession = session
@@ -290,7 +325,7 @@ final class PersonalizationStore: ObservableObject {
             defer { onCompletion() }
             guard response == .OK, let sourceURL = panel.url else { return }
             Task { @MainActor in
-                self?.importPhoto(from: sourceURL)
+                await self?.importPhoto(from: sourceURL)
             }
         }
     }
@@ -298,11 +333,26 @@ final class PersonalizationStore: ObservableObject {
     func removePhoto() {
         guard canEdit else { return }
         let previousURL = photoURL
-        document.photoFileName = nil
         previewPhotoURL = nil
-        persist()
-        if let previousURL, previousURL.path.hasPrefix(assetsURL.path) {
-            try? FileManager.default.removeItem(at: previousURL)
+        var candidate = document
+        let now = Date()
+        candidate.photoFileName = nil
+        candidate.updatedAt = now
+        Task { [weak self] in
+            guard let self else { return }
+            let result = await persist(
+                candidate,
+                entityKind: "asset",
+                entityID: "vision-photo",
+                changedFields: ["photoFileName", "updatedAt"],
+                at: now,
+                precondition: .none
+            )
+            guard case .success = result else { return }
+            document = candidate
+            if let previousURL, previousURL.path.hasPrefix(assetsURL.path) {
+                try? await Task.detached { try FileManager.default.removeItem(at: previousURL) }.value
+            }
         }
     }
 
@@ -366,26 +416,44 @@ final class PersonalizationStore: ObservableObject {
         persist()
     }
 
-    private func importPhoto(from sourceURL: URL) {
+    private func importPhoto(from sourceURL: URL) async {
         guard canEdit else { return }
-        guard NSImage(contentsOf: sourceURL) != nil else {
-            message = "That file isn’t a readable image"
-            return
-        }
-
         do {
-            try FileManager.default.createDirectory(at: assetsURL, withIntermediateDirectories: true)
             let fileExtension = sourceURL.pathExtension.isEmpty ? "jpg" : sourceURL.pathExtension.lowercased()
             let fileName = "vision-\(UUID().uuidString.lowercased()).\(fileExtension)"
             let destinationURL = assetsURL.appendingPathComponent(fileName)
-            try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
+            let assetsURL = assetsURL
+            try await Task.detached(priority: .userInitiated) {
+                guard let source = CGImageSourceCreateWithURL(sourceURL as CFURL, nil),
+                      CGImageSourceGetCount(source) > 0 else {
+                    throw CocoaError(.fileReadCorruptFile)
+                }
+                try FileManager.default.createDirectory(at: assetsURL, withIntermediateDirectories: true)
+                try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
+            }.value
 
             let previousURL = photoURL
-            document.photoFileName = fileName
-            persist()
+            var candidate = document
+            let now = Date()
+            candidate.photoFileName = fileName
+            candidate.schemaVersion = max(candidate.schemaVersion, 6)
+            candidate.updatedAt = now
+            let result = await persist(
+                candidate,
+                entityKind: "asset",
+                entityID: fileName,
+                changedFields: ["photoFileName", "updatedAt"],
+                at: now,
+                precondition: .none
+            )
+            guard case .success = result else {
+                try? await Task.detached { try FileManager.default.removeItem(at: destinationURL) }.value
+                throw CocoaError(.fileWriteUnknown)
+            }
+            document = candidate
 
             if let previousURL, previousURL.path.hasPrefix(assetsURL.path), previousURL != destinationURL {
-                try? FileManager.default.removeItem(at: previousURL)
+                try? await Task.detached { try FileManager.default.removeItem(at: previousURL) }.value
             }
             message = "Photo updated"
         } catch {
@@ -394,65 +462,115 @@ final class PersonalizationStore: ObservableObject {
         }
     }
 
-    private func load(force: Bool = false) {
-        guard FileManager.default.fileExists(atPath: documentURL.path) else {
-            if recoveryState.requiresRecovery {
-                message = recoveryState.message
-            }
-            return
-        }
-
-        let modificationDate = fileModificationDate()
-        if !force, modificationDate == lastKnownModificationDate { return }
-
-        let data: Data
-        do {
-            data = try Data(contentsOf: documentURL)
-        } catch {
-            requireRecovery(preservedCopyName: nil, error: error)
-            return
-        }
-
-        do {
-            let loadedDocument = try decoder.decode(PersonalizationDocument.self, from: data)
-            document = loadedDocument
-            if var session = appearanceDraftSession {
-                session.observeCommitted(loadedDocument.resolvedAppearance)
-                appearanceDraftSession = session
-            }
-        } catch {
-            let preservedCopyName = (try? CorruptFileQuarantine.preserve(documentURL))?.lastPathComponent
-            requireRecovery(preservedCopyName: preservedCopyName, error: error)
-            return
-        }
-
-        lastKnownModificationDate = modificationDate
-        recoveryState = .ready
-        message = "Saved locally"
-    }
-
     private func persist() {
         guard canEdit else { return }
-        do {
-            try writeCanonicalDocument()
-        } catch {
-            message = "Save failed"
-            AppDiagnostics.failure(.personalizationSave, category: .storage, error: error)
+        let now = Date()
+        document.schemaVersion = max(document.schemaVersion, 6)
+        document.updatedAt = now
+        enqueue(
+            PendingWrite(
+                document: document,
+                entityKind: "personalization",
+                entityID: "personalization",
+                changedFields: ["personalization", "updatedAt"],
+                fieldClocks: ["personalization": now, "updatedAt": now],
+                precondition: .none,
+                completion: nil
+            )
+        )
+    }
+
+    private func persist(
+        _ candidate: PersonalizationDocument,
+        entityKind: String,
+        entityID: String,
+        changedFields: [String],
+        at date: Date,
+        precondition: WorkspacePatchPrecondition
+    ) async -> Result<WorkspaceTransactionResult, Error> {
+        await withCheckedContinuation { continuation in
+            enqueue(
+                PendingWrite(
+                    document: candidate,
+                    entityKind: entityKind,
+                    entityID: entityID,
+                    changedFields: changedFields,
+                    fieldClocks: Dictionary(uniqueKeysWithValues: changedFields.map { ($0, date) }),
+                    precondition: precondition,
+                    completion: { continuation.resume(returning: $0) }
+                )
+            )
         }
     }
 
-    private func writeCanonicalDocument() throws {
-        document.schemaVersion = max(document.schemaVersion, 6)
-        document.updatedAt = Date()
-        try write(document)
-        lastKnownModificationDate = fileModificationDate()
-        message = "Saved locally"
+    private func enqueue(_ write: PendingWrite) {
+        writes.append(write)
+        processNextWriteIfNeeded()
     }
 
-    private func write(_ candidate: PersonalizationDocument) throws {
-        try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
-        let data = try encoder.encode(candidate)
-        try data.write(to: documentURL, options: .atomic)
+    private func processNextWriteIfNeeded() {
+        guard !isWriting, let write = writes.first else { return }
+        isWriting = true
+        message = "Saving…"
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let result = try await session.commit(
+                    WorkspacePatchMutation(
+                        entityKind: write.entityKind,
+                        entityID: write.entityID,
+                        changedFields: write.changedFields,
+                        fieldClocks: write.fieldClocks,
+                        patch: .personalization(write.document),
+                        precondition: write.precondition,
+                        createdAt: write.document.updatedAt ?? Date()
+                    )
+                )
+                finish(write: write, result: .success(result), snapshot: result.snapshot)
+            } catch {
+                finish(write: write, result: .failure(error), snapshot: session.snapshot)
+            }
+        }
+    }
+
+    private func finish(
+        write: PendingWrite,
+        result: Result<WorkspaceTransactionResult, Error>,
+        snapshot: WorkspaceRepositorySnapshot
+    ) {
+        if !writes.isEmpty { writes.removeFirst() }
+        isWriting = false
+
+        switch result {
+        case .success:
+            lastWriteSucceeded = true
+            message = "Saved locally"
+            write.completion?(result)
+        case let .failure(error):
+            let abandoned = writes
+            writes.removeAll()
+            apply(snapshot.content.personalization)
+            message = "Save failed"
+            write.completion?(.failure(error))
+            for pending in abandoned {
+                pending.completion?(.failure(error))
+            }
+            AppDiagnostics.failure(.personalizationSave, category: .storage, error: error)
+        }
+
+        if writes.isEmpty {
+            apply(session.snapshot.content.personalization)
+        }
+        processNextWriteIfNeeded()
+    }
+
+    private func apply(_ loadedDocument: PersonalizationDocument) {
+        document = loadedDocument
+        if var draft = appearanceDraftSession {
+            draft.observeCommitted(loadedDocument.resolvedAppearance)
+            appearanceDraftSession = draft
+        }
+        recoveryState = .ready
     }
 
     private func updateAppearance(_ update: (inout AppearancePreferences) -> Void) {
@@ -470,38 +588,12 @@ final class PersonalizationStore: ObservableObject {
         appearanceDraftSession = AppearanceDraftSession(committed: document.resolvedAppearance)
     }
 
-    private func startWatching() {
-        watcher = Timer.scheduledTimer(withTimeInterval: 1.25, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                guard let self,
-                      self.fileModificationDate() != self.lastKnownModificationDate else { return }
-                self.load(force: true)
-            }
-        }
-        watcher?.tolerance = 0.25
-    }
-
-    private func fileModificationDate() -> Date? {
-        let attributes = try? FileManager.default.attributesOfItem(atPath: documentURL.path)
-        return attributes?[.modificationDate] as? Date
-    }
-
     private var canEdit: Bool {
         guard !recoveryState.requiresRecovery else {
             message = recoveryState.message
             return false
         }
         return true
-    }
-
-    private func requireRecovery(preservedCopyName: String?, error: Error) {
-        lastKnownModificationDate = fileModificationDate()
-        recoveryState = WorkspaceRecoveryState(
-            affectedComponents: [.personalization],
-            preservedCopyNames: preservedCopyName.map { [$0] } ?? []
-        )
-        message = recoveryState.message
-        AppDiagnostics.failure(.personalizationLoad, category: .storage, error: error)
     }
 
     #if !FOUNDER_OFFICE_DISTRIBUTION
@@ -546,19 +638,6 @@ final class PersonalizationStore: ObservableObject {
         }
     }
     #endif
-
-    private static let defaultDocument = PersonalizationDocument(
-        schemaVersion: 6,
-        displayName: "Founder's Office",
-        accent: .blue,
-        iconStyle: .system,
-        photoFileName: nil,
-        primaryGoal: nil,
-        milestones: [],
-        preferredName: nil,
-        workspaceName: "Founder's Office",
-        appearance: .manish()
-    )
 
     private static func nearestLegacyAccent(to color: RGB24Color) -> AccentPalette {
         AccentPalette.allCases.min { lhs, rhs in

@@ -287,6 +287,7 @@ private final class FirstRunOnboardingModel: ObservableObject {
     @Published var nameDraft: String
     @Published var storageMode: FirstRunStorageMode?
     @Published var firstMoveDraft = ""
+    @Published private(set) var isSavingFirstMove = false
     @Published var launchAtLoginEnabled: Bool
     @Published var launchError: String?
     @Published var moveError: String?
@@ -379,21 +380,33 @@ private final class FirstRunOnboardingModel: ObservableObject {
     }
 
     func addFirstMove() {
+        guard !isSavingFirstMove else { return }
         let title = firstMoveDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty else { return }
         moveError = nil
         let previousIDs = Set(taskStore.items.map(\.id))
         taskStore.add(title: title, status: .next, priority: .p1, dueAt: nil)
 
-        guard let added = taskStore.items.first(where: { !previousIDs.contains($0.id) }),
-              savedDocumentContains(id: added.id) else {
-            taskStore.reload()
-            moveError = "That Move was not saved. Your existing tasks were not changed. Try again or skip for now."
+        guard let added = taskStore.items.first(where: { !previousIDs.contains($0.id) }) else {
+            moveError = "That Move could not be created. Try again or skip for now."
             return
         }
 
-        stateStore.recordFirstMove(created: true)
-        go(to: .rehearsal)
+        isSavingFirstMove = true
+        Task { [weak self] in
+            guard let self else { return }
+            let writesSaved = await taskStore.waitForPendingWrites()
+            isSavingFirstMove = false
+            guard writesSaved,
+                  taskStore.session.snapshot.content.openLoops.items.contains(where: { $0.id == added.id }) else {
+                taskStore.reload()
+                moveError = "That Move was not saved. Your existing tasks were not changed. Try again or skip for now."
+                return
+            }
+
+            stateStore.recordFirstMove(created: true)
+            go(to: .rehearsal)
+        }
     }
 
     func skipFirstMove() {
@@ -422,14 +435,6 @@ private final class FirstRunOnboardingModel: ObservableObject {
     private func go(to newStep: FirstRunStep) {
         step = newStep
         stateStore.recordStep(newStep)
-    }
-
-    private func savedDocumentContains(id: UUID) -> Bool {
-        guard let data = try? Data(contentsOf: taskStore.jsonURL) else { return false }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        guard let document = try? decoder.decode(OpenLoopsDocument.self, from: data) else { return false }
-        return document.items.contains(where: { $0.id == id })
     }
 
     private static var suggestedPreferredName: String {
@@ -684,9 +689,13 @@ private struct FirstRunOnboardingView: View {
             case .firstMove:
                 Button("Skip for now", action: model.skipFirstMove)
                     .buttonStyle(SecondaryOnboardingButtonStyle())
+                    .disabled(model.isSavingFirstMove)
                 Button("Add Move", action: model.addFirstMove)
                     .buttonStyle(PrimaryOnboardingButtonStyle())
-                    .disabled(model.firstMoveDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(
+                        model.isSavingFirstMove
+                            || model.firstMoveDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    )
                     .keyboardShortcut(.defaultAction)
             case .rehearsal:
                 if !model.didRehearseNotch {

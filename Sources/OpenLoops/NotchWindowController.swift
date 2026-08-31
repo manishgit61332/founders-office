@@ -68,11 +68,10 @@ final class NotchWindowController {
     init(
         store: OpenLoopStore,
         personalization: PersonalizationStore? = nil,
-        cloudSyncBridge: CloudSyncBridge? = nil,
         calendarMode: CalendarProvider.Mode = .live
     ) {
         let runner = CodexRunner(founderOfficeURL: store.rootURL)
-        let personalizationStore = personalization ?? PersonalizationStore(rootURL: store.rootURL)
+        let personalizationStore = personalization ?? PersonalizationStore(session: store.session)
         let calendar = CalendarProvider(mode: calendarMode)
         self.store = store
         codexRunner = runner
@@ -82,8 +81,7 @@ final class NotchWindowController {
             store: store,
             personalization: personalizationStore,
             calendar: calendar,
-            assistant: runner,
-            cloud: cloudSyncBridge
+            assistant: runner
         )
         panel = NotchPanel(
             contentRect: NSRect(x: 0, y: 0, width: 720, height: 350),
@@ -135,9 +133,12 @@ final class NotchWindowController {
 
     var isVisible: Bool { state != .hidden }
     var hasUnsavedAppearanceChanges: Bool { personalization.hasUnsavedAppearanceChanges }
+    var hasPendingWorkspaceWrites: Bool { store.hasPendingWrites || personalization.hasPendingWrites }
 
-    func resolveUnsavedAppearanceForTermination() -> Bool {
-        guard personalization.hasUnsavedAppearanceChanges else { return true }
+    func resolveUnsavedAppearanceForTermination() async -> Bool {
+        guard personalization.hasUnsavedAppearanceChanges else {
+            return await finishPendingWritesBeforeTermination()
+        }
         if state == .hidden || state == .closing {
             show(manual: true)
         }
@@ -164,22 +165,40 @@ final class NotchWindowController {
 
         switch choice {
         case .save:
-            let result = personalization.saveAppearanceChanges()
+            let result = await personalization.saveAppearanceChanges()
             let decision = AppearanceTerminationPolicy.decision(for: choice, saveResult: result)
             if decision == .terminate {
                 presentation.clearInteractions()
-                return true
+                return await finishPendingWritesBeforeTermination()
             }
             presentation.transients.endScoped(to: alert.window)
             return false
         case .discard:
             personalization.discardAppearanceChanges()
             presentation.clearInteractions()
-            return true
+            return await finishPendingWritesBeforeTermination()
         case .cancel:
             presentation.transients.endScoped(to: alert.window)
             return false
         }
+    }
+
+    private func finishPendingWritesBeforeTermination() async -> Bool {
+        async let movesSaved = store.waitForPendingWrites()
+        async let personalizationSaved = personalization.waitForPendingWrites()
+        guard await movesSaved, await personalizationSaved else {
+            if state == .hidden || state == .closing {
+                show(manual: true)
+            }
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = "Founder’s Office is still saving"
+            alert.informativeText = "A workspace change could not be safely committed. Review the save message and try again before quitting."
+            alert.addButton(withTitle: "Keep Editing")
+            alert.runModal()
+            return false
+        }
+        return true
     }
 
     func prepareForTermination() {

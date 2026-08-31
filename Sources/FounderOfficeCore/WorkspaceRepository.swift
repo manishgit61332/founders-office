@@ -79,6 +79,57 @@ public struct WorkspaceMutation: Codable, Sendable {
     }
 }
 
+/// A component-scoped local edit applied to the repository's latest snapshot.
+///
+/// Mac UI stores use this boundary instead of constructing stale whole-workspace
+/// replacements. The repository actor resolves the latest durable revision and
+/// commits the patch, receipt, and outbox operation in one SQLite transaction.
+public enum WorkspaceContentPatch: Sendable {
+    case openLoops(OpenLoopsDocument)
+    case personalization(PersonalizationDocument)
+}
+
+public enum WorkspacePatchPrecondition: Sendable {
+    case none
+    /// Appearance drafts conflict only when Appearance itself changed, not when
+    /// an unrelated Move advanced the workspace revision.
+    case appearanceRevision(Date?)
+}
+
+public struct WorkspacePatchMutation: Sendable {
+    public var operationID: UUID
+    public var idempotencyKey: WorkspaceIdempotencyKey
+    public var entityKind: String
+    public var entityID: String
+    public var changedFields: [String]
+    public var fieldClocks: [String: Date]
+    public var patch: WorkspaceContentPatch
+    public var precondition: WorkspacePatchPrecondition
+    public var createdAt: Date
+
+    public init(
+        operationID: UUID = UUID(),
+        idempotencyKey: WorkspaceIdempotencyKey = WorkspaceIdempotencyKey(),
+        entityKind: String,
+        entityID: String,
+        changedFields: [String],
+        fieldClocks: [String: Date],
+        patch: WorkspaceContentPatch,
+        precondition: WorkspacePatchPrecondition = .none,
+        createdAt: Date = Date()
+    ) {
+        self.operationID = operationID
+        self.idempotencyKey = idempotencyKey
+        self.entityKind = entityKind
+        self.entityID = entityID
+        self.changedFields = changedFields
+        self.fieldClocks = fieldClocks
+        self.patch = patch
+        self.precondition = precondition
+        self.createdAt = createdAt
+    }
+}
+
 public struct WorkspaceRepositorySnapshot: Sendable {
     public var workspaceID: UUID
     public var writerID: WorkspaceWriterID
@@ -188,6 +239,7 @@ public enum WorkspaceRepositoryError: Error, Equatable, Sendable {
     case unreadableLegacyWorkspace(component: String)
     case invalidMutation(reason: String)
     case revisionConflict(expected: WorkspaceRevision, actual: WorkspaceRevision)
+    case componentConflict(component: String)
     case idempotencyKeyReused
     case operationIDReused
     case exportDestinationExists
@@ -219,6 +271,8 @@ extension WorkspaceRepositoryError: LocalizedError {
             return "The workspace change is invalid: \(reason)"
         case let .revisionConflict(expected, actual):
             return "The workspace changed while editing (expected revision \(expected.rawValue), current \(actual.rawValue))."
+        case let .componentConflict(component):
+            return "The \(component) settings changed on another device while editing."
         case .idempotencyKeyReused:
             return "That retry key was already used for a different workspace change."
         case .operationIDReused:

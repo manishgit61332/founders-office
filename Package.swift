@@ -32,7 +32,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "OpenLoops",
-            dependencies: ["FounderOfficeCore", "FounderOfficeCloud"],
+            dependencies: ["FounderOfficeCore"],
             path: "Sources/OpenLoops"
         ),
         .executableTarget(
@@ -55,6 +55,15 @@ let package = Package(
                 .product(name: "Testing", package: "swift-testing")
             ],
             path: "Tests/FounderOfficeCloudTests"
+        ),
+        .testTarget(
+            name: "OpenLoopsStorageTests",
+            dependencies: [
+                "OpenLoops",
+                "FounderOfficeCore",
+                .product(name: "Testing", package: "swift-testing")
+            ],
+            path: "Tests/OpenLoopsStorageTests"
         )
     ]
 )

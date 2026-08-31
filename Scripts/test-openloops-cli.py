@@ -38,6 +38,8 @@ def main() -> None:
         root = Path(directory)
         openloops.JSON_PATH = root / "openloops.json"
         openloops.CONTEXT_PATH = root / "OPEN_LOOPS_CONTEXT.md"
+        openloops.DATABASE_PATH = root / "founders-office.sqlite3"
+        openloops.GENERATED_PATH = root / "Generated"
         document = {
             "schemaVersion": 2,
             "updatedAt": "2026-08-31T00:00:00Z",
@@ -103,6 +105,21 @@ def main() -> None:
             planning_args(query="app canonical", due="2026-09-15"),
         )
         assert openloops.JSON_PATH.read_bytes() == persisted_bytes
+
+        generated = openloops.GENERATED_PATH / "revision-000000000004"
+        generated.mkdir(parents=True)
+        projection_bytes = openloops.JSON_PATH.read_bytes()
+        (generated / "openloops.json").write_bytes(projection_bytes)
+        openloops.DATABASE_PATH.write_bytes(b"sqlite marker")
+        projected = openloops.load_document()
+        assert projected["items"][0]["priority"] == "P0"
+        try:
+            openloops.command_edit(projected, planning_args(priority="P3"))
+        except SystemExit as error:
+            assert "Generated JSON is read-only" in str(error)
+        else:
+            raise AssertionError("Transactional workspaces must reject projection mutations")
+        assert openloops.JSON_PATH.read_bytes() == projection_bytes
 
 
 if __name__ == "__main__":

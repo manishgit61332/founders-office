@@ -57,6 +57,43 @@ public actor SQLiteWorkspaceRepository: WorkspaceRepository {
         }
     }
 
+    /// Applies a local component patch to the latest durable snapshot. Because
+    /// this method performs no suspension before SQLite commits, concurrent UI
+    /// requests are serialized by the repository actor in arrival order.
+    public func transact(patch request: WorkspacePatchMutation) throws -> WorkspaceTransactionResult {
+        let current = try database.loadSnapshot()
+        switch request.precondition {
+        case .none:
+            break
+        case let .appearanceRevision(expected):
+            guard current.content.personalization.resolvedAppearance.updatedAt == expected else {
+                throw WorkspaceRepositoryError.componentConflict(component: "Appearance")
+            }
+        }
+
+        var replacement = current.content
+        switch request.patch {
+        case let .openLoops(document):
+            replacement.openLoops = document
+        case let .personalization(document):
+            replacement.personalization = document
+        }
+
+        return try transact(
+            expectedRevision: current.revision,
+            mutation: WorkspaceMutation(
+                operationID: request.operationID,
+                idempotencyKey: request.idempotencyKey,
+                entityKind: request.entityKind,
+                entityID: request.entityID,
+                changedFields: request.changedFields,
+                fieldClocks: request.fieldClocks,
+                replacement: replacement,
+                createdAt: request.createdAt
+            )
+        )
+    }
+
     public func changes() -> AsyncStream<WorkspaceChange> {
         let identifier = UUID()
         return AsyncStream(bufferingPolicy: .bufferingNewest(32)) { continuation in
@@ -100,6 +137,67 @@ public actor SQLiteWorkspaceRepository: WorkspaceRepository {
             generatedAt: generatedAt,
             calendar: calendar
         )
+    }
+
+    /// Ensures one immutable generated projection exists for the current
+    /// revision. Existing revision directories are never replaced.
+    @discardableResult
+    public func ensureProjection(
+        in projectionsRootURL: URL,
+        generatedAt: Date = Date(),
+        calendar: Calendar = .current
+    ) throws -> URL {
+        let snapshot = try database.loadSnapshot()
+        latestSnapshot = snapshot
+        let revisionName = String(format: "revision-%012lld", snapshot.revision.rawValue)
+        let destinationURL = projectionsRootURL.appendingPathComponent(revisionName, isDirectory: true)
+        if FileManager.default.fileExists(atPath: destinationURL.path) {
+            try Self.pruneGeneratedProjections(in: projectionsRootURL, keeping: 2)
+            return destinationURL
+        }
+        _ = try Self.writeExport(
+            snapshot: snapshot,
+            to: destinationURL,
+            generatedAt: generatedAt,
+            calendar: calendar
+        )
+        try Self.pruneGeneratedProjections(in: projectionsRootURL, keeping: 2)
+        return destinationURL
+    }
+
+    private static func pruneGeneratedProjections(
+        in rootURL: URL,
+        keeping retentionCount: Int
+    ) throws {
+        let fileManager = FileManager.default
+        let keys: Set<URLResourceKey> = [.isDirectoryKey, .isSymbolicLinkKey]
+        let candidates: [URL]
+        do {
+            candidates = try fileManager.contentsOfDirectory(
+                at: rootURL,
+                includingPropertiesForKeys: Array(keys),
+                options: [.skipsHiddenFiles]
+            )
+            .filter { url in
+                guard url.lastPathComponent.range(
+                    of: #"^revision-[0-9]{12}$"#,
+                    options: .regularExpression
+                ) != nil,
+                let values = try? url.resourceValues(forKeys: keys) else { return false }
+                return values.isDirectory == true && values.isSymbolicLink != true
+            }
+            .sorted { $0.lastPathComponent > $1.lastPathComponent }
+        } catch {
+            throw WorkspaceRepositoryError.exportFailed(operation: "inspect_generated_projections")
+        }
+
+        for staleURL in candidates.dropFirst(max(1, retentionCount)) {
+            do {
+                try fileManager.removeItem(at: staleURL)
+            } catch {
+                throw WorkspaceRepositoryError.exportFailed(operation: "prune_generated_projection")
+            }
+        }
     }
 
     private func removeChangeContinuation(_ identifier: UUID) {

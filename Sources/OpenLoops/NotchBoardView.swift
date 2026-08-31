@@ -1445,26 +1445,23 @@ struct NotchBoardView: View {
 
     @discardableResult
     private func updatePriority(of item: OpenLoop, to priority: LoopPriority) -> Bool {
-        let result = withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
-            store.updatePlanning(
+        Task {
+            let result = await store.updatePlanning(
                 id: item.id,
                 priorityChange: .set(priority),
                 deadlineChange: .unchanged
             )
+            switch result {
+            case .saved:
+                moveGroupingErrorMessage = nil
+                NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+            case .unchanged:
+                moveGroupingErrorMessage = nil
+            case let .failed(message):
+                moveGroupingErrorMessage = message
+            }
         }
-
-        switch result {
-        case .saved:
-            moveGroupingErrorMessage = nil
-            NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
-            return true
-        case .unchanged:
-            moveGroupingErrorMessage = nil
-            return true
-        case let .failed(message):
-            moveGroupingErrorMessage = message
-            return false
-        }
+        return true
     }
 
     private func compactHistoryEmptyState(title: String, message: String) -> some View {
@@ -1991,11 +1988,13 @@ struct NotchBoardView: View {
                                 personalization.useLatestAppearance()
                             }
                             .buttonStyle(HeaderActionButtonStyle())
+                            .disabled(personalization.isSavingAppearance)
                             Button("Keep Mine") {
                                 presentation.closeNativeColorPanels()
-                                _ = personalization.keepMineAppearance()
+                                Task { _ = await personalization.keepMineAppearance() }
                             }
                             .buttonStyle(HeaderActionButtonStyle(isEmphasized: true))
+                            .disabled(personalization.isSavingAppearance)
                         }
                     }
                     .accessibilityElement(children: .contain)
@@ -2013,12 +2012,12 @@ struct NotchBoardView: View {
                         Button("Discard", action: discardAppearanceDraft)
                             .buttonStyle(HeaderActionButtonStyle())
                             .fixedSize(horizontal: true, vertical: false)
-                            .disabled(!personalization.hasUnsavedAppearanceChanges)
+                            .disabled(!personalization.hasUnsavedAppearanceChanges || personalization.isSavingAppearance)
                             .accessibilityIdentifier("appearance.discard")
                         Button("Save Changes", action: saveAppearanceDraft)
                             .buttonStyle(HeaderActionButtonStyle(isEmphasized: true))
                             .fixedSize(horizontal: true, vertical: false)
-                            .disabled(!personalization.hasUnsavedAppearanceChanges)
+                            .disabled(!personalization.hasUnsavedAppearanceChanges || personalization.isSavingAppearance)
                             .keyboardShortcut(.defaultAction)
                             .accessibilityIdentifier("appearance.save")
                     }
@@ -2702,6 +2701,10 @@ struct NotchBoardView: View {
     }
 
     private func savePlanningEditor() {
+        Task { await savePlanningEditorAndWait() }
+    }
+
+    private func savePlanningEditorAndWait() async {
         guard let planningItemID else {
             closePlanningEditor()
             return
@@ -2719,7 +2722,7 @@ struct NotchBoardView: View {
             deadlineChange = .clear
         }
 
-        switch store.updatePlanning(
+        switch await store.updatePlanning(
             id: planningItemID,
             priorityChange: priorityChange,
             deadlineChange: deadlineChange
@@ -2989,8 +2992,12 @@ struct NotchBoardView: View {
     }
 
     private func saveAppearanceDraft() {
+        Task { await saveAppearanceDraftAndWait() }
+    }
+
+    private func saveAppearanceDraftAndWait() async {
         presentation.closeNativeColorPanels()
-        switch personalization.saveAppearanceChanges() {
+        switch await personalization.saveAppearanceChanges() {
         case .saved:
             NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
         case .unchanged, .conflict, .failed:
@@ -3012,8 +3019,12 @@ struct NotchBoardView: View {
     }
 
     private func saveAppearanceAndContinue() {
+        Task { await saveAppearanceAndContinueAfterCommit() }
+    }
+
+    private func saveAppearanceAndContinueAfterCommit() async {
         guard let action = pendingAppearanceExit else { return }
-        switch personalization.saveAppearanceChanges() {
+        switch await personalization.saveAppearanceChanges() {
         case .saved, .unchanged:
             pendingAppearanceExit = nil
             performAppearanceExit(action)
