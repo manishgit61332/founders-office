@@ -202,6 +202,17 @@ struct NotchBoardView: View {
         #endif
     }()
     @State private var moveGroupingErrorMessage: String?
+    @State private var priorityDropTarget: LoopPriority? = {
+        #if FOUNDER_OFFICE_DISTRIBUTION
+        nil
+        #else
+        ProcessInfo.processInfo.environment["OPENLOOPS_PREVIEW_PRIORITY_DROP_TARGET"]
+            .flatMap(LoopPriority.init(rawValue:))
+        #endif
+    }()
+    @State private var priorityLaneFrames: [LoopPriority: CGRect] = [:]
+    @State private var priorityDragInteractionLease: UUID?
+    @StateObject private var priorityDragAutoScroller = PriorityDragAutoScroller()
     @State private var selectedCalendarDay = Calendar.current.startOfDay(for: Date())
     @State private var isCreatingCalendarEvent = {
         #if FOUNDER_OFFICE_DISTRIBUTION
@@ -404,9 +415,20 @@ struct NotchBoardView: View {
                 personalization.beginAppearanceEditing()
             }
             #if !FOUNDER_OFFICE_DISTRIBUTION
-            if ProcessInfo.processInfo.environment["OPENLOOPS_PREVIEW_PLANNING_EDITOR"] == "1",
-               let previewItem = store.items(in: selectedStatus).first {
-                presentPlanningEditor(for: previewItem)
+            if ProcessInfo.processInfo.environment["OPENLOOPS_PREVIEW_PLANNING_EDITOR"] == "1" {
+                let previewItem: OpenLoop?
+                if let rawID = ProcessInfo.processInfo.environment[
+                    "OPENLOOPS_PREVIEW_PLANNING_EDITOR_ID"
+                ], let id = UUID(uuidString: rawID) {
+                    previewItem = store.items.first(where: {
+                        $0.id == id && $0.deletedAt == nil
+                    })
+                } else {
+                    previewItem = store.items(in: selectedStatus).first
+                }
+                if let previewItem {
+                    presentPlanningEditor(for: previewItem)
+                }
             }
             if isCreatingCalendarEvent {
                 isCreatingCalendarEvent = false
@@ -452,6 +474,15 @@ struct NotchBoardView: View {
             }
             calendarEventDestinationID = calendarProvider.recommendedDestinationID
                 ?? destinations.first?.id
+        }
+        .onChange(of: selectedSection) { _, _ in
+            finishPriorityDrag()
+        }
+        .onChange(of: selectedStatus) { _, _ in
+            finishPriorityDrag()
+        }
+        .onChange(of: moveGroupingLens) { _, _ in
+            finishPriorityDrag()
         }
         .onDisappear(perform: releaseTransientInteractions)
     }
@@ -1244,6 +1275,58 @@ struct NotchBoardView: View {
                             )
                         }
                     }
+                    .background {
+                        PriorityScrollViewResolver { scrollView in
+                            priorityDragAutoScroller.attach(scrollView)
+                        }
+                        .frame(width: 1, height: 1)
+                        .allowsHitTesting(false)
+                    }
+                }
+                .coordinateSpace(name: "priority-move-scroll")
+                .accessibilityIdentifier("moves.priority.scroll")
+                .accessibilityValue(
+                    priorityDragInteractionLease == nil ? "Idle" : "Dragging"
+                )
+                .onPreferenceChange(PriorityLaneFramePreferenceKey.self) { frames in
+                    priorityLaneFrames = frames
+                    guard let pointerY = priorityDragAutoScroller.pointerY else { return }
+                    setPriorityDropTarget(
+                        PriorityDropTargetPolicy.target(
+                            pointerY: pointerY,
+                            lanes: frames.map { priority, frame in
+                                PriorityDropLane(
+                                    priority: priority,
+                                    minY: frame.minY,
+                                    maxY: frame.maxY
+                                )
+                            },
+                            current: priorityDropTarget
+                        )
+                    )
+                }
+                .onDrop(
+                    of: [UTType.founderOfficeMove],
+                    delegate: PriorityBoardDropDelegate(
+                        laneFrames: priorityLaneFrames,
+                        activeTarget: priorityDropTarget,
+                        autoScroller: priorityDragAutoScroller,
+                        onTargetChange: setPriorityDropTarget,
+                        onDropMove: { moveID, priority in
+                            handlePriorityDrop(moveID, target: priority)
+                        }
+                    )
+                )
+                .onDisappear(perform: finishPriorityDrag)
+                .overlay(alignment: .topLeading) {
+                    #if !FOUNDER_OFFICE_DISTRIBUTION
+                    Color.clear
+                        .frame(width: 1, height: 1)
+                        .accessibilityElement()
+                        .accessibilityLabel("Move persistence")
+                        .accessibilityValue(store.syncMessage)
+                        .accessibilityIdentifier("moves.persistence")
+                    #endif
                 }
             } else {
                 let groups = movePresentation.activeGroups.compactMap { group -> ActiveMoveGroup? in
@@ -1307,6 +1390,7 @@ struct NotchBoardView: View {
     private func priorityMoveSection(priority: LoopPriority, items: [OpenLoop]) -> some View {
         let laneColor = priorityColor(priority)
         let laneShape = RoundedRectangle(cornerRadius: contentRadius, style: .continuous)
+        let isDropTarget = priorityDropTarget == priority
 
         return VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 7) {
@@ -1341,7 +1425,24 @@ struct NotchBoardView: View {
                 )
             }
         }
-        .background(contentSurface, in: laneShape)
+        .background {
+            ZStack {
+                laneShape.fill(contentSurface)
+                if isDropTarget {
+                    laneShape.fill(laneColor.opacity(0.11))
+                }
+            }
+        }
+        .background {
+            GeometryReader { proxy in
+                Color.clear.preference(
+                    key: PriorityLaneFramePreferenceKey.self,
+                    value: [
+                        priority: proxy.frame(in: .named("priority-move-scroll"))
+                    ]
+                )
+            }
+        }
         .overlay(alignment: .leading) {
             UnevenRoundedRectangle(
                 topLeadingRadius: contentRadius,
@@ -1351,15 +1452,33 @@ struct NotchBoardView: View {
                 style: .continuous
             )
             .fill(laneColor)
-            .frame(width: 5)
+            .frame(width: isDropTarget ? 7 : 5)
         }
-        .overlay(laneShape.stroke(laneColor.opacity(0.25), lineWidth: 1))
-        .dropDestination(for: String.self) { payloads, _ in
-            handlePriorityDrop(payloads, target: priority)
+        .overlay(
+            laneShape.stroke(
+                laneColor.opacity(isDropTarget ? 0.92 : 0.25),
+                lineWidth: isDropTarget ? 1.6 : 1
+            )
+        )
+        .overlay {
+            if isDropTarget {
+                laneShape
+                    .inset(by: 3)
+                    .stroke(Color.white.opacity(0.11), lineWidth: 0.8)
+            }
         }
+        .scaleEffect(isDropTarget && !effectiveReduceMotion ? 1.008 : 1)
+        .shadow(
+            color: isDropTarget ? laneColor.opacity(0.24) : Color.clear,
+            radius: isDropTarget ? 13 : 0,
+            y: isDropTarget ? 4 : 0
+        )
+        .zIndex(isDropTarget ? 1 : 0)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(priority.title) priority, \(items.count) Moves")
+        .accessibilityValue(isDropTarget ? "Drop target" : "")
         .accessibilityHint("Drop a Move here to set its priority to \(priority.title)")
+        .accessibilityIdentifier("moves.priorityLane.\(priority.rawValue.lowercased())")
     }
 
     @ViewBuilder
@@ -1481,7 +1600,12 @@ struct NotchBoardView: View {
                     onEditPlanning: { presentPlanningEditor(for: item) },
                     onDelete: { deleteMove(item) }
                 )
-                .modifier(ConditionalMoveDragModifier(id: isDraggable ? item.id : nil))
+                .modifier(
+                    ConditionalMoveDragModifier(
+                        id: isDraggable ? item.id : nil,
+                        onDragStarted: beginPriorityDrag
+                    )
+                )
                 #else
                 LoopRow(
                     item: item,
@@ -1498,7 +1622,12 @@ struct NotchBoardView: View {
                     onRunWithCodex: { codexRunner.run(item) },
                     onDelete: { deleteMove(item) }
                 )
-                .modifier(ConditionalMoveDragModifier(id: isDraggable ? item.id : nil))
+                .modifier(
+                    ConditionalMoveDragModifier(
+                        id: isDraggable ? item.id : nil,
+                        onDragStarted: beginPriorityDrag
+                    )
+                )
                 #endif
 
                 if index < items.count - 1 {
@@ -1518,16 +1647,59 @@ struct NotchBoardView: View {
         )
     }
 
-    private func handlePriorityDrop(_ payloads: [String], target: LoopPriority) -> Bool {
-        guard let rawID = payloads.first,
-              let id = UUID(uuidString: rawID),
-              let item = store.items.first(where: {
+    private func handlePriorityDrop(_ id: UUID, target: LoopPriority) -> Bool {
+        guard let item = store.items.first(where: {
                   $0.id == id && $0.deletedAt == nil && $0.status == selectedStatus
               })
         else { return false }
 
         guard item.priority != target else { return true }
         return updatePriority(of: item, to: target)
+    }
+
+    private func beginPriorityDrag(_ id: UUID) {
+        guard store.items.contains(where: {
+            $0.id == id && $0.deletedAt == nil && $0.status == selectedStatus
+        }) else { return }
+
+        finishPriorityDrag()
+        priorityDragInteractionLease = presentation.beginInteraction("move-priority-drag")
+        priorityDragAutoScroller.beginSession(
+            moveID: id,
+            onEnd: handlePriorityDragSessionEnded
+        )
+    }
+
+    private func setPriorityDropTarget(_ target: LoopPriority?) {
+        guard priorityDropTarget != target else { return }
+        if effectiveReduceMotion {
+            priorityDropTarget = target
+        } else {
+            withAnimation(.spring(response: 0.20, dampingFraction: 0.84)) {
+                priorityDropTarget = target
+            }
+        }
+        if target != nil {
+            NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+        }
+    }
+
+    private func finishPriorityDrag() {
+        priorityDragAutoScroller.endSession()
+        priorityDragAutoScroller.stop()
+        priorityDropTarget = nil
+        releasePriorityDragInteraction()
+    }
+
+    private func handlePriorityDragSessionEnded() {
+        priorityDropTarget = nil
+        releasePriorityDragInteraction()
+    }
+
+    private func releasePriorityDragInteraction() {
+        guard let lease = priorityDragInteractionLease else { return }
+        presentation.endInteraction(lease)
+        priorityDragInteractionLease = nil
     }
 
     @discardableResult
@@ -3003,6 +3175,7 @@ struct NotchBoardView: View {
     }
 
     private func releaseTransientInteractions() {
+        finishPriorityDrag()
         closeCalendarEventEditor()
         closePlanningEditor()
         releaseFinishDateInteraction()
@@ -3753,11 +3926,36 @@ private struct CalendarEventEditor: View {
 
 private struct ConditionalMoveDragModifier: ViewModifier {
     let id: UUID?
+    let onDragStarted: (UUID) -> Void
 
     @ViewBuilder
     func body(content: Content) -> some View {
         if let id {
-            content.draggable(id.uuidString)
+            content.onDrag {
+                onDragStarted(id)
+                let provider = NSItemProvider()
+                provider.registerDataRepresentation(
+                    forTypeIdentifier: UTType.founderOfficeMove.identifier,
+                    visibility: .ownProcess
+                ) { completion in
+                    completion(Data(id.uuidString.utf8), nil)
+                    return nil
+                }
+                return provider
+            } preview: {
+                content
+                    .frame(width: 510, height: 58)
+                    .background(
+                        .regularMaterial,
+                        in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .stroke(Color.white.opacity(0.16), lineWidth: 1)
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .shadow(color: Color.black.opacity(0.38), radius: 16, y: 8)
+            }
                 .help("Drag to change priority")
         } else {
             content
@@ -3804,6 +4002,7 @@ private struct LoopRow: View {
                 isHovered = hovering
             }
         }
+        .accessibilityIdentifier("move.row.\(item.id.uuidString.lowercased())")
     }
 
     private var completionButton: some View {

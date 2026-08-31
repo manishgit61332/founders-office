@@ -402,6 +402,68 @@ final class OpenLoopStore: ObservableObject {
 
     #if !FOUNDER_OFFICE_DISTRIBUTION
     private func applyPreviewOverrides() {
+        if ProcessInfo.processInfo.environment["OPENLOOPS_UI_TEST_LONG_PRIORITY_FIXTURE"] == "1",
+           items.isEmpty {
+            let now = Date()
+            let criticalMoves = (0..<14).map { index in
+                let timestamp = now.addingTimeInterval(-Double(index))
+                return OpenLoop(
+                    id: UUID(
+                        uuidString: String(
+                            format: "aaaaaaaa-bbbb-cccc-dddd-%012x",
+                            index + 1
+                        )
+                    )!,
+                    title: "Priority drag fixture \(index + 1)",
+                    details: "Synthetic overflowing priority lane",
+                    status: .doing,
+                    previousStatus: nil,
+                    priority: .p0,
+                    dueAt: nil,
+                    createdAt: timestamp,
+                    updatedAt: timestamp,
+                    completedAt: nil,
+                    deletedAt: nil,
+                    source: "ui-test",
+                    priorityUpdatedAt: timestamp,
+                    dueAtUpdatedAt: timestamp
+                )
+            }
+            let lowerLaneMoves = LoopPriority.allCases.dropFirst().enumerated().map { index, priority in
+                let timestamp = now.addingTimeInterval(-Double(100 + index))
+                return OpenLoop(
+                    id: UUID(
+                        uuidString: String(
+                            format: "eeeeeeee-ffff-cccc-dddd-%012x",
+                            index + 1
+                        )
+                    )!,
+                    title: "\(priority.title) lane anchor",
+                    details: "Synthetic drop destination",
+                    status: .doing,
+                    previousStatus: nil,
+                    priority: priority,
+                    dueAt: nil,
+                    createdAt: timestamp,
+                    updatedAt: timestamp,
+                    completedAt: nil,
+                    deletedAt: nil,
+                    source: "ui-test",
+                    priorityUpdatedAt: timestamp,
+                    dueAtUpdatedAt: timestamp
+                )
+            }
+            items = criticalMoves + lowerLaneMoves
+            enqueueCurrentDocument(
+                entityKind: "move",
+                entityID: criticalMoves[0].id.uuidString.lowercased(),
+                changedFields: [
+                    "title", "details", "status", "priority", "dueAt", "createdAt", "updatedAt"
+                ],
+                at: now
+            )
+        }
+
         if ProcessInfo.processInfo.environment["OPENLOOPS_UI_TEST_FIXTURE"] == "1",
            items.isEmpty {
             let now = Date()

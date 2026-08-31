@@ -163,6 +163,83 @@ final class FoundersOfficeMacUITests: XCTestCase {
         XCTAssertFalse(String(describing: move.value).contains("no deadline"))
     }
 
+    func testPriorityDragTargetIsExposedAsOneMagneticDestination() {
+        let app = launch(
+            root: makeTemporaryRoot(),
+            environment: [
+                "OPENLOOPS_UI_TEST_FIXTURE": "1",
+                "OPENLOOPS_PREVIEW_SECTION": "loops",
+                "OPENLOOPS_PREVIEW_MOVE_GROUPING": "priority",
+                "OPENLOOPS_PREVIEW_PRIORITY_DROP_TARGET": "P1"
+            ]
+        )
+
+        let priorityScroll = app.descendants(matching: .any)["moves.priority.scroll"]
+        XCTAssertTrue(priorityScroll.waitForExistence(timeout: 4))
+        let targetLane = app.descendants(matching: .any)["moves.priorityLane.p1"]
+        XCTAssertTrue(targetLane.waitForExistence(timeout: 2))
+        XCTAssertTrue(String(describing: targetLane.value).contains("Drop target"))
+        XCTAssertFalse(
+            String(describing: app.descendants(matching: .any)["moves.priorityLane.p0"].value)
+                .contains("Drop target")
+        )
+    }
+
+    func testPriorityDragAutoScrollsToAHiddenLaneAndPersistsTheDrop() {
+        let root = makeTemporaryRoot()
+        let draggedMoveID = "aaaaaaaa-bbbb-cccc-dddd-000000000001"
+        let environment = [
+            "OPENLOOPS_UI_TEST_LONG_PRIORITY_FIXTURE": "1",
+            "OPENLOOPS_PREVIEW_SECTION": "loops",
+            "OPENLOOPS_PREVIEW_MOVE_GROUPING": "priority"
+        ]
+        var app = launch(root: root, environment: environment)
+
+        let priorityScroll = app.descendants(matching: .any)["moves.priority.scroll"]
+        XCTAssertTrue(priorityScroll.waitForExistence(timeout: 4))
+        waitForValue("Saved", of: app.descendants(matching: .any)["moves.persistence"])
+
+        let row = app.descendants(matching: .any)["move.row.\(draggedMoveID)"]
+        XCTAssertTrue(row.waitForExistence(timeout: 3))
+        XCTAssertTrue(row.isHittable)
+        XCTAssertFalse(
+            app.descendants(matching: .any)["moves.priorityLane.p3"].isHittable,
+            "The low-priority lane must begin below the viewport so this tests auto-scroll."
+        )
+
+        let source = row.coordinate(withNormalizedOffset: CGVector(dx: 0.45, dy: 0.5))
+        let lowerEdge = priorityScroll.coordinate(
+            withNormalizedOffset: CGVector(dx: 0.5, dy: 0.96)
+        )
+        source.click(
+            forDuration: 0.45,
+            thenDragTo: lowerEdge,
+            withVelocity: .slow,
+            thenHoldForDuration: 3.2
+        )
+
+        let planningButton = app.buttons["Edit Priority drag fixture 1 priority and deadline"]
+        XCTAssertTrue(planningButton.waitForExistence(timeout: 4))
+        waitForValueContaining("P3", of: planningButton)
+        waitForValue("Saved", of: app.descendants(matching: .any)["moves.persistence"])
+        XCTAssertTrue(String(describing: priorityScroll.value).contains("Idle"))
+
+        app.terminate()
+        app = launch(
+            root: root,
+            environment: environment.merging([
+                "OPENLOOPS_PREVIEW_PLANNING_EDITOR": "1",
+                "OPENLOOPS_PREVIEW_PLANNING_EDITOR_ID": draggedMoveID
+            ]) { current, _ in current }
+        )
+
+        XCTAssertTrue(
+            app.descendants(matching: .any)["movePlanning.editor"]
+                .waitForExistence(timeout: 4)
+        )
+        XCTAssertTrue(app.buttons["movePlanning.priority.p3"].isSelected)
+    }
+
     func testCalendarCreationUsesTheTopLayerEditor() {
         let app = launch(
             root: makeTemporaryRoot(),
@@ -281,6 +358,30 @@ final class FoundersOfficeMacUITests: XCTestCase {
             panel.waitForExistence(timeout: 3) ? panel : nil,
             "The required native colour panel was not exposed to UI automation."
         )
+    }
+
+    private func waitForValue(
+        _ expectedValue: String,
+        of element: XCUIElement,
+        timeout: TimeInterval = 5
+    ) {
+        XCTAssertTrue(element.waitForExistence(timeout: timeout))
+        let predicate = NSPredicate(format: "value == %@", expectedValue)
+        let expectation = expectation(for: predicate, evaluatedWith: element)
+        wait(for: [expectation], timeout: timeout)
+    }
+
+    private func waitForValueContaining(
+        _ expectedFragment: String,
+        of element: XCUIElement,
+        timeout: TimeInterval = 5
+    ) {
+        let predicate = NSPredicate(
+            format: "value CONTAINS[c] %@",
+            expectedFragment
+        )
+        let expectation = expectation(for: predicate, evaluatedWith: element)
+        wait(for: [expectation], timeout: timeout)
     }
 
     private func makeTemporaryRoot() -> URL {
