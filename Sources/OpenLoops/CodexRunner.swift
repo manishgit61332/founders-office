@@ -33,6 +33,7 @@ enum CodexRunState {
 @MainActor
 final class CodexRunner: ObservableObject {
     @Published private(set) var state: CodexRunState = .idle
+    @Published private(set) var lastSuccessfulRunAt: Date?
 
     let founderOfficeURL: URL
 #if !FOUNDER_OFFICE_DISTRIBUTION
@@ -122,6 +123,7 @@ final class CodexRunner: ObservableObject {
 
                     if completedProcess.terminationStatus == 0,
                        FileManager.default.fileExists(atPath: summaryURL.path) {
+                        self.lastSuccessfulRunAt = Date()
                         self.state = .finished(title: item.title, summaryURL: summaryURL)
                         NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
                     } else {

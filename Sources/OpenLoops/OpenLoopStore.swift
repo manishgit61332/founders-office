@@ -254,6 +254,30 @@ final class OpenLoopStore: ObservableObject {
 
     #if !FOUNDER_OFFICE_DISTRIBUTION
     private func applyPreviewOverrides() {
+        if ProcessInfo.processInfo.environment["OPENLOOPS_UI_TEST_FIXTURE"] == "1",
+           items.isEmpty {
+            let now = Date()
+            items = [
+                OpenLoop(
+                    id: UUID(uuidString: "11111111-2222-3333-4444-555555555555")!,
+                    title: "Prepare launch brief",
+                    details: "Synthetic UI test fixture",
+                    status: .doing,
+                    previousStatus: nil,
+                    priority: .p1,
+                    dueAt: nil,
+                    createdAt: now,
+                    updatedAt: now,
+                    completedAt: nil,
+                    deletedAt: nil,
+                    source: "ui-test",
+                    priorityUpdatedAt: now,
+                    dueAtUpdatedAt: now
+                )
+            ]
+            _ = persist()
+        }
+
         guard let rawID = ProcessInfo.processInfo.environment["OPENLOOPS_PREVIEW_DELETED_ID"],
               let id = UUID(uuidString: rawID),
               let index = items.firstIndex(where: { $0.id == id }) else { return }

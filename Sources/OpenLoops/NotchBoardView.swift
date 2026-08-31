@@ -1,6 +1,7 @@
 import AppKit
 import FounderOfficeCore
 import SwiftUI
+import UniformTypeIdentifiers
 
 private enum BoardSection: String, CaseIterable, Identifiable {
     case home
@@ -31,6 +32,7 @@ private enum PersonalizePage: String, CaseIterable, Identifiable {
     case appearance
     case finishLine
     case calendar
+    case health
 
     var id: String { rawValue }
 
@@ -40,6 +42,7 @@ private enum PersonalizePage: String, CaseIterable, Identifiable {
         case .appearance: return "Appearance"
         case .finishLine: return "Finish line"
         case .calendar: return "Calendar"
+        case .health: return "Health"
         }
     }
 
@@ -49,6 +52,7 @@ private enum PersonalizePage: String, CaseIterable, Identifiable {
         case .appearance: return "paintpalette"
         case .finishLine: return "scope"
         case .calendar: return "calendar"
+        case .health: return "waveform.path.ecg.rectangle"
         }
     }
 }
@@ -159,6 +163,7 @@ struct NotchBoardView: View {
     @ObservedObject var codexRunner: CodexRunner
     @ObservedObject var personalization: PersonalizationStore
     @ObservedObject var calendarProvider: CalendarProvider
+    @ObservedObject var health: FounderOfficeHealthModel
     @ObservedObject var presentation: NotchPresentationModel
     let onClose: () -> Void
 
@@ -237,6 +242,8 @@ struct NotchBoardView: View {
     @State private var finishDateInteractionLease: UUID?
     @State private var photoInteractionLease: UUID?
     @State private var accentSliderInteractionLease: UUID?
+    @State private var supportReportPreview: RedactedSupportReport?
+    @State private var supportReportSaveError: String?
     @State private var pendingAppearanceExit: AppearanceExitAction?
     @State private var planningItemID: UUID?
     @State private var planningTitle = ""
@@ -377,10 +384,15 @@ struct NotchBoardView: View {
                 isCreatingCalendarEvent = false
                 presentCalendarEventEditor()
             }
+            if ProcessInfo.processInfo.environment["OPENLOOPS_PREVIEW_SUPPORT_REPORT"] == "1" {
+                supportReportPreview = health.supportReport()
+            }
             #endif
         }
         .onExitCommand {
-            if isCreatingCalendarEvent {
+            if supportReportPreview != nil {
+                closeSupportReportPreview()
+            } else if isCreatingCalendarEvent {
                 closeCalendarEventEditor()
             } else if planningItemID != nil {
                 closePlanningEditor()
@@ -558,15 +570,52 @@ struct NotchBoardView: View {
                 .transition(.scale(scale: 0.96).combined(with: .opacity))
                 .zIndex(3)
             }
+
+            if let report = supportReportPreview {
+                Color.black.opacity(0.52)
+                    .contentShape(Rectangle())
+                    .accessibilityHidden(true)
+                    .transition(.opacity)
+
+                SupportReportPreview(
+                    report: report,
+                    errorMessage: supportReportSaveError,
+                    accent: accent,
+                    onCancel: closeSupportReportPreview,
+                    onSave: { saveSupportReport(report) }
+                )
+                .padding(17)
+                .background {
+                    let editorShape = RoundedRectangle(cornerRadius: max(16, contentRadius), style: .continuous)
+                    ZStack {
+                        editorShape.fill(.regularMaterial)
+                        editorShape.fill(
+                            Color(red: 0.018, green: 0.020, blue: 0.026)
+                                .opacity(reduceTransparency ? 0.98 : 0.88)
+                        )
+                    }
+                }
+                .overlay(
+                    RoundedRectangle(cornerRadius: max(16, contentRadius), style: .continuous)
+                        .stroke(contentBorder, lineWidth: 1)
+                )
+                .shadow(color: Color.black.opacity(0.42), radius: 28, y: 12)
+                .transition(.scale(scale: 0.96).combined(with: .opacity))
+                .zIndex(4)
+            }
         }
         .frame(width: 720, height: 350)
         .animation(.spring(response: 0.27, dampingFraction: 0.84), value: planningItemID)
         .animation(.spring(response: 0.27, dampingFraction: 0.84), value: isCreatingCalendarEvent)
         .animation(.spring(response: 0.27, dampingFraction: 0.84), value: pendingAppearanceExit)
+        .animation(.spring(response: 0.27, dampingFraction: 0.84), value: supportReportPreview)
     }
 
     private var isModalEditorPresented: Bool {
-        planningItemID != nil || isCreatingCalendarEvent || pendingAppearanceExit != nil
+        planningItemID != nil
+            || isCreatingCalendarEvent
+            || pendingAppearanceExit != nil
+            || supportReportPreview != nil
     }
 
     private var panelSurface: some View {
@@ -631,6 +680,7 @@ struct NotchBoardView: View {
                 label: "Personalize",
                 action: presentSettings
             )
+            .accessibilityIdentifier("nav.personalize")
 
             Button(action: { requestAppearanceExit(.closeNotch) }) {
                 Image(systemName: "xmark")
@@ -678,6 +728,7 @@ struct NotchBoardView: View {
                     label: section.title,
                     action: { select(section) }
                 )
+                .accessibilityIdentifier("nav.\(section.rawValue)")
             }
         }
     }
@@ -766,6 +817,7 @@ struct NotchBoardView: View {
                     label: "Personalize",
                     action: presentSettings
                 )
+                .accessibilityIdentifier("nav.personalize")
 
                 Button(action: onClose) {
                     Image(systemName: "xmark")
@@ -1774,6 +1826,7 @@ struct NotchBoardView: View {
                 case .appearance: appearanceSettingsPage
                 case .finishLine: finishLineSettingsPage
                 case .calendar: calendarSettingsPage
+                case .health: healthSettingsPage
                 }
             }
             .padding(12)
@@ -1822,6 +1875,7 @@ struct NotchBoardView: View {
         }
         .buttonStyle(StatusTabButtonStyle())
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+        .accessibilityIdentifier("personalize.\(page.rawValue)")
     }
 
     private var profileSettingsPage: some View {
@@ -1883,6 +1937,7 @@ struct NotchBoardView: View {
                             isSelected: personalization.appearance.presetID == preset,
                             action: { personalization.applyPreset(preset) }
                         )
+                        .accessibilityIdentifier("appearance.preset.\(preset.rawValue)")
                     }
                 }
 
@@ -2099,6 +2154,120 @@ struct NotchBoardView: View {
         }
     }
 
+    private var healthSettingsPage: some View {
+        let snapshot = health.snapshot
+        let columns = [
+            GridItem(.flexible(), spacing: 7),
+            GridItem(.flexible(), spacing: 7)
+        ]
+
+        return VStack(alignment: .leading, spacing: 8) {
+            settingsPageHeading(
+                "System health",
+                detail: "Five checks. Personal content is never included."
+            )
+
+            LazyVGrid(columns: columns, alignment: .leading, spacing: 6) {
+                ForEach(snapshot.components) { status in
+                    healthStatusCard(status)
+                }
+            }
+
+            HStack(spacing: 7) {
+                Text("Repairs are limited to safe retries and reloads.")
+                    .font(interfaceFont(.tertiary, weight: .semibold))
+                    .foregroundStyle(secondaryText)
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                Button("Preview support file") {
+                    supportReportSaveError = nil
+                    supportReportPreview = health.supportReport()
+                }
+                .buttonStyle(HeaderActionButtonStyle(isEmphasized: true))
+                .accessibilityIdentifier("health.previewSupportReport")
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("health.page")
+    }
+
+    private func healthStatusCard(_ status: HealthComponentStatus) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 7) {
+                Image(systemName: healthSymbol(for: status.component))
+                    .font(symbolFont(size: 11, weight: .semibold))
+                    .foregroundStyle(healthColor(for: status.condition))
+                    .frame(width: 18, height: 18)
+                    .background(
+                        healthColor(for: status.condition).opacity(0.13),
+                        in: Circle()
+                    )
+
+                Text(status.component.title)
+                    .font(interfaceFont(.secondary, weight: .bold))
+                    .foregroundStyle(primaryText)
+                    .lineLimit(1)
+
+                Spacer(minLength: 2)
+
+                if let actionTitle = status.remediation.title {
+                    Button(actionTitle) {
+                        health.perform(status.remediation)
+                    }
+                    .buttonStyle(StatusTabButtonStyle())
+                    .font(interfaceFont(.tertiary, weight: .bold))
+                    .foregroundStyle(accent)
+                    .contentShape(Rectangle())
+                    .accessibilityIdentifier("health.action.\(status.component.rawValue)")
+                }
+            }
+
+            Text(healthDetail(status))
+                .font(interfaceFont(.tertiary, weight: .semibold))
+                .foregroundStyle(secondaryText)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 8)
+        .frame(maxWidth: .infinity, minHeight: 47, alignment: .leading)
+        .background(
+            groupedBackground,
+            in: RoundedRectangle(cornerRadius: max(6, contentRadius - 4), style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: max(6, contentRadius - 4), style: .continuous)
+                .stroke(healthColor(for: status.condition).opacity(0.22), lineWidth: 1)
+        )
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("health.status.\(status.component.rawValue)")
+    }
+
+    private func healthDetail(_ status: HealthComponentStatus) -> String {
+        guard let date = status.lastSuccessAt else { return status.detail }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .abbreviated
+        let relative = formatter.localizedString(for: date, relativeTo: Date())
+        return "\(status.detail) · \(relative)"
+    }
+
+    private func healthColor(for condition: HealthCondition) -> Color {
+        switch condition {
+        case .ready: return Color(nsColor: .systemGreen)
+        case .working: return accent
+        case .attention: return Color(nsColor: .systemOrange)
+        case .off: return Color.white.opacity(0.58)
+        }
+    }
+
+    private func healthSymbol(for component: HealthComponent) -> String {
+        switch component {
+        case .localData: return "internaldrive"
+        case .sync: return "arrow.triangle.2.circlepath"
+        case .calendar: return "calendar"
+        case .startup: return "power"
+        case .assistant: return "wand.and.stars"
+        }
+    }
+
     private func settingsPageHeading(_ title: String, detail: String) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(title)
@@ -2290,6 +2459,7 @@ struct NotchBoardView: View {
         .accessibilityElement(children: .combine)
         .accessibilityLabel(name)
         .accessibilityValue(hex)
+        .accessibilityIdentifier("appearance.colour.\(stopIndex)")
     }
 
     private func appearanceMenuRow<ID: AppearanceIdentifier>(
@@ -2852,6 +3022,33 @@ struct NotchBoardView: View {
         }
     }
 
+    private func closeSupportReportPreview() {
+        supportReportPreview = nil
+        supportReportSaveError = nil
+    }
+
+    private func saveSupportReport(_ report: RedactedSupportReport) {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = "founders-office-support.json"
+        panel.message = "Save the exact redacted fields shown in the preview."
+        presentation.transients.present(panel, reason: "support-report-save")
+        panel.begin { response in
+            Task { @MainActor in
+                defer { presentation.transients.endScoped(to: panel) }
+                guard response == .OK, let destination = panel.url else { return }
+                do {
+                    try report.encodedJSON().write(to: destination, options: .atomic)
+                    closeSupportReportPreview()
+                } catch {
+                    supportReportSaveError = "Couldn’t save the support file. Try again."
+                    AppDiagnostics.failure(.supportReportSave, category: .storage, error: error)
+                }
+            }
+        }
+    }
+
     private func toggleAddComposer() {
         withAnimation(.easeOut(duration: 0.16)) {
             isAdding.toggle()
@@ -3175,6 +3372,7 @@ private struct CalendarEventEditor: View {
                 .shadow(color: isTitleFocused ? accent.opacity(0.16) : .clear, radius: 5)
                 .focused($isTitleFocused)
                 .onSubmit { if canSave { onSave() } }
+                .accessibilityIdentifier("calendarEvent.title")
 
             eventDateRow("Starts", selection: $startDate)
             eventDateRow("Ends", selection: $endDate)
@@ -3200,6 +3398,7 @@ private struct CalendarEventEditor: View {
                     .pickerStyle(.menu)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .accessibilityLabel("Calendar account and calendar")
+                    .accessibilityIdentifier("calendarEvent.destination")
                 }
             }
 
@@ -3215,16 +3414,19 @@ private struct CalendarEventEditor: View {
                 Button("Cancel", action: onCancel)
                     .buttonStyle(HeaderActionButtonStyle())
                     .keyboardShortcut(.cancelAction)
+                    .accessibilityIdentifier("calendarEvent.cancel")
                 Button("Add event", action: onSave)
                     .buttonStyle(HeaderActionButtonStyle(isEmphasized: true))
                     .keyboardShortcut(.defaultAction)
                     .disabled(!canSave)
+                    .accessibilityIdentifier("calendarEvent.save")
             }
         }
         .frame(width: 450)
         .preferredColorScheme(.dark)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("New calendar event")
+        .accessibilityIdentifier("calendarEvent.editor")
         .accessibilityAddTraits(.isModal)
         .onAppear {
             DispatchQueue.main.async { isTitleFocused = true }
@@ -3543,6 +3745,7 @@ private struct MovePlanningEditor: View {
                     .toggleStyle(.switch)
                     .font(theme.interfaceFont(.tertiary, weight: .bold))
                     .foregroundStyle(primaryText)
+                    .accessibilityIdentifier("movePlanning.deadlineEnabled")
 
                 if hasDeadline {
                     HStack {
@@ -3583,17 +3786,20 @@ private struct MovePlanningEditor: View {
                 Button("Cancel", action: onCancel)
                     .buttonStyle(HeaderActionButtonStyle())
                     .keyboardShortcut(.cancelAction)
+                    .accessibilityIdentifier("movePlanning.cancel")
 
                 Button("Save", action: onSave)
                     .buttonStyle(HeaderActionButtonStyle(isEmphasized: true))
                     .keyboardShortcut(.defaultAction)
                     .disabled(!canSave)
+                    .accessibilityIdentifier("movePlanning.save")
             }
         }
         .frame(width: 354)
         .preferredColorScheme(.dark)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Edit \(title)")
+        .accessibilityIdentifier("movePlanning.editor")
         .accessibilityAddTraits(.isModal)
         .onAppear {
             DispatchQueue.main.async {
@@ -3632,6 +3838,7 @@ private struct MovePlanningEditor: View {
         .focused($focusedPriority, equals: option)
         .help("\(option.rawValue) · \(option.title)")
         .accessibilityLabel("\(option.rawValue), \(option.title) priority")
+        .accessibilityIdentifier("movePlanning.priority.\(option.rawValue.lowercased())")
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }
 
@@ -3644,6 +3851,91 @@ private struct MovePlanningEditor: View {
         }
     }
 
+}
+
+private struct SupportReportPreview: View {
+    @Environment(\.founderTheme) private var theme
+    let report: RedactedSupportReport
+    let errorMessage: String?
+    let accent: Color
+    let onCancel: () -> Void
+    let onSave: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Redacted support file")
+                    .font(theme.displayFont(.secondary))
+                    .foregroundStyle(Color.white.opacity(0.96))
+                Text("\(report.fields.count) fields. Scroll to review every value before saving.")
+                    .font(theme.interfaceFont(.tertiary, weight: .semibold))
+                    .foregroundStyle(Color.white.opacity(0.74))
+            }
+
+            ScrollView(showsIndicators: true) {
+                VStack(spacing: 0) {
+                    ForEach(Array(report.fields.enumerated()), id: \.element.id) { index, field in
+                        HStack(alignment: .firstTextBaseline, spacing: 12) {
+                            Text(field.key)
+                                .font(theme.interfaceFont(.tertiary, weight: .semibold))
+                                .foregroundStyle(Color.white.opacity(0.72))
+                                .frame(width: 190, alignment: .leading)
+                                .textSelection(.enabled)
+                            Text(field.value)
+                                .font(theme.interfaceFont(.tertiary, weight: .semibold))
+                                .foregroundStyle(Color.white.opacity(0.95))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .textSelection(.enabled)
+                        }
+                        .padding(.horizontal, 9)
+                        .frame(minHeight: 27)
+
+                        if index < report.fields.count - 1 {
+                            Divider().overlay(Color.white.opacity(0.07))
+                        }
+                    }
+                }
+            }
+            .frame(height: 164)
+            .background(
+                Color.white.opacity(0.045),
+                in: RoundedRectangle(cornerRadius: 9, style: .continuous)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .stroke(Color.white.opacity(0.10), lineWidth: 1)
+            )
+            .accessibilityIdentifier("health.supportReport.fields")
+
+            if let errorMessage {
+                Text(errorMessage)
+                    .font(theme.interfaceFont(.tertiary, weight: .semibold))
+                    .foregroundStyle(Color(nsColor: .systemRed))
+                    .accessibilityIdentifier("health.supportReport.error")
+            }
+
+            HStack(spacing: 8) {
+                Text("No Moves, events, names, paths, prompts, or credentials.")
+                    .font(theme.interfaceFont(.tertiary, weight: .semibold))
+                    .foregroundStyle(Color.white.opacity(0.72))
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                Button("Cancel", action: onCancel)
+                    .buttonStyle(HeaderActionButtonStyle())
+                    .keyboardShortcut(.cancelAction)
+                    .accessibilityIdentifier("health.supportReport.cancel")
+                Button("Save JSON…", action: onSave)
+                    .buttonStyle(HeaderActionButtonStyle(isEmphasized: true))
+                    .keyboardShortcut(.defaultAction)
+                    .accessibilityIdentifier("health.supportReport.save")
+            }
+        }
+        .frame(width: 570)
+        .preferredColorScheme(.dark)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Redacted support file preview")
+        .accessibilityAddTraits(.isModal)
+    }
 }
 
 private struct UnsavedAppearanceEditor: View {
@@ -3671,18 +3963,22 @@ private struct UnsavedAppearanceEditor: View {
                 Button("Keep Editing", action: onKeepEditing)
                     .buttonStyle(HeaderActionButtonStyle())
                     .keyboardShortcut(.cancelAction)
+                    .accessibilityIdentifier("appearance.unsaved.keepEditing")
                 Spacer()
                 Button("Discard", action: onDiscard)
                     .buttonStyle(HeaderActionButtonStyle())
+                    .accessibilityIdentifier("appearance.unsaved.discard")
                 Button("Save Changes", action: onSave)
                     .buttonStyle(HeaderActionButtonStyle(isEmphasized: true))
                     .keyboardShortcut(.defaultAction)
+                    .accessibilityIdentifier("appearance.unsaved.save")
             }
         }
         .frame(width: 360)
         .preferredColorScheme(.dark)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Unsaved appearance changes")
+        .accessibilityIdentifier("appearance.unsaved.editor")
         .accessibilityAddTraits(.isModal)
     }
 }

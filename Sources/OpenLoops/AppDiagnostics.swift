@@ -38,6 +38,7 @@ enum AppDiagnostics {
         case safeModeEnter = "safe_mode.enter"
         case safeModeRetry = "safe_mode.retry"
         case snapshotCapture = "snapshot.capture"
+        case supportReportSave = "support_report.save"
         case workspaceIdentitySave = "workspace_identity.save"
     }
 

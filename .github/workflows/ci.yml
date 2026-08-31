@@ -65,6 +65,17 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             build
 
+      - name: Compile macOS UI automation
+        run: |
+          xcodebuild \
+            -project FoundersOffice.xcodeproj \
+            -scheme FoundersOfficeMac \
+            -configuration Debug \
+            -destination "platform=macOS" \
+            -derivedDataPath "${RUNNER_TEMP}/DerivedData-macOS-UITests" \
+            CODE_SIGNING_ALLOWED=NO \
+            build-for-testing
+
       - name: Build and verify unsigned macOS customer Release
         run: |
           derived_data="${RUNNER_TEMP}/DerivedData-macOS-Release"

@@ -29,6 +29,7 @@ swift build \
     -Xswiftc -warnings-as-errors
 Scripts/verify-customer-binary-policy.sh .build/distribution-policy/release/OpenLoops
 swift Scripts/validate-notch-transparency.swift
+swiftc -frontend -parse Apps/macOSUITests/*.swift
 swiftc -frontend -parse Apps/iOS/*.swift
 swift Scripts/validate-motion.swift
 plutil -lint \
