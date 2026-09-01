@@ -180,6 +180,63 @@ struct PriorityDragAutoScrollerTests {
     }
 
     @Test
+    func mouseUpFallbackCommitsBeforeEndingWhenSwiftUIDoesNotPerformTheDrop() async throws {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 300, height: 180),
+            styleMask: .borderless,
+            backing: .buffered,
+            defer: false
+        )
+        let scrollView = NSScrollView(frame: window.contentView!.bounds)
+        scrollView.documentView = FlippedDocumentView(
+            frame: NSRect(x: 0, y: 0, width: 300, height: 1_200)
+        )
+        window.contentView = scrollView
+        let scroller = PriorityDragAutoScroller(releaseGraceInterval: 0.01)
+        let moveID = UUID()
+        var releasedIDs: [UUID] = []
+        var completionCount = 0
+        scroller.attach(scrollView)
+        scroller.beginSession(
+            moveID: moveID,
+            onRelease: { releasedIDs.append($0) },
+            onEnd: { completionCount += 1 }
+        )
+        _ = scroller.update(pointerInWindow: NSPoint(x: 150, y: 2))
+
+        scroller.scheduleRelease(pointerInWindow: NSPoint(x: 150, y: 2))
+        try await Task.sleep(for: .milliseconds(50))
+
+        #expect(releasedIDs == [moveID])
+        #expect(completionCount == 1)
+        #expect(scroller.draggedMoveID == nil)
+    }
+
+    @Test
+    func pointerCanLeavePastTheVisibleEdgeAndStillDriveMaximumAutoScroll() {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 300, height: 180),
+            styleMask: .borderless,
+            backing: .buffered,
+            defer: false
+        )
+        let scrollView = NSScrollView(frame: window.contentView!.bounds)
+        scrollView.documentView = FlippedDocumentView(
+            frame: NSRect(x: 0, y: 0, width: 300, height: 1_200)
+        )
+        window.contentView = scrollView
+        let scroller = PriorityDragAutoScroller(pointerExitMargin: 96)
+        scroller.attach(scrollView)
+        let startingOffset = scrollView.contentView.bounds.origin.y
+
+        #expect(scroller.update(pointerInWindow: NSPoint(x: 150, y: -60)))
+        scroller.advance(elapsed: 0.25)
+
+        #expect(scrollView.contentView.bounds.origin.y > startingOffset + 100)
+        scroller.stop()
+    }
+
+    @Test
     func beginningANewDragInvalidatesThePreviousMoveBeforeItCanCommit() {
         let scroller = PriorityDragAutoScroller()
         let firstID = UUID()

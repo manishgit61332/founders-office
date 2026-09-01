@@ -8,7 +8,7 @@ extension UTType {
 }
 
 struct DragEdgeScrollPolicy: Equatable {
-    var edgeExtent: CGFloat = 56
+    var edgeExtent: CGFloat = 88
     var minimumSpeed: CGFloat = 96
     var maximumSpeed: CGFloat = 640
 
@@ -89,21 +89,43 @@ final class PriorityDragAutoScroller: ObservableObject {
     private var localEventMonitor: Any?
     private var globalMouseMonitor: Any?
     private var sessionEnd: (() -> Void)?
+    private var pointerUpdate: ((CGFloat?) -> Void)?
+    private var releaseRequest: ((UUID) -> Void)?
+    private var pendingRelease: DispatchWorkItem?
     private var velocity: CGFloat = 0
     private var lastTick = ProcessInfo.processInfo.systemUptime
     private let policy: DragEdgeScrollPolicy
-    private let pointerExitMargin: CGFloat = 18
+    private let pointerExitMargin: CGFloat
+    private let releaseGraceInterval: TimeInterval
     private(set) var pointerY: CGFloat?
     private(set) var draggedMoveID: UUID?
 
-    init(policy: DragEdgeScrollPolicy = DragEdgeScrollPolicy()) {
+    init(
+        policy: DragEdgeScrollPolicy = DragEdgeScrollPolicy(),
+        pointerExitMargin: CGFloat = 96,
+        releaseGraceInterval: TimeInterval = 0.12
+    ) {
         self.policy = policy
+        self.pointerExitMargin = pointerExitMargin
+        self.releaseGraceInterval = releaseGraceInterval
     }
 
     func attach(_ scrollView: NSScrollView?) {
+        // SwiftUI can briefly dismantle and recreate representable backgrounds
+        // while a LazyVStack scrolls. Do not detach the live drag from a valid
+        // viewport during that transient relayout.
+        if scrollView == nil,
+           draggedMoveID != nil,
+           self.scrollView?.window != nil {
+            return
+        }
         guard self.scrollView !== scrollView else { return }
+        let existingPointerY = pointerY
         stop()
         self.scrollView = scrollView
+        if let existingPointerY, scrollView != nil {
+            update(pointerY: existingPointerY)
+        }
     }
 
     func update(pointerY: CGFloat) {
@@ -113,6 +135,7 @@ final class PriorityDragAutoScroller: ObservableObject {
         }
 
         self.pointerY = pointerY
+        pointerUpdate?(pointerY)
         velocity = policy.velocity(
             pointerY: pointerY,
             viewportHeight: scrollView.contentView.bounds.height
@@ -165,12 +188,20 @@ final class PriorityDragAutoScroller: ObservableObject {
 
     func leaveViewport() {
         pointerY = nil
+        pointerUpdate?(nil)
         stop()
     }
 
-    func beginSession(moveID: UUID, onEnd: @escaping () -> Void) {
+    func beginSession(
+        moveID: UUID,
+        onPointerUpdate: @escaping (CGFloat?) -> Void = { _ in },
+        onRelease: @escaping (UUID) -> Void = { _ in },
+        onEnd: @escaping () -> Void
+    ) {
         endSession()
         draggedMoveID = moveID
+        pointerUpdate = onPointerUpdate
+        releaseRequest = onRelease
         sessionEnd = onEnd
 
         localEventMonitor = NSEvent.addLocalMonitorForEvents(
@@ -186,9 +217,14 @@ final class PriorityDragAutoScroller: ObservableObject {
                     }
                 }
             }
-            let shouldEnd = event.type == .leftMouseUp
-                || (event.type == .keyDown && event.keyCode == 53)
-            if shouldEnd {
+            if event.type == .leftMouseUp {
+                let releasePoint = event.window === self?.scrollView?.window
+                    ? event.locationInWindow
+                    : nil
+                DispatchQueue.main.async {
+                    self?.scheduleRelease(pointerInWindow: releasePoint)
+                }
+            } else if event.type == .keyDown && event.keyCode == 53 {
                 DispatchQueue.main.async {
                     self?.endSession()
                 }
@@ -197,12 +233,14 @@ final class PriorityDragAutoScroller: ObservableObject {
         }
         globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseUp) { [weak self] _ in
             DispatchQueue.main.async {
-                self?.endSession()
+                self?.scheduleRelease()
             }
         }
     }
 
     func endSession() {
+        pendingRelease?.cancel()
+        pendingRelease = nil
         stop()
         pointerY = nil
         draggedMoveID = nil
@@ -215,8 +253,32 @@ final class PriorityDragAutoScroller: ObservableObject {
             self.globalMouseMonitor = nil
         }
         let completion = sessionEnd
+        pointerUpdate = nil
+        releaseRequest = nil
         sessionEnd = nil
         completion?()
+    }
+
+    /// Native mouse-up monitors run before SwiftUI's `performDrop`. Ending the
+    /// session from that monitor clears the move ID before the drop delegate can
+    /// commit it. Give SwiftUI one short grace period, then perform an in-app
+    /// fallback commit when the pointer is still over the priority viewport.
+    func scheduleRelease(pointerInWindow: NSPoint? = nil) {
+        guard pendingRelease == nil, draggedMoveID != nil else { return }
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self, let moveID = self.draggedMoveID else { return }
+            let isInsideViewport = pointerInWindow.map(self.update(pointerInWindow:))
+                ?? self.refreshPointerFromWindow()
+            if isInsideViewport {
+                self.releaseRequest?(moveID)
+            }
+            self.endSession()
+        }
+        pendingRelease = workItem
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + releaseGraceInterval,
+            execute: workItem
+        )
     }
 
     private func startTimerIfNeeded() {

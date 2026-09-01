@@ -1672,6 +1672,29 @@ struct NotchBoardView: View {
         priorityDragInteractionLease = presentation.beginInteraction("move-priority-drag")
         priorityDragAutoScroller.beginSession(
             moveID: id,
+            onPointerUpdate: { pointerY in
+                guard let pointerY else {
+                    setPriorityDropTarget(nil)
+                    return
+                }
+                setPriorityDropTarget(
+                    PriorityDropTargetPolicy.target(
+                        pointerY: pointerY,
+                        lanes: priorityLaneFrames.map { priority, frame in
+                            PriorityDropLane(
+                                priority: priority,
+                                minY: frame.minY,
+                                maxY: frame.maxY
+                            )
+                        },
+                        current: priorityDropTarget
+                    )
+                )
+            },
+            onRelease: { moveID in
+                guard let priorityDropTarget else { return }
+                _ = handlePriorityDrop(moveID, target: priorityDropTarget)
+            },
             onEnd: handlePriorityDragSessionEnded
         )
     }
