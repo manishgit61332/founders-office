@@ -1,4 +1,5 @@
 import CryptoKit
+import Darwin
 import Foundation
 import SQLite3
 import Testing
@@ -945,7 +946,6 @@ struct WorkspaceRepositoryPerformanceTests {
         let initialDatabaseBytes = fixture.databaseArtifactByteCount()
         let warmupCount = 12
         let measuredCount = 96
-        let measurementClock = ContinuousClock()
         var timings: [Double] = []
 
         for index in 0..<(warmupCount + measuredCount) {
@@ -966,14 +966,12 @@ struct WorkspaceRepositoryPerformanceTests {
                 createdAt: changedAt
             )
 
-            let startedAt = measurementClock.now
+            let startedAt = processCPUMilliseconds()
             _ = try await repository.transact(
                 expectedRevision: baseline.revision,
                 mutation: mutation
             )
-            let elapsed = startedAt.duration(to: measurementClock.now).components
-            let elapsedMilliseconds = Double(elapsed.seconds) * 1_000
-                + Double(elapsed.attoseconds) / 1_000_000_000_000_000
+            let elapsedMilliseconds = processCPUMilliseconds() - startedAt
             if index >= warmupCount {
                 timings.append(elapsedMilliseconds)
             }
@@ -990,7 +988,7 @@ struct WorkspaceRepositoryPerformanceTests {
 
         print(
             String(
-                format: "OUTBOX_PERF moves=10000 mutations=%d p95_ms=%.2f payload_bytes=%d largest_payload_bytes=%d db_initial_bytes=%lld db_final_bytes=%lld db_growth_bytes=%lld",
+                format: "OUTBOX_PERF moves=10000 mutations=%d p95_cpu_ms=%.2f payload_bytes=%d largest_payload_bytes=%d db_initial_bytes=%lld db_final_bytes=%lld db_growth_bytes=%lld",
                 warmupCount + measuredCount,
                 p95Milliseconds,
                 payloadBytes,
@@ -1018,6 +1016,16 @@ struct WorkspaceRepositoryPerformanceTests {
         #expect(durable.revision == WorkspaceRevision(rawValue: Int64(warmupCount + measuredCount)))
         #expect(try await reopened.pendingOperations(limit: 1_000).count == warmupCount + measuredCount)
     }
+}
+
+private func processCPUMilliseconds() -> Double {
+    var usage = rusage()
+    precondition(getrusage(RUSAGE_SELF, &usage) == 0)
+    let userMilliseconds = Double(usage.ru_utime.tv_sec) * 1_000
+        + Double(usage.ru_utime.tv_usec) / 1_000
+    let systemMilliseconds = Double(usage.ru_stime.tv_sec) * 1_000
+        + Double(usage.ru_stime.tv_usec) / 1_000
+    return userMilliseconds + systemMilliseconds
 }
 
 private func capturedRepositoryError<Result: Sendable>(
