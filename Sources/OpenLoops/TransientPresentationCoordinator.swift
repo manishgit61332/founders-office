@@ -9,6 +9,12 @@ final class TransientPresentationCoordinator {
     nonisolated static let nativeColorPanelIdentifier = NSUserInterfaceItemIdentifier(
         "foundersOffice.native-color-panel"
     )
+    nonisolated static let nativeOpenPanelIdentifier = NSUserInterfaceItemIdentifier(
+        "foundersOffice.native-open-panel"
+    )
+    nonisolated static let nativeSavePanelIdentifier = NSUserInterfaceItemIdentifier(
+        "foundersOffice.native-save-panel"
+    )
 
     @MainActor
     private final class TrackedWindow {
@@ -32,6 +38,7 @@ final class TransientPresentationCoordinator {
     private var session = TransientPresentationSession()
     private weak var hostWindow: NSWindow?
     private weak var capturedFirstResponder: NSResponder?
+    private var capturedHostWasKey = false
     private var suspendHost: (() -> Void)?
     private var restoreHost: (() -> Void)?
     private var isHostExpanded: (() -> Bool)?
@@ -62,6 +69,7 @@ final class TransientPresentationCoordinator {
     func begin(_ reason: String, suspendsHost: Bool = false) -> UUID {
         if !session.isActive {
             capturedFirstResponder = hostWindow?.firstResponder
+            capturedHostWasKey = hostWindow?.isKeyWindow == true && NSApp.isActive
         }
         let shouldSuspend = suspendsHost && !session.hostSuspensionRequested
         let lease = session.begin(
@@ -152,7 +160,7 @@ final class TransientPresentationCoordinator {
     func present(_ window: NSWindow, request: TransientPresentationRequest) {
         let key = ObjectIdentifier(window)
         guard trackedWindows[key] == nil else {
-            elevate(window)
+            promoteIfVisible(window)
             return
         }
         _ = present(request: request, scopedTo: window)
@@ -161,11 +169,16 @@ final class TransientPresentationCoordinator {
             return
         }
         trackedWindows[key] = TrackedWindow(window: window, hostWindow: hostWindow)
-        if window is NSColorPanel {
-            window.identifier = Self.nativeColorPanelIdentifier
-            window.setAccessibilityIdentifier(Self.nativeColorPanelIdentifier.rawValue)
+        applyManagedIdentity(to: window)
+        // `NSOpenPanel.begin`, `NSSavePanel.begin`, and `NSAlert.runModal`
+        // may reset their running level and order. Registration intentionally
+        // does not display an invisible window; promotion happens after AppKit
+        // has ordered the native transient on screen.
+        promoteIfVisible(window)
+        DispatchQueue.main.async { [weak self, weak window] in
+            guard let self, let window, self.isTracking(window) else { return }
+            self.promoteIfVisible(window)
         }
-        elevate(window)
     }
 
     func elevate(_ window: NSWindow, scopedTo owner: AnyObject) {
@@ -175,23 +188,38 @@ final class TransientPresentationCoordinator {
         if trackedWindows[key] == nil {
             trackedWindows[key] = TrackedWindow(window: window, hostWindow: hostWindow)
         }
-        elevate(window)
+        promoteIfVisible(window)
     }
 
-    func elevate(_ window: NSWindow) {
+    /// Reasserts the post-presentation stacking invariant. Call this from
+    /// the post-`begin` main-loop turn/`didBecomeKey` (and after a popover's
+    /// `didShow`) so AppKit cannot settle a running panel below the host.
+    func promoteIfVisible(_ window: NSWindow) {
+        guard window.isVisible else { return }
         guard let hostWindow, window !== hostWindow else { return }
+        applyManagedIdentity(to: window)
+        // Independent native panels use AppKit's normal application-modal
+        // ordering while the status-bar host is fully removed. Raising them
+        // above the status bar would make them float over unrelated apps and
+        // Spaces for no product benefit.
+        guard hostWindow.isVisible else { return }
         let elevatedLevel = NSWindow.Level(rawValue: hostWindow.level.rawValue + 1)
         if window.level.rawValue < elevatedLevel.rawValue {
             window.level = elevatedLevel
         }
         window.collectionBehavior.formUnion([.canJoinAllSpaces, .fullScreenAuxiliary])
-        if window.parent == nil, hostWindow.isVisible {
-            hostWindow.addChildWindow(window, ordered: .above)
-        }
-        // Keep the transient independently visible at its elevated level. A
-        // modal must not depend only on child ordering while the host is
-        // visually collapsed into the notch.
+        // Do not reparent AppKit-owned popover/menu windows. Native file,
+        // colour, and alert panels remain independently visible while the host
+        // is suspended; their elevated level is the ordering guarantee.
         window.orderFrontRegardless()
+    }
+
+    /// Ends a native window lease only after the window is no longer visible,
+    /// preventing the host from restoring in front of a completion callback
+    /// whose AppKit panel has not yet left the screen.
+    func dismissAndEnd(_ window: NSWindow) {
+        window.orderOut(nil)
+        endScoped(to: window)
     }
 
     /// SwiftUI menus and popovers do not expose their source view. Scope their
@@ -289,6 +317,7 @@ final class TransientPresentationCoordinator {
         objectLeases.removeAll()
         pendingNativePanelOrigin = nil
         capturedFirstResponder = nil
+        capturedHostWasKey = false
         session.cancelAll()
     }
 
@@ -298,13 +327,16 @@ final class TransientPresentationCoordinator {
             restoreHost?()
             if let hostWindow {
                 hostWindow.orderFrontRegardless()
-                hostWindow.makeKey()
-                if let capturedFirstResponder {
+                if capturedHostWasKey, NSApp.isActive {
+                    hostWindow.makeKey()
+                }
+                if capturedHostWasKey, NSApp.isActive, let capturedFirstResponder {
                     hostWindow.makeFirstResponder(capturedFirstResponder)
                 }
             }
         }
         capturedFirstResponder = nil
+        capturedHostWasKey = false
         session.finishRestoring()
     }
 
@@ -318,6 +350,22 @@ final class TransientPresentationCoordinator {
         tracked.window.collectionBehavior = tracked.originalCollectionBehavior
         tracked.window.identifier = tracked.originalIdentifier
         tracked.window.setAccessibilityIdentifier(tracked.originalAccessibilityIdentifier)
+    }
+
+    private func applyManagedIdentity(to window: NSWindow) {
+        let identifier: NSUserInterfaceItemIdentifier?
+        if window is NSColorPanel {
+            identifier = Self.nativeColorPanelIdentifier
+        } else if window is NSOpenPanel {
+            identifier = Self.nativeOpenPanelIdentifier
+        } else if window is NSSavePanel {
+            identifier = Self.nativeSavePanelIdentifier
+        } else {
+            identifier = nil
+        }
+        guard let identifier else { return }
+        window.identifier = identifier
+        window.setAccessibilityIdentifier(identifier.rawValue)
     }
 
     private func owns(_ window: NSWindow) -> Bool {

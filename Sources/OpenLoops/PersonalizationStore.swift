@@ -367,7 +367,10 @@ final class PersonalizationStore: ObservableObject, AppearanceDraftCommitBoundar
 
         onPresent(panel)
         panel.begin { [weak self] response in
-            defer { onCompletion(panel) }
+            defer {
+                panel.orderOut(nil)
+                onCompletion(panel)
+            }
             guard response == .OK, let sourceURL = panel.url else { return }
             let isAccessing = sourceURL.startAccessingSecurityScopedResource()
             Task { @MainActor in
@@ -395,7 +398,10 @@ final class PersonalizationStore: ObservableObject, AppearanceDraftCommitBoundar
 
         onPresent(panel)
         panel.begin { [weak self] response in
-            defer { onCompletion(panel) }
+            defer {
+                panel.orderOut(nil)
+                onCompletion(panel)
+            }
             guard response == .OK, let destinationURL = panel.url else { return }
             let isAccessing = destinationURL.startAccessingSecurityScopedResource()
             Task { @MainActor in

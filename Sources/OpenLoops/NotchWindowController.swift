@@ -267,13 +267,13 @@ final class NotchWindowController {
             let result = await personalization.saveAppearanceChanges()
             let decision = AppearanceTerminationPolicy.decision(for: choice, saveResult: result)
             guard decision == .terminate else {
-                presentation.transients.endScoped(to: alert.window)
+                presentation.transients.dismissAndEnd(alert.window)
                 return false
             }
             if cancelsRestorationOnAccept {
                 presentation.clearInteractions()
             } else {
-                presentation.transients.endScoped(to: alert.window)
+                presentation.transients.dismissAndEnd(alert.window)
             }
             return true
         case .discard:
@@ -281,11 +281,11 @@ final class NotchWindowController {
             if cancelsRestorationOnAccept {
                 presentation.clearInteractions()
             } else {
-                presentation.transients.endScoped(to: alert.window)
+                presentation.transients.dismissAndEnd(alert.window)
             }
             return true
         case .cancel:
-            presentation.transients.endScoped(to: alert.window)
+            presentation.transients.dismissAndEnd(alert.window)
             return false
         }
     }
@@ -329,7 +329,7 @@ final class NotchWindowController {
                 hostDisposition: .suspendExpandedHost
             )
         )
-        defer { presentation.transients.endScoped(to: alert.window) }
+        defer { presentation.transients.dismissAndEnd(alert.window) }
         return alert.runModal()
     }
 
@@ -349,7 +349,7 @@ final class NotchWindowController {
         exitStartedAt = nil
         calendarProvider.syncOnOpen()
 
-        if state == .hidden {
+        if state == .hidden || state == .suspended {
             position(on: screen)
             presentation.progress = 0
             presentation.horizontalPull = magneticPull(on: screen)
@@ -492,8 +492,7 @@ final class NotchWindowController {
                       self.presentation.transients.isTracking(colourPanel) else {
                     return false
                 }
-                colourPanel.orderOut(nil)
-                self.presentation.transients.endScoped(to: colourPanel)
+                self.presentation.transients.dismissAndEnd(colourPanel)
                 return true
             }
             return consumed ? nil : event
@@ -538,7 +537,7 @@ final class NotchWindowController {
                     self.presentation.transients.present(
                         request: TransientPresentationRequest(
                             kind: .menu,
-                            hostDisposition: .suspendExpandedHost
+                            hostDisposition: .retainExpandedHost
                         ),
                         scopedTo: menuID
                     )
@@ -571,7 +570,7 @@ final class NotchWindowController {
                     self.presentation.transients.present(
                         request: TransientPresentationRequest(
                             kind: .popover,
-                            hostDisposition: .suspendExpandedHost
+                            hostDisposition: .retainExpandedHost
                         ),
                         scopedTo: popover
                     )
@@ -580,6 +579,20 @@ final class NotchWindowController {
                               let window = popover.contentViewController?.view.window else { return }
                         self.presentation.transients.elevate(window, scopedTo: popover)
                     }
+                }
+            }
+        )
+        systemObservers.append(
+            center.addObserver(
+                forName: NSPopover.didShowNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] notification in
+                guard let popover = notification.object as? NSPopover else { return }
+                DispatchQueue.main.async { [weak self, weak popover] in
+                    guard let self, let popover,
+                          let window = popover.contentViewController?.view.window else { return }
+                    self.presentation.transients.elevate(window, scopedTo: popover)
                 }
             }
         )
@@ -613,21 +626,9 @@ final class NotchWindowController {
                 object: nil,
                 queue: .main
             ) { [weak self] notification in
-                guard let window = notification.object as? NSWindow,
-                      window is NSColorPanel || window is NSOpenPanel || window is NSSavePanel else { return }
+                guard let window = notification.object as? NSWindow else { return }
                 MainActor.assumeIsolated {
-                    guard let self,
-                          self.presentation.transients.shouldTrack(window) else { return }
-                    let kind: TransientPresentationKind = window is NSColorPanel
-                        ? .colorPanel
-                        : .fileChooser
-                    self.presentation.transients.present(
-                        window,
-                        request: TransientPresentationRequest(
-                            kind: kind,
-                            hostDisposition: .suspendExpandedHost
-                        )
-                    )
+                    self?.coordinateNativeWindowAfterPresentation(window)
                 }
             }
         )
@@ -638,10 +639,10 @@ final class NotchWindowController {
                 queue: .main
             ) { [weak self] notification in
                 guard let window = notification.object as? NSWindow else { return }
-                MainActor.assumeIsolated {
+                DispatchQueue.main.async { [weak self] in
                     guard let self,
                           self.presentation.transients.isTracking(window) else { return }
-                    self.presentation.transients.endScoped(to: window)
+                    self.presentation.transients.dismissAndEnd(window)
                 }
             }
         )
@@ -708,8 +709,39 @@ final class NotchWindowController {
         presentation.horizontalPull = 0
         presentation.progress = 0
         panel.ignoresMouseEvents = true
-        panel.orderFrontRegardless()
         state = .suspended
+        // Native file, colour, and alert panels run independently. Remove the
+        // status-bar host entirely so stale expanded pixels can never cover a
+        // panel while AppKit establishes its modal ordering.
+        panel.contentView?.layoutSubtreeIfNeeded()
+        panel.displayIfNeeded()
+        panel.orderOut(nil)
+    }
+
+    private func coordinateNativeWindowAfterPresentation(_ window: NSWindow) {
+        let transients = presentation.transients
+        if !transients.isTracking(window) {
+            guard window is NSColorPanel || window is NSOpenPanel || window is NSSavePanel,
+                  transients.shouldTrack(window) else { return }
+            let kind: TransientPresentationKind = window is NSColorPanel
+                ? .colorPanel
+                : .fileChooser
+            transients.present(
+                window,
+                request: TransientPresentationRequest(
+                    kind: kind,
+                    hostDisposition: .suspendExpandedHost
+                )
+            )
+        }
+
+        // `begin`/`runModal` can finish resetting window level after key/order
+        // notifications. Reassert on the following main-loop turn, scoped only
+        // to windows already owned by Founder’s Office.
+        DispatchQueue.main.async { [weak transients, weak window] in
+            guard let transients, let window, transients.isTracking(window) else { return }
+            transients.promoteIfVisible(window)
+        }
     }
 
     private func checkPointer() {

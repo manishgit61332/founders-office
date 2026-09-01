@@ -75,19 +75,14 @@ struct TransientPresentationCoordinatorTests {
     }
 
     @Test
-    func elevatedModalRemainsVisibleWhenSuspensionOrdersOutTheHost() {
+    func nativeOpenPanelRegistersBeforeBeginWhileSuspendedHostStaysOut() {
         let host = NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: 320, height: 180),
             styleMask: [.borderless],
             backing: .buffered,
             defer: false
         )
-        let modal = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 220, height: 120),
-            styleMask: [.titled],
-            backing: .buffered,
-            defer: false
-        )
+        let modal = NSOpenPanel()
         defer {
             modal.close()
             host.close()
@@ -107,21 +102,149 @@ struct TransientPresentationCoordinatorTests {
         coordinator.present(
             modal,
             request: TransientPresentationRequest(
-                kind: .systemAlert,
+                kind: .fileChooser,
                 hostDisposition: .suspendExpandedHost
             )
         )
 
         #expect(!host.isVisible)
+        #expect(!modal.isVisible)
+        #expect(coordinator.activeCount == 1)
+        #expect(modal.identifier == TransientPresentationCoordinator.nativeOpenPanelIdentifier)
+
+        // Simulate AppKit entering the panel's running phase. The host is gone,
+        // so the chooser keeps native modal ordering instead of becoming a
+        // globally floating status-bar window.
+        modal.level = .modalPanel
+        modal.orderFrontRegardless()
+        coordinator.promoteIfVisible(modal)
+
         #expect(modal.isVisible)
         #expect(modal.parent == nil)
-        #expect(modal.level.rawValue > host.level.rawValue)
+        #expect(modal.level == .modalPanel)
+        #expect(!modal.collectionBehavior.contains(.canJoinAllSpaces))
         #expect(coordinator.isTracking(modal))
 
-        coordinator.endScoped(to: modal)
+        // A later AppKit callback remains idempotent without acquiring a
+        // duplicate lease or changing the native level.
+        modal.level = .modalPanel
+        coordinator.promoteIfVisible(modal)
+        #expect(modal.level == .modalPanel)
+        #expect(coordinator.activeCount == 1)
+
+        coordinator.dismissAndEnd(modal)
         #expect(restorationCount == 1)
         #expect(modal.level == originalModalLevel)
+        #expect(modal.identifier == nil)
         #expect(!coordinator.isTracking(modal))
+    }
+
+    @Test
+    func retainedHostPopoverWindowIsPromotedWithoutReparenting() {
+        let host = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 320, height: 180),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        let popoverWindow = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 220, height: 120),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        defer {
+            popoverWindow.close()
+            host.close()
+        }
+        host.level = .statusBar
+        host.orderFrontRegardless()
+        popoverWindow.orderFrontRegardless()
+        let originalLevel = popoverWindow.level
+        let owner = NSObject()
+        let coordinator = TransientPresentationCoordinator()
+        coordinator.configure(
+            hostWindow: host,
+            isHostExpanded: { true },
+            suspendHost: {},
+            restoreHost: {}
+        )
+        _ = coordinator.present(
+            request: TransientPresentationRequest(
+                kind: .popover,
+                hostDisposition: .retainExpandedHost
+            ),
+            scopedTo: owner
+        )
+
+        coordinator.elevate(popoverWindow, scopedTo: owner)
+        #expect(host.isVisible)
+        #expect(popoverWindow.level.rawValue > host.level.rawValue)
+        #expect(popoverWindow.parent == nil)
+
+        coordinator.endScoped(to: owner)
+        #expect(popoverWindow.level == originalLevel)
+    }
+
+    @Test
+    func overlappingNativePanelsRestoreOnlyAfterTheFinalPanelCloses() {
+        let host = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 320, height: 180),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        let openPanel = NSOpenPanel()
+        let savePanel = NSSavePanel()
+        defer {
+            openPanel.close()
+            savePanel.close()
+            host.close()
+        }
+        host.level = .statusBar
+        host.orderFrontRegardless()
+
+        let coordinator = TransientPresentationCoordinator()
+        var restorationCount = 0
+        coordinator.configure(
+            hostWindow: host,
+            isHostExpanded: { host.isVisible },
+            suspendHost: { host.orderOut(nil) },
+            restoreHost: {
+                restorationCount += 1
+                host.orderFrontRegardless()
+            }
+        )
+
+        coordinator.present(
+            openPanel,
+            request: TransientPresentationRequest(
+                kind: .fileChooser,
+                hostDisposition: .suspendExpandedHost
+            )
+        )
+        coordinator.present(
+            savePanel,
+            request: TransientPresentationRequest(
+                kind: .fileChooser,
+                hostDisposition: .suspendExpandedHost
+            )
+        )
+        #expect(coordinator.activeCount == 2)
+        #expect(savePanel.identifier == TransientPresentationCoordinator.nativeSavePanelIdentifier)
+
+        openPanel.orderFrontRegardless()
+        savePanel.orderFrontRegardless()
+        coordinator.promoteIfVisible(openPanel)
+        coordinator.promoteIfVisible(savePanel)
+        coordinator.dismissAndEnd(openPanel)
+        #expect(restorationCount == 0)
+        #expect(!host.isVisible)
+
+        coordinator.dismissAndEnd(savePanel)
+        #expect(restorationCount == 1)
+        #expect(host.isVisible)
+        #expect(coordinator.activeCount == 0)
     }
 
     @Test

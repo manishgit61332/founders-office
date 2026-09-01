@@ -290,6 +290,45 @@ final class FoundersOfficeMacUITests: XCTestCase {
         XCTAssertTrue(save.isHittable)
     }
 
+    func testPhotoChooserOwnsTheFrontLayerUntilCancelRestoresTheNotch() throws {
+        let app = launch(
+            root: makeTemporaryRoot(),
+            environment: [
+                "OPENLOOPS_PREVIEW_SETTINGS": "1",
+                "OPENLOOPS_PREVIEW_PERSONALIZE_PAGE": "profile",
+                "OPENLOOPS_UI_TEST_REDUCE_MOTION": "1"
+            ]
+        )
+        let choosePhoto = app.buttons["personalize.photo.choose"]
+        XCTAssertTrue(choosePhoto.waitForExistence(timeout: 4))
+        XCTAssertTrue(choosePhoto.isHittable)
+        let notch = app.windows["Founder's Office"]
+        XCTAssertTrue(notch.exists)
+        choosePhoto.click()
+
+        let chooser = app.windows["foundersOffice.native-open-panel"]
+        XCTAssertTrue(
+            chooser.waitForExistence(timeout: 3),
+            "The app-owned native chooser must be exposed above the notch."
+        )
+        let cancel = chooser.buttons["Cancel"]
+        XCTAssertTrue(cancel.waitForExistence(timeout: 2))
+        XCTAssertTrue(cancel.isHittable)
+        XCTAssertTrue(
+            notch.waitForNonExistence(timeout: 2),
+            "The status-bar notch must be ordered out while the chooser owns the interaction."
+        )
+        XCTAssertFalse(
+            choosePhoto.isHittable,
+            "The suspended notch must not intercept the chooser's controls."
+        )
+
+        cancel.click()
+        XCTAssertTrue(chooser.waitForNonExistence(timeout: 3))
+        XCTAssertTrue(choosePhoto.waitForExistence(timeout: 3))
+        XCTAssertTrue(choosePhoto.isHittable)
+    }
+
     func testSupportReportPreviewsEveryWhitelistedFieldBeforeSave() {
         let app = launch(
             root: makeTemporaryRoot(),

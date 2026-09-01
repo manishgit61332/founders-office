@@ -2172,6 +2172,7 @@ struct NotchBoardView: View {
                     HStack(spacing: 8) {
                         Button(personalization.photoURL == nil ? "Choose photo…" : "Replace…", action: choosePhotoWithLease)
                             .buttonStyle(HeaderActionButtonStyle())
+                            .accessibilityIdentifier("personalize.photo.choose")
                         if personalization.hasExportableOriginalPhoto {
                             Button("Export original…", action: exportOriginalPhotoWithLease)
                                 .buttonStyle(HeaderActionButtonStyle())
@@ -2985,7 +2986,7 @@ struct NotchBoardView: View {
             },
             onCompletion: { panel in
                 Task { @MainActor in
-                    presentation.transients.endScoped(to: panel)
+                    presentation.transients.dismissAndEnd(panel)
                 }
             }
         )
@@ -3004,7 +3005,7 @@ struct NotchBoardView: View {
             },
             onCompletion: { panel in
                 Task { @MainActor in
-                    presentation.transients.endScoped(to: panel)
+                    presentation.transients.dismissAndEnd(panel)
                 }
             }
         )
@@ -3471,7 +3472,7 @@ struct NotchBoardView: View {
         )
         panel.begin { response in
             Task { @MainActor in
-                defer { presentation.transients.endScoped(to: panel) }
+                defer { presentation.transients.dismissAndEnd(panel) }
                 guard response == .OK, let destination = panel.url else { return }
                 do {
                     try await supportReportStorage.save(report, to: destination)
