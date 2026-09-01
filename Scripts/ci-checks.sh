@@ -11,8 +11,10 @@ python3 -m py_compile \
     Scripts/record-macos-clean-acceptance.py \
     Scripts/prepare-website-mac-release.py \
     Scripts/validate-sync-contracts.py \
+    Scripts/verify-app-version.py \
     Scripts/verify-privacy-manifest.py
 python3 Scripts/test-openloops-cli.py
+python3 Scripts/verify-app-version.py
 Scripts/validate-sync-contracts.py
 bash -n \
     Scripts/check-repository-safety.sh \

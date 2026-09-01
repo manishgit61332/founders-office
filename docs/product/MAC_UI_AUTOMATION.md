@@ -5,7 +5,8 @@
 `FoundersOfficeMacUITests` exercises the release-gate paths that require a real AppKit/SwiftUI process:
 
 - clean first-run onboarding opening at its full 720×500 size, with its title,
-  name field, and primary action all visible and hittable;
+  name field, and primary action all visible and hittable, plus 1× and 2×
+  alpha-silhouette checks that keep every exterior corner transparent;
 - Appearance edit → Save Changes → relaunch, plus forced relaunch without
   saving to prove that a draft never leaks into durable state;
 - Discard, in-notch Escape, and explicit-notch-close Cancel with an unsaved

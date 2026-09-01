@@ -54,6 +54,8 @@ Public downloads use a separate fail-closed path. The release script requires a 
 
 See [the macOS direct-distribution runbook](docs/product/MAC_DIRECT_DISTRIBUTION.md). The website download must remain disabled until the sealed artifact passes the clean-Mac acceptance test.
 
+Founder’s Office has only three named channels: **Development** for Manish’s local checkout, **Beta** for invited testers, and **Stable** for the public release. Testers receive only the latest signed Beta link; prior artifacts remain immutable for rollback evidence but are never presented as competing choices. See [the beta release workflow](docs/product/BETA_RELEASE_WORKFLOW.md).
+
 ## Command-line updates
 
 ```bash

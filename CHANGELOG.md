@@ -6,6 +6,8 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Added
 
+- A Vercel-compatible Next.js production build and project configuration for the Founder’s Office website while retaining the existing Sites/Cloudflare build path.
+- A CI version-consistency gate that prevents the locally installed development app and the macOS Xcode target from presenting different version/build numbers.
 - A content-free bounded-repair ledger and coordinator with stable idempotency keys, before/after health checks, hard timeouts, three-strike persistence across relaunches, and a Health **Needs You** stop.
 - A workspace-blind safe-mode crash diagnostic containing only ten allow-listed incident/build fields; safe mode still does not open or export canonical data.
 - Draft public client seams for transactional Appearance commits and strict,
@@ -57,6 +59,7 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Changed
 
+- The canonical Mac development build is now 0.11.0 (build 14), matching the macOS project target and replacing the stale 0.10.0 (build 13) local bundle metadata.
 - Primary-goal current and target values now use one exact, nonnegative `numeric(30,8)`-compatible type across Mac, iPhone, SQLite snapshots, JSON projections, and local outbox records while retaining the existing JSON-number shape.
 - Primary-goal bootstrap, push, pull, nullable values, date-only deadlines, and tombstones now preserve exact base-10 values without a `Double` conversion.
 - New Move, profile, workspace, Appearance, primary-goal, milestone, and asset mutations now retain one bounded entity operation instead of another complete workspace snapshot; exact image-original metadata remains excluded.
@@ -83,6 +86,7 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Fixed
 
+- First-run onboarding now renders as one continuous squircle with fully transparent exterior corners instead of a clipped rectangular host shadow.
 - A clean quit during asynchronous Mac startup no longer counts as a pre-ready crash. The development installer now requests an AppKit termination, waits for the process to exit, and refuses to replace a live bundle; real abrupt failures and an active safe-mode latch remain preserved.
 - The safe-mode alert now offers the reset action directly, and local development bundles include the production app icon instead of macOS’s generic placeholder.
 - Mac priority dragging now magnetically acquires the nearest lane and scrolls continuously at the top or bottom edge, with speed based on pointer proximity and balanced notch hold-open cleanup.

@@ -227,6 +227,61 @@ private final class FirstRunPanel: NSPanel {
     override var canBecomeMain: Bool { true }
 }
 
+@MainActor
+enum FirstRunOnboardingChrome {
+    static let cornerRadius: CGFloat = 34
+
+    static func configure(_ panel: NSPanel) {
+        // A WindowServer shadow follows the rectangular NSPanel frame rather
+        // than the SwiftUI alpha silhouette. Keep all depth inside the
+        // onboarding squircle so its transparent corners stay truly clear.
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = false
+    }
+}
+
+struct FirstRunOnboardingShell<Content: View>: View {
+    private let content: Content
+    private let shellShape = RoundedRectangle(
+        cornerRadius: FirstRunOnboardingChrome.cornerRadius,
+        style: .continuous
+    )
+
+    init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
+
+    var body: some View {
+        content
+            .frame(
+                width: FirstRunOnboardingPlacement.panelSize.width,
+                height: FirstRunOnboardingPlacement.panelSize.height
+            )
+            .background(.ultraThinMaterial, in: shellShape)
+            .background(Color.black.opacity(0.52), in: shellShape)
+            .overlay {
+                shellShape
+                    .inset(by: 1)
+                    .stroke(
+                        LinearGradient(
+                            colors: [
+                                Color.white.opacity(0.22),
+                                Color.white.opacity(0.09),
+                                Color.white.opacity(0.035)
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        ),
+                        lineWidth: 1
+                    )
+            }
+            // Clip the complete hierarchy once. Shaping only the background
+            // leaves children and effects free to redraw a rectangular host.
+            .mask(shellShape)
+    }
+}
+
 struct FirstRunOnboardingPlacement {
     static let panelSize = NSSize(width: 720, height: 500)
     static let screenMargin: CGFloat = 18
@@ -325,9 +380,7 @@ final class FirstRunOnboardingWindowController {
         panel.level = .statusBar
         panel.title = "Founder's Office Setup"
         panel.identifier = NSUserInterfaceItemIdentifier("foundersOffice.onboarding")
-        panel.isOpaque = false
-        panel.backgroundColor = .clear
-        panel.hasShadow = true
+        FirstRunOnboardingChrome.configure(panel)
         panel.hidesOnDeactivate = false
         panel.isMovable = false
         panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
@@ -587,23 +640,17 @@ private struct FirstRunOnboardingView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            header
-            Divider().overlay(Color.white.opacity(0.12))
-            content
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .padding(32)
-            Divider().overlay(Color.white.opacity(0.12))
-            footer
+        FirstRunOnboardingShell {
+            VStack(spacing: 0) {
+                header
+                Divider().overlay(Color.white.opacity(0.12))
+                content
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .padding(32)
+                Divider().overlay(Color.white.opacity(0.12))
+                footer
+            }
         }
-        .frame(width: 720, height: 500)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 34, style: .continuous))
-        .background(Color.black.opacity(0.52), in: RoundedRectangle(cornerRadius: 34, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 34, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.18), lineWidth: 1)
-        }
-        .shadow(color: .black.opacity(0.5), radius: 38, y: 18)
         .preferredColorScheme(.dark)
         .onAppear { focusCurrentField() }
         .onChange(of: model.step) { _, _ in focusCurrentField() }
