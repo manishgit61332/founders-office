@@ -33,7 +33,7 @@ struct FounderOfficeAccountControllerTests {
         controller.start()
         controller.start()
 
-        await waitUntil { await service.restoreCallCount() == 1 }
+        await controller.waitForPendingOperations()
         #expect(await service.restoreCallCount() == 1)
         controller.stop()
     }
@@ -54,7 +54,8 @@ struct FounderOfficeAccountControllerTests {
         controller.signInWithGoogle()
 
         #expect(await service.googleSignInCallCount() == 0)
-        await waitUntil { await service.restoreCallCount() == 1 }
+        await controller.waitForPendingOperations()
+        #expect(await service.restoreCallCount() == 1)
         controller.stop()
     }
 
@@ -73,10 +74,10 @@ struct FounderOfficeAccountControllerTests {
         )
         let controller = makeController(service: service)
         controller.start()
-        await waitUntil { await service.restoreCallCount() == 1 }
+        await controller.waitForPendingOperations()
 
         controller.signInWithGoogle()
-        await waitUntil { controller.setupStage == .reviewDisplayName }
+        await controller.waitForPendingOperations()
 
         #expect(controller.authState == .signedIn(session))
         #expect(controller.statusTitle == "Finish account setup")
@@ -106,10 +107,10 @@ struct FounderOfficeAccountControllerTests {
             applyName: { appliedNames.append($0) }
         )
         controller.start()
-        await waitUntil { await service.restoreCallCount() == 1 }
+        await controller.waitForPendingOperations()
 
         controller.signInWithGoogle()
-        await waitUntil { controller.setupStage == .reviewDisplayName }
+        await controller.waitForPendingOperations()
 
         #expect(controller.reviewedDisplayNameDraft == "Priya")
         #expect(appliedNames.isEmpty)
@@ -121,7 +122,7 @@ struct FounderOfficeAccountControllerTests {
 
         controller.reviewedDisplayNameDraft = "  Asha  "
         controller.confirmReviewedDisplayName()
-        await waitUntil { controller.setupStage == .chooseWorkspace }
+        await controller.waitForPendingOperations()
 
         #expect(appliedNames.isEmpty)
         #expect(
@@ -169,7 +170,7 @@ struct FounderOfficeAccountControllerTests {
         )
 
         controller.start()
-        await waitUntil { controller.workspacePlan == .bootstrapRemoteWorkspace }
+        await controller.waitForPendingOperations()
 
         #expect(controller.setupStage == .none)
         #expect(appliedNames == ["Asha"])
@@ -201,14 +202,11 @@ struct FounderOfficeAccountControllerTests {
             applyName: { appliedNames.append($0) }
         )
         controller.start()
-        await waitUntil { controller.setupStage == .reviewDisplayName }
+        await controller.waitForPendingOperations()
 
         controller.reviewedDisplayNameDraft = "Asha"
         controller.confirmReviewedDisplayName()
-        await waitUntil {
-            controller.authState == .signedIn(replacementSession)
-                && controller.setupStage == .reviewDisplayName
-        }
+        await controller.waitForPendingOperations()
 
         #expect(appliedNames.isEmpty)
         #expect(controller.workspacePlan == nil)
@@ -235,7 +233,7 @@ struct FounderOfficeAccountControllerTests {
         )
 
         controller.start()
-        await waitUntil { controller.setupStage == .chooseWorkspace }
+        await controller.waitForPendingOperations()
 
         #expect(appliedNames.isEmpty)
         #expect(controller.reviewedDisplayNameDraft == "Account Name")
@@ -268,16 +266,17 @@ struct FounderOfficeAccountControllerTests {
             interactions: interactions.hooks
         )
         controller.start()
-        await waitUntil { await service.restoreCallCount() == 1 }
+        await controller.waitForPendingOperations()
 
         controller.signInWithApple()
-        await waitUntil { controller.setupStage == .reviewDisplayName }
+        await controller.waitForPendingOperations()
 
         #expect(authorizer.callCount == 1)
         #expect(await service.appleSignInCallCount() == 1)
         #expect(interactions.events.prefix(2) == [.began(suspendsHost: true), .ended])
         controller.cancelAccountSetup()
-        await waitUntil { controller.authState == .localOnly }
+        await controller.waitForPendingOperations()
+        #expect(controller.authState == .localOnly)
         #expect(interactions.events.last == .ended)
         controller.stop()
     }
@@ -293,7 +292,7 @@ struct FounderOfficeAccountControllerTests {
         let service = TestProductAuthService(initialState: .signedIn(session))
         let controller = makeController(service: service)
         controller.start()
-        await waitUntil { controller.setupStage == .reviewDisplayName }
+        await controller.waitForPendingOperations()
 
         controller.reviewedDisplayNameDraft = "\n"
         controller.confirmReviewedDisplayName()
@@ -323,18 +322,6 @@ struct FounderOfficeAccountControllerTests {
         )
     }
 
-    private func waitUntil(
-        timeout: Duration = .seconds(2),
-        _ condition: @escaping @MainActor () async -> Bool
-    ) async {
-        let clock = ContinuousClock()
-        let deadline = clock.now.advanced(by: timeout)
-        while clock.now < deadline {
-            if await condition() { return }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-        Issue.record("Timed out waiting for account state")
-    }
 }
 
 private actor TestProductAuthService: ProductAuthServing {

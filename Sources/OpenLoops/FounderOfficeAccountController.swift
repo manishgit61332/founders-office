@@ -292,6 +292,22 @@ final class FounderOfficeAccountController: ObservableObject, AccountSyncStatusS
         releaseSetupInteraction()
     }
 
+    /// Provides a deterministic synchronization point for state-machine tests.
+    /// It waits only for finite restore or customer-initiated operations; the
+    /// long-lived authentication observation stream remains active.
+    func waitForPendingOperations() async {
+        while restoreTask != nil || operationTask != nil {
+            let pendingRestore = restoreTask
+            let pendingOperation = operationTask
+            if let pendingRestore {
+                await pendingRestore.value
+            }
+            if let pendingOperation {
+                await pendingOperation.value
+            }
+        }
+    }
+
     func signInWithGoogle() {
         guard isAuthenticationAvailable, !isBusy, operationTask == nil, let service else { return }
         beginNativeInteraction(reason: "google-sign-in")

@@ -352,6 +352,7 @@ public actor BoundedRepairCoordinator {
     private let ledger: BoundedRepairLedger
     private let timeoutNanoseconds: UInt64
     private let clock: @Sendable () -> Date
+    private let timeoutWait: @Sendable (UInt64) async throws -> Void
     private var inFlight: [BoundedRepairKey: Task<RepairExecution, Never>] = [:]
     private var lingering: [BoundedRepairKey: LingeringOperation] = [:]
 
@@ -363,6 +364,19 @@ public actor BoundedRepairCoordinator {
         self.ledger = ledger
         self.timeoutNanoseconds = min(max(timeoutNanoseconds, 1_000_000), 60_000_000_000)
         self.clock = clock
+        timeoutWait = { try await Task.sleep(nanoseconds: $0) }
+    }
+
+    init(
+        ledger: BoundedRepairLedger,
+        timeoutNanoseconds: UInt64,
+        clock: @escaping @Sendable () -> Date = { Date() },
+        timeoutWait: @escaping @Sendable (UInt64) async throws -> Void
+    ) {
+        self.ledger = ledger
+        self.timeoutNanoseconds = min(max(timeoutNanoseconds, 1_000_000), 60_000_000_000)
+        self.clock = clock
+        self.timeoutWait = timeoutWait
     }
 
     public func run(
@@ -383,12 +397,14 @@ public actor BoundedRepairCoordinator {
         let ledger = self.ledger
         let timeoutNanoseconds = self.timeoutNanoseconds
         let clock = self.clock
+        let timeoutWait = self.timeoutWait
         let task = Task {
             await Self.execute(
                 key: key,
                 ledger: ledger,
                 timeoutNanoseconds: timeoutNanoseconds,
                 clock: clock,
+                timeoutWait: timeoutWait,
                 isHealthy: isHealthy,
                 repair: repair
             )
@@ -427,6 +443,7 @@ public actor BoundedRepairCoordinator {
         ledger: BoundedRepairLedger,
         timeoutNanoseconds: UInt64,
         clock: @escaping @Sendable () -> Date,
+        timeoutWait: @escaping @Sendable (UInt64) async throws -> Void,
         isHealthy: @escaping HealthCheck,
         repair: @escaping RepairOperation
     ) async -> RepairExecution {
@@ -461,6 +478,7 @@ public actor BoundedRepairCoordinator {
 
         let timedExecution = await performWithTimeout(
             nanoseconds: timeoutNanoseconds,
+            timeoutWait: timeoutWait,
             operation: repair
         )
         let afterIsHealthy = await isHealthy()
@@ -569,6 +587,7 @@ public actor BoundedRepairCoordinator {
 
     private static func performWithTimeout(
         nanoseconds: UInt64,
+        timeoutWait: @escaping @Sendable (UInt64) async throws -> Void,
         operation: @escaping RepairOperation
     ) async -> TimedExecution {
         let race = RepairAttemptRace()
@@ -582,7 +601,7 @@ public actor BoundedRepairCoordinator {
         }
         let timeoutTask = Task {
             do {
-                try await Task.sleep(nanoseconds: nanoseconds)
+                try await timeoutWait(nanoseconds)
                 await race.resolve(.timedOut)
             } catch {
                 // The winning operation cancels this timer.

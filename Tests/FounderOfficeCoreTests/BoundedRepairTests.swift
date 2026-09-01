@@ -37,22 +37,25 @@ struct BoundedRepairTests {
         defer { fixture.remove() }
         let marker = "PRIVATE MOVE /Users/founder@example.com secret-token"
         let ledger = BoundedRepairLedger(fileURL: fixture.ledgerURL)
+        let timeout = ControlledRepairTimeout()
+        let repairGate = NonCooperativeRepairGate()
         let coordinator = BoundedRepairCoordinator(
             ledger: ledger,
-            timeoutNanoseconds: 8_000_000
+            timeoutNanoseconds: 8_000_000,
+            timeoutWait: { try await timeout.wait(nanoseconds: $0) }
         )
-        let startedAt = ContinuousClock.now
 
         let result = await coordinator.run(
             key: fixture.key,
             isHealthy: { false },
             repair: {
                 _ = marker
-                try await Task.sleep(for: .seconds(5))
+                await timeout.repairDidStart()
+                await repairGate.waitWhileIgnoringCancellation()
             }
         )
 
-        #expect(ContinuousClock.now - startedAt < .seconds(1))
+        #expect(await timeout.requestedNanoseconds == 8_000_000)
         #expect(result == .retryAvailable(attemptsUsed: 1, failure: .timedOut))
         let record = try #require(try await ledger.record(for: fixture.key))
         #expect(record.afterHealth == .unhealthy)
@@ -61,6 +64,7 @@ struct BoundedRepairTests {
         #expect(!text.contains(marker))
         #expect(!text.contains("/Users/"))
         #expect(!text.localizedCaseInsensitiveContains("token"))
+        await repairGate.release()
     }
 
     @Test
@@ -271,6 +275,26 @@ private actor NonCooperativeRepairGate {
 
     func release() {
         isWaiting = false
+    }
+}
+
+private actor ControlledRepairTimeout {
+    private(set) var requestedNanoseconds: UInt64?
+    private var repairStarted = false
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    func wait(nanoseconds: UInt64) async throws {
+        requestedNanoseconds = nanoseconds
+        guard !repairStarted else { return }
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+        }
+    }
+
+    func repairDidStart() {
+        repairStarted = true
+        continuation?.resume()
+        continuation = nil
     }
 }
 

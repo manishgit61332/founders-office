@@ -24,7 +24,11 @@ bash -n \
 zsh -n Scripts/build-app.sh Scripts/release-macos.sh Scripts/verify-macos-release.sh Scripts/test-release-safety.sh
 Scripts/test-release-safety.sh
 Scripts/verify-privacy-manifest.py Apps/macOS/PrivacyInfo.xcprivacy
-swift test --enable-code-coverage
+swift test --enable-code-coverage --skip WorkspaceRepositoryPerformanceTests
+swift test \
+    --enable-code-coverage \
+    --skip-build \
+    --filter WorkspaceRepositoryPerformanceTests
 swift run FounderOfficeCoreChecks
 swift build -Xswiftc -strict-concurrency=complete -Xswiftc -warnings-as-errors
 swift build -c release

@@ -945,6 +945,7 @@ struct WorkspaceRepositoryPerformanceTests {
         let initialDatabaseBytes = fixture.databaseArtifactByteCount()
         let warmupCount = 12
         let measuredCount = 96
+        let measurementClock = ContinuousClock()
         var timings: [Double] = []
 
         for index in 0..<(warmupCount + measuredCount) {
@@ -965,12 +966,14 @@ struct WorkspaceRepositoryPerformanceTests {
                 createdAt: changedAt
             )
 
-            let startedAt = Date()
+            let startedAt = measurementClock.now
             _ = try await repository.transact(
                 expectedRevision: baseline.revision,
                 mutation: mutation
             )
-            let elapsedMilliseconds = Date().timeIntervalSince(startedAt) * 1_000
+            let elapsed = startedAt.duration(to: measurementClock.now).components
+            let elapsedMilliseconds = Double(elapsed.seconds) * 1_000
+                + Double(elapsed.attoseconds) / 1_000_000_000_000_000
             if index >= warmupCount {
                 timings.append(elapsedMilliseconds)
             }
