@@ -182,7 +182,7 @@ final class FoundersOfficeMacUITests: XCTestCase {
         save.click()
 
         XCTAssertFalse(app.descendants(matching: .any)["movePlanning.editor"].exists)
-        let move = app.buttons["Edit Prepare launch brief priority and deadline"]
+        let move = app.buttons["Edit Prepare launch brief"]
         XCTAssertTrue(move.waitForExistence(timeout: 2))
         XCTAssertTrue(String(describing: move.value).contains("P2"))
         XCTAssertFalse(String(describing: move.value).contains("no deadline"))
@@ -243,7 +243,7 @@ final class FoundersOfficeMacUITests: XCTestCase {
             thenHoldForDuration: 3.2
         )
 
-        let planningButton = app.buttons["Edit Priority drag fixture 1 priority and deadline"]
+        let planningButton = app.buttons["Edit Priority drag fixture 1"]
         XCTAssertTrue(planningButton.waitForExistence(timeout: 4))
         waitForValueContaining("P3", of: planningButton)
         waitForValue("Saved", of: app.descendants(matching: .any)["moves.persistence"])
@@ -263,6 +263,46 @@ final class FoundersOfficeMacUITests: XCTestCase {
                 .waitForExistence(timeout: 4)
         )
         XCTAssertTrue(app.buttons["movePlanning.priority.p3"].isSelected)
+    }
+
+    func testNewMoveDescriptionCanBeWrittenReadAndEdited() {
+        let app = launch(
+            root: makeTemporaryRoot(),
+            environment: [
+                "OPENLOOPS_UI_TEST_FIXTURE": "1",
+                "OPENLOOPS_PREVIEW_SECTION": "loops",
+                "OPENLOOPS_PREVIEW_ADDING": "1"
+            ]
+        )
+
+        let title = app.textFields["newMove.title"]
+        let description = app.textFields["newMove.description"]
+        XCTAssertTrue(title.waitForExistence(timeout: 4))
+        XCTAssertTrue(description.isHittable)
+        title.typeText("Send the launch note")
+        description.click()
+        description.typeText("Include the beta link and the feedback form.")
+        app.buttons["newMove.add"].click()
+
+        let edit = app.buttons["Edit Send the launch note"]
+        XCTAssertTrue(edit.waitForExistence(timeout: 3))
+        edit.click()
+        let editorDescription = app.textFields["movePlanning.description"]
+        XCTAssertTrue(editorDescription.waitForExistence(timeout: 2))
+        XCTAssertEqual(
+            editorDescription.value as? String,
+            "Include the beta link and the feedback form."
+        )
+
+        editorDescription.click()
+        app.typeKey("a", modifierFlags: .command)
+        editorDescription.typeText("Include the beta link, feedback form, and deadline.")
+        app.buttons["movePlanning.save"].click()
+        edit.click()
+        XCTAssertEqual(
+            app.textFields["movePlanning.description"].value as? String,
+            "Include the beta link, feedback form, and deadline."
+        )
     }
 
     func testCalendarCreationUsesTheTopLayerEditor() {

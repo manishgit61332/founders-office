@@ -6,6 +6,7 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Added
 
+- New Moves now accept an optional user-written description, and the full Move editor can read or change the title and description alongside priority and deadline in one save.
 - A Vercel-compatible Next.js production build and project configuration for the Founder’s Office website while retaining the existing Sites/Cloudflare build path.
 - A CI version-consistency gate that prevents the locally installed development app and the macOS Xcode target from presenting different version/build numbers.
 - A content-free bounded-repair ledger and coordinator with stable idempotency keys, before/after health checks, hard timeouts, three-strike persistence across relaunches, and a Health **Needs You** stop.
@@ -59,7 +60,7 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Changed
 
-- The canonical Mac development build is now 0.11.0 (build 14), matching the macOS project target and replacing the stale 0.10.0 (build 13) local bundle metadata.
+- The canonical Mac development build is now 0.11.1 (build 15), matching the macOS project target and replacing 0.11.0 (build 14).
 - Primary-goal current and target values now use one exact, nonnegative `numeric(30,8)`-compatible type across Mac, iPhone, SQLite snapshots, JSON projections, and local outbox records while retaining the existing JSON-number shape.
 - Primary-goal bootstrap, push, pull, nullable values, date-only deadlines, and tombstones now preserve exact base-10 values without a `Double` conversion.
 - New Move, profile, workspace, Appearance, primary-goal, milestone, and asset mutations now retain one bounded entity operation instead of another complete workspace snapshot; exact image-original metadata remains excluded.
@@ -86,6 +87,7 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Fixed
 
+- Priority dragging now tracks the pointer in stable native viewport coordinates, so edge auto-scroll continues when the cursor is held still and lazy rows move beneath it.
 - First-run onboarding now renders as one continuous squircle with fully transparent exterior corners instead of a clipped rectangular host shadow.
 - A clean quit during asynchronous Mac startup no longer counts as a pre-ready crash. The development installer now requests an AppKit termination, waits for the process to exit, and refuses to replace a live bundle; real abrupt failures and an active safe-mode latch remain preserved.
 - The safe-mode alert now offers the reset action directly, and local development bundles include the production app icon instead of macOS’s generic placeholder.

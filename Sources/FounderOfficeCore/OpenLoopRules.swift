@@ -69,6 +69,21 @@ public enum OpenLoopRules {
         return result
     }
 
+    public static func updatedContent(
+        _ item: OpenLoop,
+        title: String,
+        details: String,
+        at date: Date
+    ) -> OpenLoop {
+        guard item.title != title || item.details != details else { return item }
+
+        var result = item
+        result.title = title
+        result.details = details
+        result.updatedAt = date
+        return result
+    }
+
     public static func softDeleted(_ item: OpenLoop, at date: Date) -> OpenLoop {
         var result = item
         result.deletedAt = date

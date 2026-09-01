@@ -124,6 +124,46 @@ struct OpenLoopRulesTests {
     }
 
     @Test
+    func updatingContentChangesOnlyUserAuthoredContentAndRecordClock() {
+        let original = TestFixtures.loop(
+            status: .waiting,
+            priority: .p2,
+            dueAt: TestFixtures.date(20),
+            updatedAt: TestFixtures.date(5)
+        )
+
+        let updated = OpenLoopRules.updatedContent(
+            original,
+            title: "A clearer Move",
+            details: "The full user-authored description.",
+            at: TestFixtures.date(30)
+        )
+
+        #expect(updated.title == "A clearer Move")
+        #expect(updated.details == "The full user-authored description.")
+        #expect(updated.updatedAt == TestFixtures.date(30))
+        #expect(updated.status == original.status)
+        #expect(updated.priority == original.priority)
+        #expect(updated.dueAt == original.dueAt)
+        #expect(updated.priorityUpdatedAt == original.priorityUpdatedAt)
+        #expect(updated.dueAtUpdatedAt == original.dueAtUpdatedAt)
+    }
+
+    @Test
+    func updatingContentWithIdenticalValuesIsANoOp() {
+        let original = TestFixtures.loop(details: "Already written")
+
+        let updated = OpenLoopRules.updatedContent(
+            original,
+            title: original.title,
+            details: original.details,
+            at: TestFixtures.date(30)
+        )
+
+        #expect(updated == original)
+    }
+
+    @Test
     func testSoftDeleteAndRestoreOnlyChangeTombstoneMetadata() {
         let original = TestFixtures.loop(status: .doing)
 

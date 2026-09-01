@@ -196,4 +196,35 @@ struct PriorityDragAutoScrollerTests {
         #expect(endedIDs == [firstID, secondID])
         #expect(scroller.draggedMoveID == nil)
     }
+
+    @Test
+    func windowPointerTrackingStaysViewportRelativeWhileTheDocumentScrolls() {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 300, height: 180),
+            styleMask: .borderless,
+            backing: .buffered,
+            defer: false
+        )
+        let scrollView = NSScrollView(frame: window.contentView!.bounds)
+        scrollView.documentView = FlippedDocumentView(
+            frame: NSRect(x: 0, y: 0, width: 300, height: 1_200)
+        )
+        window.contentView = scrollView
+        let scroller = PriorityDragAutoScroller()
+        scroller.attach(scrollView)
+
+        #expect(scroller.update(pointerInWindow: NSPoint(x: 150, y: 2)))
+        let firstPointerY = try? #require(scroller.pointerY)
+        scrollView.contentView.scroll(to: NSPoint(x: 0, y: 420))
+        #expect(scroller.update(pointerInWindow: NSPoint(x: 150, y: 2)))
+        let secondPointerY = try? #require(scroller.pointerY)
+
+        #expect(firstPointerY != nil)
+        #expect(secondPointerY != nil)
+        if let firstPointerY, let secondPointerY {
+            #expect(abs(firstPointerY - secondPointerY) < 0.5)
+            #expect(secondPointerY > 170)
+        }
+        scroller.stop()
+    }
 }

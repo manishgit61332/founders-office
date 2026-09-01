@@ -180,6 +180,57 @@ struct WorkspaceSessionIntegrationTests {
     }
 
     @Test
+    func moveContentAndPlanningSaveAsOneDurableOperation() async throws {
+        let fixture = try MacStorageFixture()
+        defer { fixture.remove() }
+        let workspaceID = UUID()
+        let session = try await WorkspaceSession.open(
+            rootURL: fixture.root,
+            workspaceID: workspaceID,
+            initialSnapshot: fixture.snapshot(moveCount: 1)
+        )
+        let store = OpenLoopStore(session: session)
+        let moveID = try #require(store.items.first?.id)
+        let dueDate = Date(timeIntervalSince1970: 2_000_000_000)
+
+        let result = await store.updateContentAndPlanning(
+            id: moveID,
+            title: "  Edited title  ",
+            details: "  A user-written description.  ",
+            priorityChange: .set(.p0),
+            deadlineChange: .set(dueDate)
+        )
+        guard case .saved = result else {
+            Issue.record("Expected the combined Move edit to save")
+            return
+        }
+
+        let durable = try await session.repository.snapshot()
+        let move = try #require(durable.content.openLoops.items.first(where: { $0.id == moveID }))
+        #expect(move.title == "Edited title")
+        #expect(move.details == "A user-written description.")
+        #expect(move.priority == .p0)
+        #expect(move.dueAt == PlanningDate.storedDate(for: PlanningDate.day(fromLocal: dueDate)))
+        #expect(durable.revision == WorkspaceRevision(rawValue: 1))
+        #expect(try await session.repository.pendingOperations().count == 1)
+
+        store.stop()
+        session.stop()
+        let reopened = try await WorkspaceSession.open(
+            rootURL: fixture.root,
+            workspaceID: workspaceID,
+            initialSnapshot: WorkspaceSession.freshSnapshot
+        )
+        let reopenedMove = try #require(
+            reopened.snapshot.content.openLoops.items.first(where: { $0.id == moveID })
+        )
+        #expect(reopenedMove.title == "Edited title")
+        #expect(reopenedMove.details == "A user-written description.")
+        #expect(reopenedMove.priority == .p0)
+        reopened.stop()
+    }
+
+    @Test
     func remoteCommitPublishesToTheLiveSessionExactlyOnceWithoutOutboxEcho() async throws {
         let fixture = try MacStorageFixture()
         defer { fixture.remove() }

@@ -265,6 +265,9 @@ struct NotchBoardView: View {
     @State private var pendingAppearanceExit: AppearanceExitAction?
     @State private var planningItemID: UUID?
     @State private var planningTitle = ""
+    @State private var planningInitialTitle = ""
+    @State private var planningDetails = ""
+    @State private var planningInitialDetails = ""
     @State private var planningPriority: LoopPriority = .p1
     @State private var planningInitialPriority: LoopPriority = .p1
     @State private var planningHasDeadline = false
@@ -279,6 +282,7 @@ struct NotchBoardView: View {
         ProcessInfo.processInfo.environment["OPENLOOPS_PREVIEW_NEW_TITLE"] ?? ""
         #endif
     }()
+    @State private var newDetails = ""
     @State private var newPriority: LoopPriority = .p1
     @State private var newStatus: LoopStatus = .doing
     @State private var hoveredStatus: LoopStatus? = {
@@ -301,6 +305,7 @@ struct NotchBoardView: View {
     @State private var finishDateDraft = Calendar.current.date(byAdding: .day, value: 60, to: Date()) ?? Date()
     @Namespace private var statusSelection
     @FocusState private var addFieldFocused: Bool
+    @FocusState private var addDescriptionFocused: Bool
     private let supportReportStorage = SupportReportStorage()
 
     private var theme: FounderTheme {
@@ -519,7 +524,8 @@ struct NotchBoardView: View {
                     .transition(.opacity)
 
                 MovePlanningEditor(
-                    title: planningTitle,
+                    title: $planningTitle,
+                    details: $planningDetails,
                     priority: $planningPriority,
                     hasDeadline: $planningHasDeadline,
                     deadline: $planningDeadline,
@@ -1736,36 +1742,50 @@ struct NotchBoardView: View {
     }
 
     private var addComposer: some View {
-        HStack(spacing: 10) {
-            TextField("Capture a move…", text: $newTitle)
+        VStack(spacing: 7) {
+            HStack(spacing: 10) {
+                TextField("Title", text: $newTitle)
+                    .textFieldStyle(.plain)
+                    .font(interfaceFont(.secondary, weight: .semibold))
+                    .foregroundStyle(primaryText)
+                    .focused($addFieldFocused)
+                    .onSubmit { addDescriptionFocused = true }
+                    .accessibilityIdentifier("newMove.title")
+
+                Picker("Priority", selection: $newPriority) {
+                    ForEach(LoopPriority.allCases) { priority in
+                        Text(priority.rawValue).tag(priority)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 58)
+
+                Picker("Status", selection: $newStatus) {
+                    ForEach(LoopStatus.allCases.filter { $0 != .done }) { status in
+                        Text(status.title).tag(status)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 86)
+
+                Button("Add", action: addItem)
+                    .buttonStyle(HeaderActionButtonStyle(isEmphasized: true))
+                    .disabled(!canAddMove)
+                    .accessibilityIdentifier("newMove.add")
+            }
+
+            TextField("Description (optional)", text: $newDetails, axis: .vertical)
                 .textFieldStyle(.plain)
-                .font(interfaceFont(.secondary, weight: .regular))
-                .foregroundStyle(primaryText)
-                .focused($addFieldFocused)
+                .font(interfaceFont(.tertiary, weight: .regular))
+                .foregroundStyle(primaryText.opacity(0.88))
+                .lineLimit(1...2)
+                .focused($addDescriptionFocused)
                 .onSubmit(addItem)
-
-            Picker("Priority", selection: $newPriority) {
-                ForEach(LoopPriority.allCases) { priority in
-                    Text(priority.rawValue).tag(priority)
-                }
-            }
-            .labelsHidden()
-            .frame(width: 58)
-
-            Picker("Status", selection: $newStatus) {
-                ForEach(LoopStatus.allCases.filter { $0 != .done }) { status in
-                    Text(status.title).tag(status)
-                }
-            }
-            .labelsHidden()
-            .frame(width: 86)
-
-            Button("Add", action: addItem)
-                .buttonStyle(HeaderActionButtonStyle(isEmphasized: true))
-                .disabled(newTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .accessibilityIdentifier("newMove.description")
         }
         .padding(.horizontal, 13)
-        .frame(height: 46)
+        .padding(.vertical, 9)
+        .frame(minHeight: 72)
         .background(contentSurface, in: RoundedRectangle(cornerRadius: contentRadius, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: contentRadius, style: .continuous)
@@ -3084,6 +3104,9 @@ struct NotchBoardView: View {
 
         planningItemID = item.id
         planningTitle = item.title
+        planningInitialTitle = item.title
+        planningDetails = item.details
+        planningInitialDetails = item.details
         planningPriority = item.priority
         planningInitialPriority = item.priority
         planningHasDeadline = item.dueAt != nil
@@ -3094,7 +3117,14 @@ struct NotchBoardView: View {
     }
 
     private func refreshPlanningEditor(from item: OpenLoop) {
-        planningTitle = item.title
+        if planningTitle == planningInitialTitle {
+            planningTitle = item.title
+            planningInitialTitle = item.title
+        }
+        if planningDetails == planningInitialDetails {
+            planningDetails = item.details
+            planningInitialDetails = item.details
+        }
 
         if planningPriority == planningInitialPriority {
             planningPriority = item.priority
@@ -3133,8 +3163,10 @@ struct NotchBoardView: View {
             deadlineChange = .clear
         }
 
-        switch await store.updatePlanning(
+        switch await store.updateContentAndPlanning(
             id: planningItemID,
+            title: planningTitle,
+            details: planningDetails,
             priorityChange: priorityChange,
             deadlineChange: deadlineChange
         ) {
@@ -3151,6 +3183,9 @@ struct NotchBoardView: View {
     private func closePlanningEditor() {
         planningItemID = nil
         planningTitle = ""
+        planningInitialTitle = ""
+        planningDetails = ""
+        planningInitialDetails = ""
         planningInitialDueAt = nil
         planningErrorMessage = nil
         releasePlanningInteraction()
@@ -3165,8 +3200,17 @@ struct NotchBoardView: View {
     }
 
     private var planningHasChanges: Bool {
-        planningPriority != planningInitialPriority
+        let cleanTitle = planningTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanDetails = planningDetails.trimmingCharacters(in: .whitespacesAndNewlines)
+        let contentIsValid = !cleanTitle.isEmpty
+            && cleanTitle.unicodeScalars.count <= 500
+            && cleanDetails.unicodeScalars.count <= 20_000
+        return contentIsValid && (
+            cleanTitle != planningInitialTitle
+            || cleanDetails != planningInitialDetails
+            || planningPriority != planningInitialPriority
             || planningDraftDueDay != planningInitialDueDay
+        )
     }
 
     private func releasePlanningInteraction() {
@@ -3593,11 +3637,27 @@ struct NotchBoardView: View {
     }
 
     private func addItem() {
-        store.add(title: newTitle, status: newStatus, priority: newPriority, dueAt: nil)
+        guard canAddMove else { return }
+        store.add(
+            title: newTitle,
+            details: newDetails,
+            status: newStatus,
+            priority: newPriority,
+            dueAt: nil
+        )
         selectedStatus = newStatus
         isShowingPreviousTasks = false
         newTitle = ""
+        newDetails = ""
         isAdding = false
+    }
+
+    private var canAddMove: Bool {
+        let title = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        let details = newDetails.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !title.isEmpty
+            && title.unicodeScalars.count <= 500
+            && details.unicodeScalars.count <= 20_000
     }
 
     private func deleteMove(_ item: OpenLoop) {
@@ -4052,8 +4112,13 @@ private struct LoopRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(StatusTabButtonStyle())
-        .help("Edit priority and deadline")
-        .accessibilityLabel("Edit \(item.title) priority and deadline")
+        .help(item.details.isEmpty ? "Edit this Move" : "Read or edit the full description")
+        .accessibilityLabel("Edit \(item.title)")
+        .accessibilityHint(
+            item.details.isEmpty
+                ? "Opens title, description, priority, and deadline"
+                : "Opens the full description, priority, and deadline"
+        )
         .accessibilityValue(planningAccessibilityValue)
     }
 
@@ -4104,7 +4169,7 @@ private struct LoopRow: View {
             }
             #endif
 
-            Button("Edit priority and deadline…", action: onEditPlanning)
+            Button("Edit Move…", action: onEditPlanning)
 
             Menu("Set priority") {
                 ForEach(LoopPriority.allCases) { priority in
@@ -4181,7 +4246,8 @@ private struct LoopRow: View {
 
 private struct MovePlanningEditor: View {
     @Environment(\.founderTheme) private var theme
-    let title: String
+    @Binding var title: String
+    @Binding var details: String
     @Binding var priority: LoopPriority
     @Binding var hasDeadline: Bool
     @Binding var deadline: Date
@@ -4196,28 +4262,53 @@ private struct MovePlanningEditor: View {
     private let primaryText = Color.white.opacity(0.96)
     private let secondaryText = Color.white.opacity(0.70)
     private let priorityColumns = [
-        GridItem(.flexible(), spacing: 8),
-        GridItem(.flexible(), spacing: 8)
+        GridItem(.flexible(), spacing: 7),
+        GridItem(.flexible(), spacing: 7),
+        GridItem(.flexible(), spacing: 7),
+        GridItem(.flexible(), spacing: 7)
     ]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 9) {
             VStack(alignment: .leading, spacing: 3) {
                 Text("Edit Move")
                     .font(theme.displayFont(.primaryTitle))
                     .foregroundStyle(primaryText)
-                Text(title)
+
+                TextField("Title", text: $title)
+                    .textFieldStyle(.plain)
                     .font(theme.interfaceFont(.secondary, weight: .semibold))
-                    .foregroundStyle(primaryText.opacity(0.82))
-                    .lineLimit(2)
+                    .foregroundStyle(primaryText)
+                    .padding(.horizontal, 10)
+                    .frame(height: 34)
+                    .background(Color.white.opacity(0.065), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            .stroke(Color.white.opacity(0.10), lineWidth: 1)
+                    )
+                    .accessibilityIdentifier("movePlanning.title")
+
+                TextField("Description (optional)", text: $details, axis: .vertical)
+                    .textFieldStyle(.plain)
+                    .font(theme.interfaceFont(.tertiary, weight: .regular))
+                    .foregroundStyle(primaryText.opacity(0.88))
+                    .lineLimit(2...3)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+                    .background(Color.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                    )
+                    .accessibilityIdentifier("movePlanning.description")
             }
 
-            VStack(alignment: .leading, spacing: 7) {
+            VStack(alignment: .leading, spacing: 6) {
                 Text("Priority")
                     .font(theme.interfaceFont(.tertiary, weight: .bold))
                     .foregroundStyle(primaryText)
 
-                LazyVGrid(columns: priorityColumns, spacing: 8) {
+                LazyVGrid(columns: priorityColumns, spacing: 7) {
                     ForEach(LoopPriority.allCases) { option in
                         priorityButton(option)
                     }
@@ -4227,7 +4318,7 @@ private struct MovePlanningEditor: View {
             Divider()
                 .overlay(Color.white.opacity(0.10))
 
-            VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
                 Toggle("Deadline", isOn: $hasDeadline)
                     .toggleStyle(.switch)
                     .font(theme.interfaceFont(.tertiary, weight: .bold))
@@ -4235,29 +4326,24 @@ private struct MovePlanningEditor: View {
                     .accessibilityIdentifier("movePlanning.deadlineEnabled")
 
                 if hasDeadline {
-                    HStack {
-                        Text("Due date")
-                            .font(theme.interfaceFont(.tertiary, weight: .semibold))
-                            .foregroundStyle(primaryText)
-                        Spacer()
-                        DatePicker(
-                            "Due date",
-                            selection: $deadline,
-                            displayedComponents: .date
-                        )
-                        .datePickerStyle(.field)
-                        .labelsHidden()
-                        .accessibilityLabel("Due date")
-                    }
+                    Spacer()
+                    DatePicker(
+                        "Due date",
+                        selection: $deadline,
+                        displayedComponents: .date
+                    )
+                    .datePickerStyle(.field)
+                    .labelsHidden()
+                    .accessibilityLabel("Due date")
                 }
             }
 
-            if let errorMessage {
-                Label(errorMessage, systemImage: "exclamationmark.circle.fill")
+            if let displayedErrorMessage {
+                Label(displayedErrorMessage, systemImage: "exclamationmark.circle.fill")
                     .font(theme.interfaceFont(.tertiary, weight: .semibold))
                     .foregroundStyle(Color.red.opacity(0.94))
                     .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityLabel("Save failed. \(errorMessage)")
+                    .accessibilityLabel(displayedErrorMessage)
             }
 
             HStack(spacing: 9) {
@@ -4282,10 +4368,10 @@ private struct MovePlanningEditor: View {
                     .accessibilityIdentifier("movePlanning.save")
             }
         }
-        .frame(width: 354)
+        .frame(width: 520)
         .preferredColorScheme(.dark)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Edit \(title)")
+        .accessibilityLabel("Edit Move")
         .accessibilityIdentifier("movePlanning.editor")
         .accessibilityAddTraits(.isModal)
         .onAppear {
@@ -4327,6 +4413,17 @@ private struct MovePlanningEditor: View {
         .accessibilityLabel("\(option.rawValue), \(option.title) priority")
         .accessibilityIdentifier("movePlanning.priority.\(option.rawValue.lowercased())")
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+    }
+
+    private var displayedErrorMessage: String? {
+        let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanDetails = details.trimmingCharacters(in: .whitespacesAndNewlines)
+        if cleanTitle.isEmpty { return "Add a title before saving." }
+        if cleanTitle.unicodeScalars.count > 500 { return "Keep the title under 500 characters." }
+        if cleanDetails.unicodeScalars.count > 20_000 {
+            return "Keep the description under 20,000 characters."
+        }
+        return errorMessage
     }
 
     private func priorityColor(_ value: LoopPriority) -> Color {

@@ -196,6 +196,91 @@ final class OpenLoopStore: ObservableObject {
         }
     }
 
+    func updateContentAndPlanning(
+        id: UUID,
+        title: String,
+        details: String,
+        priorityChange: PlanningPriorityChange,
+        deadlineChange: PlanningDeadlineChange
+    ) async -> PlanningUpdateResult {
+        guard canEdit else { return .failed(recoveryState.message) }
+        guard let index = items.firstIndex(where: { $0.id == id && $0.deletedAt == nil }) else {
+            return .failed("This Move is no longer available.")
+        }
+
+        let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanDetails = details.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanTitle.isEmpty else { return .failed("Add a title before saving.") }
+        guard cleanTitle.unicodeScalars.count <= 500 else {
+            return .failed("Keep the title under 500 characters.")
+        }
+        guard cleanDetails.unicodeScalars.count <= 20_000 else {
+            return .failed("Keep the description under 20,000 characters.")
+        }
+
+        let current = items[index]
+        let resolvedPriority: LoopPriority
+        switch priorityChange {
+        case .unchanged: resolvedPriority = current.priority
+        case let .set(priority): resolvedPriority = priority
+        }
+
+        let currentPlanningDay = current.dueAt.map(PlanningDate.day(fromStored:))
+        let resolvedDueAt: Date?
+        switch deadlineChange {
+        case .unchanged:
+            resolvedDueAt = current.dueAt
+        case let .set(date):
+            let selectedDay = PlanningDate.day(fromLocal: date)
+            resolvedDueAt = currentPlanningDay == selectedDay
+                ? current.dueAt
+                : PlanningDate.storedDate(for: selectedDay)
+        case .clear:
+            resolvedDueAt = nil
+        }
+
+        let contentChanged = current.title != cleanTitle || current.details != cleanDetails
+        let priorityChanged = current.priority != resolvedPriority
+        let deadlineChanged = current.dueAt != resolvedDueAt
+        guard contentChanged || priorityChanged || deadlineChanged else { return .unchanged }
+
+        let now = Date()
+        var updated = OpenLoopRules.updatedPlanning(
+            current,
+            priority: resolvedPriority,
+            dueAt: resolvedDueAt,
+            at: now
+        )
+        updated = OpenLoopRules.updatedContent(
+            updated,
+            title: cleanTitle,
+            details: cleanDetails,
+            at: now
+        )
+        items[index] = updated
+
+        var changedFields: [String] = []
+        if current.title != cleanTitle { changedFields.append("title") }
+        if current.details != cleanDetails { changedFields.append("details") }
+        if priorityChanged { changedFields.append(contentsOf: ["priority", "priorityUpdatedAt"]) }
+        if deadlineChanged { changedFields.append(contentsOf: ["dueAt", "dueAtUpdatedAt"]) }
+        if contentChanged { changedFields.append("updatedAt") }
+
+        let result = await persistCurrentDocument(
+            entityKind: "move",
+            entityID: id.uuidString.lowercased(),
+            changedFields: changedFields,
+            at: now
+        )
+        switch result {
+        case .success:
+            lastWriteSucceeded = true
+            return .saved
+        case .failure:
+            return .failed("Couldn’t save those changes. Check the workspace and try again.")
+        }
+    }
+
     func add(
         title: String,
         details: String = "",

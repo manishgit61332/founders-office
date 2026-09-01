@@ -92,6 +92,7 @@ final class PriorityDragAutoScroller: ObservableObject {
     private var velocity: CGFloat = 0
     private var lastTick = ProcessInfo.processInfo.systemUptime
     private let policy: DragEdgeScrollPolicy
+    private let pointerExitMargin: CGFloat = 18
     private(set) var pointerY: CGFloat?
     private(set) var draggedMoveID: UUID?
 
@@ -123,6 +124,40 @@ final class PriorityDragAutoScroller: ObservableObject {
         }
     }
 
+    /// Tracks the drag in stable viewport coordinates. SwiftUI's `DropInfo`
+    /// location can pause or briefly exit when lazy rows move underneath a
+    /// stationary pointer; AppKit window coordinates do not.
+    @discardableResult
+    func update(pointerInWindow point: NSPoint) -> Bool {
+        guard let scrollView, scrollView.window != nil else { return false }
+        let clipView = scrollView.contentView
+        let converted = clipView.convert(point, from: nil)
+        let bounds = clipView.bounds
+        let localX = converted.x - bounds.minX
+        let rawLocalY = converted.y - bounds.minY
+        let isNearViewport = localX >= -pointerExitMargin
+            && localX <= bounds.width + pointerExitMargin
+            && rawLocalY >= -pointerExitMargin
+            && rawLocalY <= bounds.height + pointerExitMargin
+
+        guard isNearViewport else {
+            leaveViewport()
+            return false
+        }
+
+        let topOriginY = clipView.isFlipped
+            ? rawLocalY
+            : bounds.height - rawLocalY
+        update(pointerY: topOriginY)
+        return true
+    }
+
+    @discardableResult
+    func refreshPointerFromWindow() -> Bool {
+        guard let window = scrollView?.window else { return false }
+        return update(pointerInWindow: window.mouseLocationOutsideOfEventStream)
+    }
+
     func stop() {
         velocity = 0
         stopTimer()
@@ -139,8 +174,18 @@ final class PriorityDragAutoScroller: ObservableObject {
         sessionEnd = onEnd
 
         localEventMonitor = NSEvent.addLocalMonitorForEvents(
-            matching: [.leftMouseUp, .keyDown]
+            matching: [.leftMouseDragged, .leftMouseUp, .keyDown]
         ) { [weak self] event in
+            if event.type == .leftMouseDragged {
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    if event.window === self.scrollView?.window {
+                        self.update(pointerInWindow: event.locationInWindow)
+                    } else {
+                        self.refreshPointerFromWindow()
+                    }
+                }
+            }
             let shouldEnd = event.type == .leftMouseUp
                 || (event.type == .keyDown && event.keyCode == 53)
             if shouldEnd {
@@ -192,6 +237,9 @@ final class PriorityDragAutoScroller: ObservableObject {
     }
 
     private func tick() {
+        if draggedMoveID != nil, scrollView?.window != nil {
+            guard refreshPointerFromWindow() else { return }
+        }
         let now = ProcessInfo.processInfo.systemUptime
         let elapsed = min(max(now - lastTick, 1 / 240), 1 / 15)
         lastTick = now
@@ -298,8 +346,12 @@ struct PriorityBoardDropDelegate: DropDelegate {
     }
 
     func dropExited(info: DropInfo) {
-        autoScroller.leaveViewport()
-        setTarget(nil)
+        // Lazy stack relayout can emit a transient exit while the pointer is
+        // still physically inside the viewport. Keep scrolling in that case.
+        if !autoScroller.refreshPointerFromWindow() {
+            autoScroller.leaveViewport()
+            setTarget(nil)
+        }
     }
 
     func performDrop(info: DropInfo) -> Bool {
