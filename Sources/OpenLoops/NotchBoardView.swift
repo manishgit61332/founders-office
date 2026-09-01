@@ -1311,18 +1311,6 @@ struct NotchBoardView: View {
                         )
                     )
                 }
-                .onDrop(
-                    of: [UTType.founderOfficeMove],
-                    delegate: PriorityBoardDropDelegate(
-                        laneFrames: priorityLaneFrames,
-                        activeTarget: priorityDropTarget,
-                        autoScroller: priorityDragAutoScroller,
-                        onTargetChange: setPriorityDropTarget,
-                        onDropMove: { moveID, priority in
-                            handlePriorityDrop(moveID, target: priority)
-                        }
-                    )
-                )
                 .onDisappear(perform: finishPriorityDrag)
                 .overlay(alignment: .topLeading) {
                     #if !FOUNDER_OFFICE_DISTRIBUTION
@@ -1609,7 +1597,8 @@ struct NotchBoardView: View {
                 .modifier(
                     ConditionalMoveDragModifier(
                         id: isDraggable ? item.id : nil,
-                        onDragStarted: beginPriorityDrag
+                        onDragChanged: updatePriorityDrag,
+                        onDragEnded: endPriorityDrag
                     )
                 )
                 #else
@@ -1631,7 +1620,8 @@ struct NotchBoardView: View {
                 .modifier(
                     ConditionalMoveDragModifier(
                         id: isDraggable ? item.id : nil,
-                        onDragStarted: beginPriorityDrag
+                        onDragChanged: updatePriorityDrag,
+                        onDragEnded: endPriorityDrag
                     )
                 )
                 #endif
@@ -1697,6 +1687,53 @@ struct NotchBoardView: View {
             },
             onEnd: handlePriorityDragSessionEnded
         )
+    }
+
+    private func updatePriorityDrag(_ id: UUID, pointerY: CGFloat) {
+        if priorityDragAutoScroller.draggedMoveID != id {
+            beginPriorityDrag(id)
+        }
+        guard priorityDragAutoScroller.draggedMoveID == id else { return }
+
+        priorityDragAutoScroller.update(pointerY: pointerY)
+        setPriorityDropTarget(
+            PriorityDropTargetPolicy.target(
+                pointerY: pointerY,
+                lanes: priorityLaneFrames.map { priority, frame in
+                    PriorityDropLane(
+                        priority: priority,
+                        minY: frame.minY,
+                        maxY: frame.maxY
+                    )
+                },
+                current: priorityDropTarget
+            )
+        )
+    }
+
+    private func endPriorityDrag(_ id: UUID, pointerY: CGFloat) {
+        guard priorityDragAutoScroller.draggedMoveID == id else {
+            finishPriorityDrag()
+            return
+        }
+
+        priorityDragAutoScroller.update(pointerY: pointerY)
+        let target = PriorityDropTargetPolicy.target(
+            pointerY: pointerY,
+            lanes: priorityLaneFrames.map { priority, frame in
+                PriorityDropLane(
+                    priority: priority,
+                    minY: frame.minY,
+                    maxY: frame.maxY
+                )
+            },
+            current: priorityDropTarget
+        ) ?? priorityDropTarget
+
+        if let target {
+            _ = handlePriorityDrop(id, target: target)
+        }
+        finishPriorityDrag()
     }
 
     private func setPriorityDropTarget(_ target: LoopPriority?) {
@@ -4010,36 +4047,43 @@ private struct CalendarEventEditor: View {
 
 private struct ConditionalMoveDragModifier: ViewModifier {
     let id: UUID?
-    let onDragStarted: (UUID) -> Void
+    let onDragChanged: (UUID, CGFloat) -> Void
+    let onDragEnded: (UUID, CGFloat) -> Void
+
+    @GestureState private var dragOffset: CGSize = .zero
 
     @ViewBuilder
     func body(content: Content) -> some View {
         if let id {
-            content.onDrag {
-                onDragStarted(id)
-                let provider = NSItemProvider()
-                provider.registerDataRepresentation(
-                    forTypeIdentifier: UTType.founderOfficeMove.identifier,
-                    visibility: .ownProcess
-                ) { completion in
-                    completion(Data(id.uuidString.utf8), nil)
-                    return nil
-                }
-                return provider
-            } preview: {
-                content
-                    .frame(width: 510, height: 58)
-                    .background(
-                        .regularMaterial,
-                        in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+            content
+                .contentShape(Rectangle())
+                .offset(dragOffset)
+                .scaleEffect(dragOffset == .zero ? 1 : 1.012)
+                .shadow(
+                    color: Color.black.opacity(dragOffset == .zero ? 0 : 0.34),
+                    radius: dragOffset == .zero ? 0 : 14,
+                    y: dragOffset == .zero ? 0 : 7
+                )
+                .zIndex(dragOffset == .zero ? 0 : 10)
+                .animation(
+                    .spring(response: 0.22, dampingFraction: 0.84),
+                    value: dragOffset == .zero
+                )
+                .highPriorityGesture(
+                    DragGesture(
+                        minimumDistance: 7,
+                        coordinateSpace: .named("priority-move-scroll")
                     )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .stroke(Color.white.opacity(0.16), lineWidth: 1)
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                    .shadow(color: Color.black.opacity(0.38), radius: 16, y: 8)
-            }
+                    .updating($dragOffset) { value, state, _ in
+                        state = value.translation
+                    }
+                    .onChanged { value in
+                        onDragChanged(id, value.location.y)
+                    }
+                    .onEnded { value in
+                        onDragEnded(id, value.location.y)
+                    }
+                )
                 .help("Drag to change priority")
         } else {
             content

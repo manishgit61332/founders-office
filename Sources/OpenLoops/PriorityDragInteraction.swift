@@ -1,11 +1,6 @@
 import AppKit
 import FounderOfficeCore
 import SwiftUI
-import UniformTypeIdentifiers
-
-extension UTType {
-    static let founderOfficeMove = UTType(exportedAs: "com.manish.foundersoffice.move")
-}
 
 struct DragEdgeScrollPolicy: Equatable {
     var edgeExtent: CGFloat = 88
@@ -259,10 +254,9 @@ final class PriorityDragAutoScroller: ObservableObject {
         completion?()
     }
 
-    /// Native mouse-up monitors run before SwiftUI's `performDrop`. Ending the
-    /// session from that monitor clears the move ID before the drop delegate can
-    /// commit it. Give SwiftUI one short grace period, then perform an in-app
-    /// fallback commit when the pointer is still over the priority viewport.
+    /// Native mouse-up monitors run before SwiftUI's gesture completion. Give
+    /// the gesture one short grace period to commit first, then perform the same
+    /// in-app fallback commit when the pointer is still over the viewport.
     func scheduleRelease(pointerInWindow: NSPoint? = nil) {
         guard pendingRelease == nil, draggedMoveID != nil else { return }
         let workItem = DispatchWorkItem { [weak self] in
@@ -381,78 +375,5 @@ struct PriorityScrollViewResolver: NSViewRepresentable {
                 self.onResolve?(self.enclosingScrollView)
             }
         }
-    }
-}
-
-@MainActor
-struct PriorityBoardDropDelegate: DropDelegate {
-    var laneFrames: [LoopPriority: CGRect]
-    var activeTarget: LoopPriority?
-    var autoScroller: PriorityDragAutoScroller
-    var onTargetChange: (LoopPriority?) -> Void
-    var onDropMove: (UUID, LoopPriority) -> Bool
-
-    func validateDrop(info: DropInfo) -> Bool {
-        autoScroller.draggedMoveID != nil
-            && !laneFrames.isEmpty
-            && info.hasItemsConforming(to: [UTType.founderOfficeMove])
-    }
-
-    func dropEntered(info: DropInfo) {
-        updateInteraction(info)
-    }
-
-    func dropUpdated(info: DropInfo) -> DropProposal? {
-        updateInteraction(info)
-        return DropProposal(operation: .move)
-    }
-
-    func dropExited(info: DropInfo) {
-        // Lazy stack relayout can emit a transient exit while the pointer is
-        // still physically inside the viewport. Keep scrolling in that case.
-        if !autoScroller.refreshPointerFromWindow() {
-            autoScroller.leaveViewport()
-            setTarget(nil)
-        }
-    }
-
-    func performDrop(info: DropInfo) -> Bool {
-        autoScroller.stop()
-        guard let target = resolvedTarget(pointerY: info.location.y) ?? activeTarget,
-              info.itemProviders(for: [UTType.founderOfficeMove]).first != nil,
-              let moveID = autoScroller.draggedMoveID
-        else {
-            setTarget(nil)
-            autoScroller.endSession()
-            return false
-        }
-
-        // The item provider is deliberately own-process. Committing the ID
-        // captured when this drag began avoids an asynchronous provider load
-        // from an older drag mutating a newer session.
-        let didCommit = onDropMove(moveID, target)
-        setTarget(nil)
-        autoScroller.endSession()
-        return didCommit
-    }
-
-    private func updateInteraction(_ info: DropInfo) {
-        autoScroller.update(pointerY: info.location.y)
-        setTarget(resolvedTarget(pointerY: info.location.y))
-    }
-
-    private func resolvedTarget(pointerY: CGFloat) -> LoopPriority? {
-        PriorityDropTargetPolicy.target(
-            pointerY: pointerY,
-            lanes: laneFrames.map { priority, frame in
-                PriorityDropLane(priority: priority, minY: frame.minY, maxY: frame.maxY)
-            },
-            current: activeTarget
-        )
-    }
-
-    private func setTarget(_ target: LoopPriority?) {
-        guard target != activeTarget else { return }
-        onTargetChange(target)
     }
 }
