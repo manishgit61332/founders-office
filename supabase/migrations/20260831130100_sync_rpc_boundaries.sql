@@ -8,9 +8,9 @@ security definer
 set search_path = ''
 as $$
 declare
-    account_id uuid := auth.uid();
+    v_account_id uuid := auth.uid();
 begin
-    if account_id is null then
+    if v_account_id is null then
         raise exception using errcode = '28000', message = 'authentication required';
     end if;
 
@@ -18,13 +18,13 @@ begin
         select 1
         from public.workspace_members as membership
         where membership.workspace_id = target_workspace_id
-          and membership.account_id = account_id
+          and membership.account_id = v_account_id
           and membership.role = 'owner'
     ) then
         raise exception using errcode = '42501', message = 'workspace access denied';
     end if;
 
-    return account_id;
+    return v_account_id;
 end;
 $$;
 
@@ -311,12 +311,12 @@ security definer
 set search_path = ''
 as $$
 declare
-    account_id uuid := auth.uid();
+    v_account_id uuid := auth.uid();
     identity_provider text := coalesce(
         auth.jwt() -> 'app_metadata' ->> 'provider',
         auth.jwt() ->> 'provider'
     );
-    workspace_id uuid;
+    v_workspace_id uuid;
     owned_workspace_id uuid;
     erased_owner_id uuid;
     workspace_was_created boolean := false;
@@ -327,7 +327,7 @@ declare
         else nullif(private.normalize_display_name_v1(p_display_name), '')
     end;
 begin
-    if account_id is null then
+    if v_account_id is null then
         raise exception using errcode = '28000', message = 'authentication required';
     end if;
     if p_device_id is null then
@@ -344,12 +344,12 @@ begin
         raise exception using errcode = '22023', message = 'display name is invalid';
     end if;
     if clean_display_name is null
-       and not exists (select 1 from public.profiles as profile where profile.id = account_id) then
+       and not exists (select 1 from public.profiles as profile where profile.id = v_account_id) then
         raise exception using errcode = '22023', message = 'display name is required for first bootstrap';
     end if;
 
     insert into public.profiles (id, identity_provider, display_name)
-    values (account_id, identity_provider, clean_display_name)
+    values (v_account_id, identity_provider, clean_display_name)
     on conflict (id) do update
     set identity_provider = excluded.identity_provider,
         display_name = coalesce(excluded.display_name, public.profiles.display_name),
@@ -362,7 +362,7 @@ begin
         where receipt.workspace_id = p_local_workspace_id;
 
         if found then
-            if erased_owner_id = account_id then
+            if erased_owner_id = v_account_id then
                 raise exception using errcode = '22023', message = 'workspace was permanently erased';
             else
                 raise exception using errcode = '42501', message = 'workspace access denied';
@@ -370,22 +370,22 @@ begin
         end if;
 
         select workspace.id
-        into workspace_id
+        into v_workspace_id
         from public.workspaces as workspace
         where workspace.id = p_local_workspace_id
-          and workspace.owner_account_id = account_id;
+          and workspace.owner_account_id = v_account_id;
 
-        if workspace_id is null and exists (
+        if v_workspace_id is null and exists (
             select 1 from public.workspaces as unavailable where unavailable.id = p_local_workspace_id
         ) then
             raise exception using errcode = '42501', message = 'workspace access denied';
         end if;
 
-        if workspace_id is null then
+        if v_workspace_id is null then
             select workspace.id
             into owned_workspace_id
             from public.workspaces as workspace
-            where workspace.owner_account_id = account_id
+            where workspace.owner_account_id = v_account_id
             order by workspace.created_at, workspace.id
             limit 1;
 
@@ -395,15 +395,15 @@ begin
         end if;
     else
         select workspace.id
-        into workspace_id
+        into v_workspace_id
         from public.workspaces as workspace
-        where workspace.owner_account_id = account_id
+        where workspace.owner_account_id = v_account_id
         order by workspace.created_at, workspace.id
         limit 1;
     end if;
 
-    if workspace_id is null then
-        workspace_id := coalesce(p_local_workspace_id, gen_random_uuid());
+    if v_workspace_id is null then
+        v_workspace_id := coalesce(p_local_workspace_id, gen_random_uuid());
         begin
             insert into public.workspaces (
                 id,
@@ -412,8 +412,8 @@ begin
                 field_clocks,
                 field_writers
             ) values (
-                workspace_id,
-                account_id,
+                v_workspace_id,
+                v_account_id,
                 clean_workspace_name,
                 jsonb_build_object('name', now()),
                 jsonb_build_object('name', p_device_id)
@@ -422,13 +422,13 @@ begin
             select workspace.id
             into owned_workspace_id
             from public.workspaces as workspace
-            where workspace.owner_account_id = account_id
+            where workspace.owner_account_id = v_account_id
             order by workspace.created_at, workspace.id
             limit 1;
 
             if owned_workspace_id is not null
                and (p_local_workspace_id is null or owned_workspace_id = p_local_workspace_id) then
-                workspace_id := owned_workspace_id;
+                v_workspace_id := owned_workspace_id;
             elsif owned_workspace_id is not null then
                 raise exception using errcode = '23505', message = 'account already owns a different workspace';
             else
@@ -439,8 +439,8 @@ begin
     end if;
 
     insert into public.workspace_members (workspace_id, account_id, role)
-    values (workspace_id, account_id, 'owner')
-    on conflict (workspace_id, account_id) do nothing;
+    values (v_workspace_id, v_account_id, 'owner')
+    on conflict on constraint workspace_members_pkey do nothing;
 
     if workspace_was_created then
         insert into public.activity_events (
@@ -452,12 +452,12 @@ begin
             entity_id,
             metadata
         ) values (
-            workspace_id,
-            account_id,
+            v_workspace_id,
+            v_account_id,
             p_device_id,
             'workspace.created',
             'workspace',
-            workspace_id,
+            v_workspace_id,
             '{}'::jsonb
         );
     end if;
@@ -465,18 +465,18 @@ begin
     select coalesce(max(change.cursor), 0)
     into latest_cursor
     from public.change_log as change
-    where change.workspace_id = workspace_id;
+    where change.workspace_id = v_workspace_id;
 
     insert into public.device_cursors (workspace_id, account_id, device_id, cursor, last_seen_at)
-    values (workspace_id, account_id, p_device_id, 0, now())
-    on conflict (workspace_id, account_id, device_id) do update
+    values (v_workspace_id, v_account_id, p_device_id, 0, now())
+    on conflict on constraint device_cursors_pkey do update
     set last_seen_at = excluded.last_seen_at;
 
     return jsonb_build_object(
         'contractVersion', 1,
         'session', jsonb_build_object(
-            'accountId', account_id,
-            'workspaceId', workspace_id,
+            'accountId', v_account_id,
+            'workspaceId', v_workspace_id,
             'deviceId', p_device_id,
             'identityProvider', identity_provider
         ),
@@ -487,9 +487,9 @@ begin
                 'displayName', profile.display_name
             )
             from public.profiles as profile
-            where profile.id = account_id
+            where profile.id = v_account_id
         ),
-        'workspace', private.entity_record(workspace_id, 'workspace', workspace_id),
+        'workspace', private.entity_record(v_workspace_id, 'workspace', v_workspace_id),
         'startingCursor', 0,
         'latestCursor', latest_cursor
     );
@@ -506,6 +506,7 @@ language plpgsql
 security definer
 set search_path = ''
 as $$
+<<push_operations_block>>
 declare
     account_id uuid := private.require_workspace_owner(p_workspace_id);
     operation jsonb;
@@ -959,7 +960,7 @@ begin
         into operation_receipt
         from private.sync_operation_receipts as receipt
         where receipt.workspace_id = p_workspace_id
-          and receipt.operation_id = operation_id;
+          and receipt.operation_id = push_operations_block.operation_id;
 
         if found then
             if operation_receipt.operation_envelope <> operation then
@@ -1009,8 +1010,8 @@ begin
                    select 1
                    from public.change_log as newer_change
                    where newer_change.workspace_id = p_workspace_id
-                     and newer_change.entity_type = entity_type
-                     and newer_change.entity_id = entity_id
+                     and newer_change.entity_type = push_operations_block.entity_type
+                     and newer_change.entity_id = push_operations_block.entity_id
                      and newer_change.revision > base_revision
                      and newer_change.changed_fields && changed_field_names
                )
@@ -1049,8 +1050,8 @@ begin
                               select 1
                               from public.change_log as newer_change
                               where newer_change.workspace_id = p_workspace_id
-                                and newer_change.entity_type = entity_type
-                                and newer_change.entity_id = entity_id
+                                and newer_change.entity_type = push_operations_block.entity_type
+                                and newer_change.entity_id = push_operations_block.entity_id
                                 and newer_change.revision > base_revision
                                 and newer_change.changed_fields && changed_field_names
                           ) then 'overlappingChanges'
@@ -1436,7 +1437,7 @@ begin
 
     insert into public.device_cursors (workspace_id, account_id, device_id, cursor, last_seen_at)
     values (p_workspace_id, account_id, p_device_id, 0, now())
-    on conflict (workspace_id, account_id, device_id) do update
+    on conflict on constraint device_cursors_pkey do update
     set last_seen_at = excluded.last_seen_at;
 
     return jsonb_build_object(
@@ -1514,7 +1515,7 @@ begin
 
     insert into public.device_cursors (workspace_id, account_id, device_id, cursor, last_seen_at)
     values (p_workspace_id, account_id, p_device_id, next_cursor, now())
-    on conflict (workspace_id, account_id, device_id) do update
+    on conflict on constraint device_cursors_pkey do update
     set cursor = greatest(public.device_cursors.cursor, excluded.cursor),
         last_seen_at = excluded.last_seen_at;
 
