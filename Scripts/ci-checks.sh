@@ -26,8 +26,7 @@ Scripts/test-release-safety.sh
 Scripts/verify-privacy-manifest.py Apps/macOS/PrivacyInfo.xcprivacy
 swift test --enable-code-coverage --skip WorkspaceRepositoryPerformanceTests
 swift test \
-    --enable-code-coverage \
-    --skip-build \
+    --scratch-path .build/performance \
     --filter WorkspaceRepositoryPerformanceTests
 swift run FounderOfficeCoreChecks
 swift build -Xswiftc -strict-concurrency=complete -Xswiftc -warnings-as-errors
