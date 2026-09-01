@@ -1178,13 +1178,13 @@ select is(
     0::bigint,
     'activity history enforces an exact content-free metadata allow-list'
 );
+reset role;
 select is(
     (select count(*) from public.change_log where changed_fields && array['priority']),
     4::bigint,
     'change log persists changed fields for conflict detection'
 );
 
-reset role;
 set local role authenticated;
 set local request.jwt.claim.sub = '22222222-2222-4222-8222-222222222222';
 set local request.jwt.claims =
