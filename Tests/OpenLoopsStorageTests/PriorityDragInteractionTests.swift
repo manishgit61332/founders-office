@@ -106,7 +106,7 @@ struct PriorityDragAutoScrollerTests {
     }
 
     @Test
-    func stationaryPointerNearBottomContinuouslyScrollsUntilStopped() async throws {
+    func stationaryPointerNearBottomContinuouslyScrollsUntilStopped() {
         let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 300, height: 180))
         scrollView.documentView = FlippedDocumentView(
             frame: NSRect(x: 0, y: 0, width: 300, height: 1_200)
@@ -122,12 +122,12 @@ struct PriorityDragAutoScrollerTests {
         let startingOffset = scrollView.contentView.bounds.origin.y
 
         scroller.update(pointerY: 179)
-        try await Task.sleep(for: .milliseconds(120))
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.12))
         let scrolledOffset = scrollView.contentView.bounds.origin.y
         scroller.stop()
 
         #expect(scrolledOffset > startingOffset + 10)
-        try await Task.sleep(for: .milliseconds(60))
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.06))
         #expect(abs(scrollView.contentView.bounds.origin.y - scrolledOffset) < 0.5)
     }
 
