@@ -107,19 +107,19 @@ public actor PersonalizationImageStore {
     private let limits: PersonalizationImageLimits
     private var transactionInProgress = false
     private var protectedFileNames: Set<String> = []
-    #if DEBUG
+    #if DEBUG || FOUNDER_OFFICE_TESTING
     private let testingBeforeCommit: (@Sendable () async -> Void)?
     #endif
 
     public init(rootURL: URL, limits: PersonalizationImageLimits = PersonalizationImageLimits()) {
         self.rootURL = rootURL.standardizedFileURL
         self.limits = limits
-        #if DEBUG
+        #if DEBUG || FOUNDER_OFFICE_TESTING
         testingBeforeCommit = nil
         #endif
     }
 
-    #if DEBUG
+    #if DEBUG || FOUNDER_OFFICE_TESTING
     init(
         rootURL: URL,
         limits: PersonalizationImageLimits = PersonalizationImageLimits(),
@@ -157,7 +157,7 @@ public actor PersonalizationImageStore {
         }
 
         do {
-            #if DEBUG
+            #if DEBUG || FOUNDER_OFFICE_TESTING
             await testingBeforeCommit?()
             #endif
             let commitValue = try await commit(prepared.asset)
