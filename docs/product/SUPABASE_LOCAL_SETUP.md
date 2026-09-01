@@ -26,7 +26,7 @@ CI installs the official Supabase setup action at immutable commit
 `ab058987d8d6c725971f6cf9d0b5c98467e30bd1` (v1.7.1), requests CLI `2.98.2`,
 and refuses any other CLI or database image. For this repository's PostgreSQL
 15 configuration, that CLI resolves the exact local image to
-`public.ecr.aws/supabase/postgres:15.8.1.085`.
+`ghcr.io/supabase/postgres:15.8.1.085`.
 
 Install that CLI version and a supported Docker runtime, then run the same local
 database sequence:

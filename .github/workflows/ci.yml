@@ -206,7 +206,7 @@ jobs:
             echo "::error::Supabase database container ${database_container} is missing."
             exit 1
           fi
-          expected_image="public.ecr.aws/supabase/postgres:15.8.1.085"
+          expected_image="ghcr.io/supabase/postgres:15.8.1.085"
           if [[ "${database_image}" != "${expected_image}" ]]; then
             echo "::error::Expected ${expected_image}, found ${database_image}."
             exit 1
