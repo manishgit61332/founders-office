@@ -4,6 +4,8 @@
 
 `FoundersOfficeMacUITests` exercises the release-gate paths that require a real AppKit/SwiftUI process:
 
+- clean first-run onboarding opening at its full 720×500 size, with its title,
+  name field, and primary action all visible and hittable;
 - Appearance edit → Save Changes → relaunch, plus forced relaunch without
   saving to prove that a draft never leaks into durable state;
 - Discard, in-notch Escape, and explicit-notch-close Cancel with an unsaved
@@ -18,7 +20,7 @@
   claim, when reviewed product configuration is absent; and
 - preview of every redacted support-report field before Save.
 
-The non-distribution `--ui-testing` launch hook uses a caller-provided temporary workspace, bypasses onboarding and cloud transport, activates a deterministic synthetic Calendar, and opens the notch as an interactive window. `OPENLOOPS_UI_TEST_FIXTURE=1` creates one synthetic Move only inside that temporary workspace. `OPENLOOPS_UI_TEST_LONG_PRIORITY_FIXTURE=1` creates an overflowing deterministic board for stationary-pointer edge-scroll and durable-drop coverage. The reduced-effects scenarios use `OPENLOOPS_UI_TEST_REDUCE_MOTION` and `OPENLOOPS_UI_TEST_REDUCE_TRANSPARENCY`; `FOUNDER_OFFICE_DISTRIBUTION` compiles all of these environment overrides out of the customer build.
+The non-distribution `--ui-testing` launch hook uses a caller-provided temporary workspace, bypasses onboarding and cloud transport, activates a deterministic synthetic Calendar, and opens the notch as an interactive window. A separate `--ui-testing-onboarding` hook uses an isolated UserDefaults suite, temporary workspace, synthetic Calendar, in-memory startup status, and no-op login-item setter so it can exercise a genuinely fresh setup without reading or changing the developer's real onboarding record or system integrations. `OPENLOOPS_UI_TEST_FIXTURE=1` creates one synthetic Move only inside that temporary workspace. `OPENLOOPS_UI_TEST_LONG_PRIORITY_FIXTURE=1` creates an overflowing deterministic board for stationary-pointer edge-scroll and durable-drop coverage. The reduced-effects scenarios use `OPENLOOPS_UI_TEST_REDUCE_MOTION` and `OPENLOOPS_UI_TEST_REDUCE_TRANSPARENCY`; `FOUNDER_OFFICE_DISTRIBUTION` compiles all of these environment overrides out of the customer build.
 
 ## Generate and run
 

@@ -37,6 +37,10 @@ final class FoundersOfficeAppDelegate: NSObject, NSApplicationDelegate {
     private var workspaceRootURL: URL?
     private var didMarkRuntimeReady = false
     private let supportReportStorage = SupportReportStorage()
+    private var onboardingDefaults: UserDefaults = .standard
+    #if !FOUNDER_OFFICE_DISTRIBUTION
+    private var onboardingUITestDefaultsSuiteName: String?
+    #endif
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         #if !FOUNDER_OFFICE_DISTRIBUTION
@@ -44,7 +48,8 @@ final class FoundersOfficeAppDelegate: NSObject, NSApplicationDelegate {
         if arguments.contains("--snapshot")
             || arguments.contains("--motion-frames")
             || arguments.contains("--motion-reversal-frames")
-            || arguments.contains("--ui-testing") {
+            || arguments.contains("--ui-testing")
+            || arguments.contains("--ui-testing-onboarding") {
             return .terminateNow
         }
         #endif
@@ -71,13 +76,26 @@ final class FoundersOfficeAppDelegate: NSObject, NSApplicationDelegate {
         let isCaptureLaunch = false
         let launchDisposition = runtimeHealth.beginLaunch(trackCrashLoop: true)
         #else
-        let isUITestLaunch = arguments.contains("--ui-testing")
+        let isStandardUITestLaunch = arguments.contains("--ui-testing")
+        let isOnboardingUITestLaunch = arguments.contains("--ui-testing-onboarding")
+        let isUITestLaunch = isStandardUITestLaunch || isOnboardingUITestLaunch
         let isCaptureLaunch = arguments.contains("--preview")
             || arguments.contains("--snapshot")
             || arguments.contains("--motion-frames")
             || arguments.contains("--motion-reversal-frames")
-            || isUITestLaunch
-        let launchDisposition = runtimeHealth.beginLaunch(trackCrashLoop: !isCaptureLaunch)
+            || isStandardUITestLaunch
+        if isOnboardingUITestLaunch {
+            let suiteName = "com.manish.openloops.onboarding-ui-test.\(ProcessInfo.processInfo.processIdentifier)"
+            guard let defaults = UserDefaults(suiteName: suiteName) else {
+                preconditionFailure("Unable to create isolated onboarding UI-test preferences.")
+            }
+            defaults.removePersistentDomain(forName: suiteName)
+            onboardingDefaults = defaults
+            onboardingUITestDefaultsSuiteName = suiteName
+        }
+        let launchDisposition = runtimeHealth.beginLaunch(
+            trackCrashLoop: !(isCaptureLaunch || isOnboardingUITestLaunch)
+        )
         #endif
         isSafeMode = launchDisposition.isSafeMode
         safeModeIncidentID = launchDisposition.incidentID
@@ -100,11 +118,11 @@ final class FoundersOfficeAppDelegate: NSObject, NSApplicationDelegate {
         let rootURL = WorkspaceLocator.openLoopsRoot
         workspaceRootURL = rootURL
         #if FOUNDER_OFFICE_DISTRIBUTION
-        let expectedWorkspaceID = FirstRunOnboardingStore.persistedWorkspaceID()
+        let expectedWorkspaceID = FirstRunOnboardingStore.persistedWorkspaceID(defaults: onboardingDefaults)
         #else
         let expectedWorkspaceID = isCaptureLaunch
             ? nil
-            : FirstRunOnboardingStore.persistedWorkspaceID()
+            : FirstRunOnboardingStore.persistedWorkspaceID(defaults: onboardingDefaults)
         #endif
         Task { [weak self] in
             let preparedBootstrap = await Task.detached(priority: .userInitiated) {
@@ -191,12 +209,14 @@ final class FoundersOfficeAppDelegate: NSObject, NSApplicationDelegate {
             #if FOUNDER_OFFICE_DISTRIBUTION
             let firstRunStore: FirstRunOnboardingStore? = FirstRunOnboardingStore(
                 workspaceExistedBeforeLaunch: preparedBootstrap.workspaceExistedBeforeLaunch,
-                workspaceID: workspaceID
+                workspaceID: workspaceID,
+                defaults: onboardingDefaults
             )
             #else
             let firstRunStore: FirstRunOnboardingStore? = isCaptureLaunch ? nil : FirstRunOnboardingStore(
                 workspaceExistedBeforeLaunch: preparedBootstrap.workspaceExistedBeforeLaunch,
-                workspaceID: workspaceID
+                workspaceID: workspaceID,
+                defaults: onboardingDefaults
             )
             #endif
             onboardingStore = firstRunStore
@@ -204,14 +224,35 @@ final class FoundersOfficeAppDelegate: NSObject, NSApplicationDelegate {
             if let onboardingStore = firstRunStore, !onboardingStore.isComplete {
                 isOnboarding = true
                 configureStatusItem()
+                #if FOUNDER_OFFICE_DISTRIBUTION
+                let onboardingCalendarMode = CalendarProvider.Mode.live
+                let currentLaunchAtLogin = { SMAppService.mainApp.status == .enabled }
+                let updateLaunchAtLogin: (Bool) throws -> Bool = { [weak self] enabled in
+                    guard let self else { return false }
+                    return try self.setLaunchAtLogin(enabled)
+                }
+                #else
+                let isOnboardingUITestLaunch = arguments.contains("--ui-testing-onboarding")
+                let onboardingCalendarMode: CalendarProvider.Mode = isOnboardingUITestLaunch
+                    ? .syntheticPreview
+                    : .live
+                let currentLaunchAtLogin = {
+                    isOnboardingUITestLaunch ? false : SMAppService.mainApp.status == .enabled
+                }
+                let updateLaunchAtLogin: (Bool) throws -> Bool = isOnboardingUITestLaunch
+                    ? { enabled in enabled }
+                    : { [weak self] enabled in
+                        guard let self else { return false }
+                        return try self.setLaunchAtLogin(enabled)
+                    }
+                #endif
                 let onboardingWindow = FirstRunOnboardingWindowController(
                     stateStore: onboardingStore,
                     taskStore: store,
                     personalization: personalization,
-                    setLaunchAtLogin: { [weak self] enabled in
-                        guard let self else { return false }
-                        return try self.setLaunchAtLogin(enabled)
-                    },
+                    calendarMode: onboardingCalendarMode,
+                    currentLaunchAtLogin: currentLaunchAtLogin,
+                    setLaunchAtLogin: updateLaunchAtLogin,
                     onComplete: { [weak self] storageMode in
                         self?.completeOnboarding(storageMode: storageMode)
                     }
@@ -323,6 +364,12 @@ final class FoundersOfficeAppDelegate: NSObject, NSApplicationDelegate {
         store?.stop()
         personalization?.stop()
         runtimeHealth.stop()
+        #if !FOUNDER_OFFICE_DISTRIBUTION
+        if let onboardingUITestDefaultsSuiteName,
+           let defaults = UserDefaults(suiteName: onboardingUITestDefaultsSuiteName) {
+            defaults.removePersistentDomain(forName: onboardingUITestDefaultsSuiteName)
+        }
+        #endif
     }
 
     @discardableResult

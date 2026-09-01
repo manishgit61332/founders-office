@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 
 final class FoundersOfficeMacUITests: XCTestCase {
@@ -33,6 +34,30 @@ final class FoundersOfficeMacUITests: XCTestCase {
         XCTAssertTrue(relaunchedPreset.waitForExistence(timeout: 4))
         XCTAssertTrue(relaunchedPreset.isSelected)
         XCTAssertFalse(app.buttons["appearance.save"].isEnabled)
+    }
+
+    func testFirstRunOnboardingIsFullyVisibleAndHittable() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-testing-onboarding"]
+        app.launchEnvironment = [
+            "OPENLOOPS_ROOT": makeTemporaryRoot().path,
+            "OPENLOOPS_PREVIEW_CALENDAR": "1"
+        ]
+        app.launch()
+
+        let setup = app.windows["Founder's Office Setup"]
+        XCTAssertTrue(setup.waitForExistence(timeout: 5))
+        XCTAssertGreaterThanOrEqual(setup.frame.width, 719)
+        XCTAssertGreaterThanOrEqual(setup.frame.height, 499)
+
+        let firstTitle = app.staticTexts["Welcome. What should we call you?"]
+        XCTAssertTrue(firstTitle.waitForExistence(timeout: 3))
+        XCTAssertTrue(
+            firstTitle.isHittable,
+            "The top of onboarding must remain on screen, not grow above the display from a zero-size origin."
+        )
+        XCTAssertTrue(app.textFields["Preferred name"].isHittable)
+        XCTAssertTrue(app.buttons["Continue"].isHittable)
     }
 
     func testAppearanceDiscardAndEscapePreserveCommittedState() {

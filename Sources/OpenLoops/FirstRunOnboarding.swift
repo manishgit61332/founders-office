@@ -1,7 +1,6 @@
 import AppKit
 import Combine
 import FounderOfficeCore
-import ServiceManagement
 import SwiftUI
 
 private func onboardingSystemFont(
@@ -228,14 +227,82 @@ private final class FirstRunPanel: NSPanel {
     override var canBecomeMain: Bool { true }
 }
 
+struct FirstRunOnboardingPlacement {
+    static let panelSize = NSSize(width: 720, height: 500)
+    static let screenMargin: CGFloat = 18
+
+    static func targetScreen(
+        screens: [NSScreen],
+        pointerLocation: NSPoint,
+        fallback: NSScreen?
+    ) -> NSScreen? {
+        screens.first(where: { $0.frame.contains(pointerLocation) })
+            ?? fallback
+            ?? screens.first
+    }
+
+    static func frame(
+        visibleFrame: NSRect,
+        panelSize: NSSize = panelSize,
+        margin: CGFloat = screenMargin
+    ) -> NSRect {
+        let horizontalMargin = min(
+            max(margin, 0),
+            max((visibleFrame.width - panelSize.width) / 2, 0)
+        )
+        let verticalMargin = min(
+            max(margin, 0),
+            max((visibleFrame.height - panelSize.height) / 2, 0)
+        )
+
+        let minimumX = visibleFrame.minX + horizontalMargin
+        let maximumX = visibleFrame.maxX - horizontalMargin - panelSize.width
+        let centeredX = visibleFrame.midX - panelSize.width / 2
+        let x = maximumX >= minimumX
+            ? min(max(centeredX, minimumX), maximumX)
+            : centeredX
+
+        let minimumY = visibleFrame.minY + verticalMargin
+        let maximumY = visibleFrame.maxY - verticalMargin - panelSize.height
+        let y = maximumY >= minimumY
+            ? maximumY
+            : visibleFrame.midY - panelSize.height / 2
+
+        return NSRect(
+            x: x.rounded(),
+            y: y.rounded(),
+            width: panelSize.width,
+            height: panelSize.height
+        )
+    }
+
+    static func safeVisibleFrame(
+        screenFrame: NSRect,
+        visibleFrame: NSRect,
+        safeAreaInsets: NSEdgeInsets
+    ) -> NSRect {
+        let hardwareSafeFrame = NSRect(
+            x: screenFrame.minX + safeAreaInsets.left,
+            y: screenFrame.minY + safeAreaInsets.bottom,
+            width: max(screenFrame.width - safeAreaInsets.left - safeAreaInsets.right, 0),
+            height: max(screenFrame.height - safeAreaInsets.top - safeAreaInsets.bottom, 0)
+        )
+        let intersection = visibleFrame.intersection(hardwareSafeFrame)
+        return intersection.isNull || intersection.isEmpty ? visibleFrame : intersection
+    }
+}
+
 @MainActor
 final class FirstRunOnboardingWindowController {
     private let panel: FirstRunPanel
+    private var screenParametersObserver: NSObjectProtocol?
 
     init(
         stateStore: FirstRunOnboardingStore,
         taskStore: OpenLoopStore,
         personalization: PersonalizationStore,
+        calendarMode: CalendarProvider.Mode,
+        currentLaunchAtLogin: @escaping () -> Bool,
         setLaunchAtLogin: @escaping (Bool) throws -> Bool,
         onComplete: @escaping (FirstRunStorageMode) -> Void
     ) {
@@ -243,41 +310,98 @@ final class FirstRunOnboardingWindowController {
             stateStore: stateStore,
             taskStore: taskStore,
             personalization: personalization,
+            calendarMode: calendarMode,
+            currentLaunchAtLogin: currentLaunchAtLogin,
             setLaunchAtLogin: setLaunchAtLogin,
             onComplete: onComplete
         )
 
         panel = FirstRunPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 720, height: 500),
+            contentRect: NSRect(origin: .zero, size: FirstRunOnboardingPlacement.panelSize),
             styleMask: [.borderless, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
         panel.level = .statusBar
+        panel.title = "Founder's Office Setup"
+        panel.identifier = NSUserInterfaceItemIdentifier("foundersOffice.onboarding")
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = true
         panel.hidesOnDeactivate = false
         panel.isMovable = false
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
         panel.animationBehavior = .none
         panel.isReleasedWhenClosed = false
         panel.contentViewController = NSHostingController(rootView: FirstRunOnboardingView(model: model))
+
+        // Installing an NSHostingController can temporarily collapse a
+        // borderless panel to zero size. Never let that transient AppKit frame
+        // become the anchor used for first-run placement.
+        panel.setFrame(
+            NSRect(origin: .zero, size: FirstRunOnboardingPlacement.panelSize),
+            display: false
+        )
+
+        screenParametersObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.repositionIfVisible()
+            }
+        }
     }
 
     func show() {
-        guard let screen = NSScreen.main ?? NSScreen.screens.first else { return }
-        let frame = panel.frame
-        let x = screen.frame.midX - frame.width / 2
-        let topInset = max(screen.frame.maxY - screen.visibleFrame.maxY, 0)
-        let y = screen.frame.maxY - topInset - frame.height - 18
-        panel.setFrameOrigin(NSPoint(x: x.rounded(), y: y.rounded()))
-        panel.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        reposition()
+        panel.makeKeyAndOrderFront(nil)
+
+        // App activation and the first SwiftUI layout pass may both change the
+        // active screen or panel frame. Reassert the complete, constrained
+        // frame after AppKit has processed that pass.
+        DispatchQueue.main.async { [weak self] in
+            self?.repositionIfVisible()
+        }
     }
 
     func close() {
         panel.orderOut(nil)
+        if let screenParametersObserver {
+            NotificationCenter.default.removeObserver(screenParametersObserver)
+            self.screenParametersObserver = nil
+        }
+    }
+
+    private func repositionIfVisible() {
+        guard panel.isVisible else { return }
+        reposition(preferCurrentScreen: true)
+    }
+
+    private func reposition(preferCurrentScreen: Bool = false) {
+        let screens = NSScreen.screens
+        let currentScreen = panel.screen.flatMap { current in
+            screens.first(where: { $0 === current })
+        }
+        let screen = (preferCurrentScreen ? currentScreen : nil)
+            ?? FirstRunOnboardingPlacement.targetScreen(
+                screens: screens,
+                pointerLocation: NSEvent.mouseLocation,
+                fallback: currentScreen ?? NSScreen.main
+            )
+        guard let screen else { return }
+        let safeVisibleFrame = FirstRunOnboardingPlacement.safeVisibleFrame(
+            screenFrame: screen.frame,
+            visibleFrame: screen.visibleFrame,
+            safeAreaInsets: screen.safeAreaInsets
+        )
+        panel.setFrame(
+            FirstRunOnboardingPlacement.frame(visibleFrame: safeVisibleFrame),
+            display: panel.isVisible,
+            animate: false
+        )
     }
 }
 
@@ -293,7 +417,7 @@ private final class FirstRunOnboardingModel: ObservableObject {
     @Published var moveError: String?
     @Published var didRehearseNotch: Bool
 
-    let calendar = CalendarProvider()
+    let calendar: CalendarProvider
 
     private let stateStore: FirstRunOnboardingStore
     private let taskStore: OpenLoopStore
@@ -306,6 +430,8 @@ private final class FirstRunOnboardingModel: ObservableObject {
         stateStore: FirstRunOnboardingStore,
         taskStore: OpenLoopStore,
         personalization: PersonalizationStore,
+        calendarMode: CalendarProvider.Mode,
+        currentLaunchAtLogin: @escaping () -> Bool,
         setLaunchAtLogin: @escaping (Bool) throws -> Bool,
         onComplete: @escaping (FirstRunStorageMode) -> Void
     ) {
@@ -314,10 +440,11 @@ private final class FirstRunOnboardingModel: ObservableObject {
         self.personalization = personalization
         self.setLaunchAtLogin = setLaunchAtLogin
         self.onComplete = onComplete
+        calendar = CalendarProvider(mode: calendarMode)
 
         step = stateStore.resumedStep
         storageMode = stateStore.storageMode
-        launchAtLoginEnabled = SMAppService.mainApp.status == .enabled
+        launchAtLoginEnabled = currentLaunchAtLogin()
         didRehearseNotch = stateStore.didRehearseNotch
 
         let savedName = stateStore.preferredName ?? personalization.preferredName
