@@ -51,6 +51,8 @@ The current Mac build wires only generated JSON/Markdown projection repair. The 
 
 If the app fails before ready three times for the same build, the next launch enters safe mode. Safe mode does not open the workspace at all. It disables Cloud sends, assistant execution, connectors, Calendar, personalization, image decoding, and nonessential animation. It offers an incident ID, a ten-field redacted crash-state diagnostic, and an explicit retry. It cannot offer a workspace export because exporting would require opening canonical data.
 
+The pre-ready marker distinguishes an abrupt process loss from an AppKit-confirmed clean termination. A clean quit clears only the current launch’s in-progress bit; it never erases earlier failure evidence or an active safe-mode latch. Development installs request a clean application termination and fail closed if the live bundle does not exit, so build tooling cannot manufacture a crash loop or overwrite a running app.
+
 ## AI-assisted fixes
 
 Codex or Claude may investigate a reproducible issue in an isolated branch. The agent receives a redacted fixture, failing test, and narrow repository scope. It may open a pull request only after tests and static checks pass. A human reviews and ships the signed update. The installed app never edits its own executable or source.

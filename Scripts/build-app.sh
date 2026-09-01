@@ -37,6 +37,10 @@ plutil -replace FounderOfficeNotarized -bool false "${bundle_dir}/Contents/Info.
     || plutil -insert FounderOfficeNotarized -bool false "${bundle_dir}/Contents/Info.plist"
 cp "${project_dir}/Resources/Fonts/"* "${bundle_dir}/Contents/Resources/Fonts/"
 cp "${project_dir}/Apps/macOS/PrivacyInfo.xcprivacy" "${bundle_dir}/Contents/Resources/PrivacyInfo.xcprivacy"
+app_icon_staging="${bundle_dir}/Contents/Resources/AppIcon.iconset"
+cp -R "${project_dir}/Apps/macOS/Assets.xcassets/AppIcon.appiconset" "${app_icon_staging}"
+iconutil -c icns "${app_icon_staging}" -o "${bundle_dir}/Contents/Resources/AppIcon.icns"
+rm -rf "${app_icon_staging}"
 codesign --force --deep --sign - "${bundle_dir}"
 codesign --verify --deep --strict --verbose=2 "${bundle_dir}"
 
@@ -54,8 +58,25 @@ if [[ "${1:-}" == "--install" ]]; then
     mkdir -p "${install_root}"
     mkdir -p "${backup_root}"
 
-    pkill -x OpenLoops 2>/dev/null || true
-    pkill -x FoundersOffice 2>/dev/null || true
+    if pgrep -x OpenLoops >/dev/null 2>&1 || pgrep -x FoundersOffice >/dev/null 2>&1; then
+        if ! xcrun swift "${project_dir}/Scripts/request-app-quit.swift" com.manish.openloops; then
+            print -u2 "Founder’s Office declined the quit request. Save or discard open changes, then retry the install."
+            exit 75
+        fi
+
+        for _ in {1..50}; do
+            if ! pgrep -x OpenLoops >/dev/null 2>&1 \
+                && ! pgrep -x FoundersOffice >/dev/null 2>&1; then
+                break
+            fi
+            sleep 0.1
+        done
+
+        if pgrep -x OpenLoops >/dev/null 2>&1 || pgrep -x FoundersOffice >/dev/null 2>&1; then
+            print -u2 "Founder’s Office is still running. The live app was not replaced; close it and retry."
+            exit 75
+        fi
+    fi
 
     staging_root="$(mktemp -d "${install_root}/.founders-office-install.XXXXXX")"
     staging_target="${staging_root}/${bundle_name}.app"

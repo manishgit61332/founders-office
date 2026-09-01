@@ -83,6 +83,8 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Fixed
 
+- A clean quit during asynchronous Mac startup no longer counts as a pre-ready crash. The development installer now requests an AppKit termination, waits for the process to exit, and refuses to replace a live bundle; real abrupt failures and an active safe-mode latch remain preserved.
+- The safe-mode alert now offers the reset action directly, and local development bundles include the production app icon instead of macOS’s generic placeholder.
 - Mac priority dragging now magnetically acquires the nearest lane and scrolls continuously at the top or bottom edge, with speed based on pointer proximity and balanced notch hold-open cleanup.
 - Home now removes a timed Calendar event from **Up next** after its end time passes, while ongoing, overnight, and all-day events remain eligible until their exclusive end.
 - A server-accepted Move whose push response is lost is now verified and acknowledged from the authenticated pull feed in one transaction, preventing the immutable operation from being retried with a different base revision after relaunch.

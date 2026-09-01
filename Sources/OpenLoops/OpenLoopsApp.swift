@@ -311,6 +311,10 @@ final class FoundersOfficeAppDelegate: NSObject, NSApplicationDelegate {
     #endif
 
     func applicationWillTerminate(_ notification: Notification) {
+        // A user- or AppKit-approved quit during asynchronous bootstrap is not
+        // a crash. Clear only this launch's in-progress bit; prior failures and
+        // an active safe-mode latch remain intact.
+        runtimeHealth.markCleanTermination()
         motionCaptureTimer?.invalidate()
         motionCaptureTimer = nil
         notchController?.prepareForTermination()
@@ -796,6 +800,10 @@ final class FoundersOfficeAppDelegate: NSObject, NSApplicationDelegate {
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
+        performNormalModeRetry()
+    }
+
+    private func performNormalModeRetry() {
         runtimeHealth.prepareExplicitRetry()
         NSApp.terminate(nil)
     }
@@ -803,11 +811,14 @@ final class FoundersOfficeAppDelegate: NSObject, NSApplicationDelegate {
     private func showSafeModeAlert() {
         let alert = NSAlert()
         alert.messageText = "Founder’s Office is in safe mode"
-        alert.informativeText = "This build failed before it was ready three times. Workspace loading, cloud sync, calendar access, personalization, and assistant execution are off. This safe-mode launch has not opened or changed your workspace. Right-click the menu bar icon when you are ready to retry."
+        alert.informativeText = "Three launches did not reach the ready checkpoint, so Founder’s Office kept your workspace closed and unchanged. Reset this build’s marker and quit, then reopen the app—or stay in safe mode and use the menu bar for diagnostics."
         alert.alertStyle = .warning
-        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Reset and Quit")
+        alert.addButton(withTitle: "Stay in Safe Mode")
         DispatchQueue.main.async { [weak self] in self?.markRuntimeReady() }
-        alert.runModal()
+        if alert.runModal() == .alertFirstButtonReturn {
+            performNormalModeRetry()
+        }
     }
 
     private func showRecoveryRequiredAlert() {
