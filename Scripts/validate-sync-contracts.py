@@ -799,7 +799,7 @@ def validate_pgtap_contract() -> None:
     if not plan_match:
         raise ContractError("pgTAP suite has no plan")
     assertion_pattern = re.compile(
-        r"^select\s+(?:has_|col_|ok\(|is\(|throws_ok\()",
+        r"^select\s+(?:has_|hasnt_|col_|ok\(|is\(|throws_ok\()",
         re.IGNORECASE | re.MULTILINE,
     )
     assertion_count = len(assertion_pattern.findall(sql))

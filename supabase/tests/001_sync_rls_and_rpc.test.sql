@@ -33,7 +33,7 @@ select has_index(
     'workspaces_one_per_owner_v1',
     'database enforces one workspace per owner'
 );
-select col_not_exists('public', 'profiles', 'email', 'profiles do not use email as a tenancy key');
+select hasnt_column('public', 'profiles', 'email', 'profiles do not use email as a tenancy key');
 select ok(
     not has_table_privilege('anon', 'public.workspaces', 'select'),
     'anonymous users cannot select workspaces'
