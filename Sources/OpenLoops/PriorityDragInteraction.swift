@@ -83,15 +83,19 @@ final class PriorityDragAutoScroller: ObservableObject {
     private var timer: Timer?
     private var localEventMonitor: Any?
     private var globalMouseMonitor: Any?
+    private var primaryButtonMonitorTimer: Timer?
     private var sessionEnd: (() -> Void)?
     private var pointerUpdate: ((CGFloat?) -> Void)?
     private var releaseRequest: ((UUID, CGFloat?) -> Void)?
     private var pendingRelease: DispatchWorkItem?
     private var velocity: CGFloat = 0
-    private var lastTick = ProcessInfo.processInfo.systemUptime
+    private var lastTick: TimeInterval = 0
+    private var didObservePrimaryButtonDown = false
     private let policy: DragEdgeScrollPolicy
     private let pointerExitMargin: CGFloat
     private let releaseGraceInterval: TimeInterval
+    private let uptime: () -> TimeInterval
+    private let isPrimaryButtonPressed: () -> Bool
     private(set) var pointerY: CGFloat?
     private(set) var draggedMoveID: UUID?
     var isAutoScrolling: Bool { timer != nil }
@@ -99,11 +103,19 @@ final class PriorityDragAutoScroller: ObservableObject {
     init(
         policy: DragEdgeScrollPolicy = DragEdgeScrollPolicy(),
         pointerExitMargin: CGFloat = 96,
-        releaseGraceInterval: TimeInterval = 0.12
+        releaseGraceInterval: TimeInterval = 0.12,
+        uptime: @escaping () -> TimeInterval = {
+            ProcessInfo.processInfo.systemUptime
+        },
+        isPrimaryButtonPressed: @escaping () -> Bool = {
+            NSEvent.pressedMouseButtons & 1 == 1
+        }
     ) {
         self.policy = policy
         self.pointerExitMargin = pointerExitMargin
         self.releaseGraceInterval = releaseGraceInterval
+        self.uptime = uptime
+        self.isPrimaryButtonPressed = isPrimaryButtonPressed
     }
 
     func attach(_ scrollView: NSScrollView?) {
@@ -200,6 +212,8 @@ final class PriorityDragAutoScroller: ObservableObject {
         pointerUpdate = onPointerUpdate
         releaseRequest = onRelease
         sessionEnd = onEnd
+        didObservePrimaryButtonDown = false
+        startPrimaryButtonMonitor()
 
         localEventMonitor = NSEvent.addLocalMonitorForEvents(
             matching: [.leftMouseDragged, .leftMouseUp, .keyDown]
@@ -238,9 +252,11 @@ final class PriorityDragAutoScroller: ObservableObject {
     func endSession() {
         pendingRelease?.cancel()
         pendingRelease = nil
+        stopPrimaryButtonMonitor()
         stop()
         pointerY = nil
         draggedMoveID = nil
+        didObservePrimaryButtonDown = false
         if let localEventMonitor {
             NSEvent.removeMonitor(localEventMonitor)
             self.localEventMonitor = nil
@@ -283,7 +299,7 @@ final class PriorityDragAutoScroller: ObservableObject {
 
     private func startTimerIfNeeded() {
         guard timer == nil else { return }
-        lastTick = ProcessInfo.processInfo.systemUptime
+        lastTick = uptime()
         let timer = Timer(timeInterval: 1 / 60, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.tick()
@@ -298,13 +314,50 @@ final class PriorityDragAutoScroller: ObservableObject {
         timer = nil
     }
 
-    private func tick() {
+    private func startPrimaryButtonMonitor() {
+        guard primaryButtonMonitorTimer == nil else { return }
+        let timer = Timer(timeInterval: 1 / 30, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.pollPrimaryButtonState()
+            }
+        }
+        primaryButtonMonitorTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    private func stopPrimaryButtonMonitor() {
+        primaryButtonMonitorTimer?.invalidate()
+        primaryButtonMonitorTimer = nil
+    }
+
+    /// A lazy row can leave the hierarchy while its pointer remains at the
+    /// scroll edge. AppKit then cancels SwiftUI's gesture without calling
+    /// `onEnded`, and accessibility-synthesized mouse-up events do not always
+    /// pass through either event monitor. Poll only the native button bit; the
+    /// last event-backed viewport coordinate remains the release authority.
+    func pollPrimaryButtonState() {
+        guard draggedMoveID != nil else {
+            stopPrimaryButtonMonitor()
+            return
+        }
+        if isPrimaryButtonPressed() {
+            didObservePrimaryButtonDown = true
+            return
+        }
+        guard didObservePrimaryButtonDown else { return }
+        scheduleRelease()
+    }
+
+    func tick() {
         guard draggedMoveID != nil, pointerY != nil else {
             stop()
             return
         }
-        let now = ProcessInfo.processInfo.systemUptime
-        let elapsed = min(max(now - lastTick, 1 / 240), 1 / 15)
+        let now = uptime()
+        // Honor elapsed monotonic time when the event-tracking run loop is
+        // briefly starved, while bounding one catch-up step to 160 points at
+        // the existing 640-points-per-second product maximum.
+        let elapsed = min(max(now - lastTick, 1 / 240), 1 / 4)
         lastTick = now
         advance(elapsed: elapsed)
     }
@@ -327,25 +380,17 @@ final class PriorityDragAutoScroller: ObservableObject {
         let constrainedBounds = scrollView.contentView.constrainBoundsRect(proposedBounds)
 
         guard abs(constrainedBounds.origin.y - scrollView.contentView.bounds.origin.y) > 0.01 else {
-            velocity = 0
-            stopTimer()
+            // A LazyVStack can report a temporary boundary while it realizes
+            // the next lane. Keep probing for the duration of a live drag; the
+            // session monitor tears the timer down as soon as the button lifts.
+            if draggedMoveID == nil {
+                velocity = 0
+                stopTimer()
+            }
             return
         }
         scrollView.contentView.scroll(to: constrainedBounds.origin)
         scrollView.reflectScrolledClipView(scrollView.contentView)
-
-        // `NSClipView` may align every proposed origin to backing pixels or
-        // content insets. That correction is not a document boundary. Probe a
-        // point beyond the document in the active direction and stop only when
-        // the constrained origin has actually reached that terminal position.
-        var boundaryProbe = constrainedBounds
-        let probeDistance = max(documentView.bounds.height, constrainedBounds.height, 1)
-        boundaryProbe.origin.y += coordinateVelocity > 0 ? probeDistance : -probeDistance
-        let terminalBounds = scrollView.contentView.constrainBoundsRect(boundaryProbe)
-        if abs(terminalBounds.origin.y - constrainedBounds.origin.y) <= 0.01 {
-            velocity = 0
-            stopTimer()
-        }
     }
 }
 

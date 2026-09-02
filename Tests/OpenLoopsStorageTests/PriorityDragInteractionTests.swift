@@ -167,6 +167,60 @@ struct PriorityDragAutoScrollerTests {
     }
 
     @Test
+    func delayedHostedTickCatchesUpWithoutExceedingTheExistingSpeedLimit() {
+        let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 300, height: 180))
+        scrollView.documentView = FlippedDocumentView(
+            frame: NSRect(x: 0, y: 0, width: 300, height: 1_200)
+        )
+        var uptime: TimeInterval = 10
+        let maximumSpeed: CGFloat = 640
+        let scroller = PriorityDragAutoScroller(
+            policy: DragEdgeScrollPolicy(
+                edgeExtent: 50,
+                minimumSpeed: 120,
+                maximumSpeed: maximumSpeed
+            ),
+            uptime: { uptime },
+            isPrimaryButtonPressed: { true }
+        )
+        scroller.attach(scrollView)
+        scroller.beginSession(moveID: UUID(), onEnd: {})
+        scroller.update(pointerY: 180)
+
+        uptime += 0.25
+        scroller.tick()
+
+        let distance = scrollView.contentView.bounds.origin.y
+        #expect(distance > 100)
+        #expect(distance <= maximumSpeed * 0.25 + 0.5)
+        scroller.endSession()
+    }
+
+    @Test
+    func liveDragKeepsProbingAPendingLazyContentBoundary() {
+        let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 300, height: 180))
+        let documentView = FlippedDocumentView(
+            frame: NSRect(x: 0, y: 0, width: 300, height: 300)
+        )
+        scrollView.documentView = documentView
+        let scroller = PriorityDragAutoScroller(isPrimaryButtonPressed: { true })
+        scroller.attach(scrollView)
+        scroller.beginSession(moveID: UUID(), onEnd: {})
+        scroller.update(pointerY: 180)
+
+        scroller.advance(elapsed: 1)
+        let temporaryBoundary = scrollView.contentView.bounds.origin.y
+        scroller.advance(elapsed: 1 / 60)
+        #expect(scroller.isAutoScrolling)
+
+        documentView.frame.size.height = 1_200
+        scroller.advance(elapsed: 0.25)
+
+        #expect(scrollView.contentView.bounds.origin.y > temporaryBoundary)
+        scroller.endSession()
+    }
+
+    @Test
     func flippedViewportScrollsBothDirectionsAndClampsAtItsBounds() {
         let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 300, height: 180))
         scrollView.documentView = FlippedDocumentView(
@@ -195,6 +249,7 @@ struct PriorityDragAutoScrollerTests {
         let maximumOffset = scrollView.documentView!.bounds.height
             - scrollView.contentView.bounds.height
         #expect(abs(scrollView.contentView.bounds.origin.y - maximumOffset) < 0.5)
+        scroller.advance(elapsed: 1 / 60)
         #expect(!scroller.isAutoScrolling)
     }
 
@@ -277,6 +332,42 @@ struct PriorityDragAutoScrollerTests {
         #expect(releasedPointerY == 179)
         #expect(scroller.draggedMoveID == nil)
         #expect(!scroller.isAutoScrolling)
+    }
+
+    @Test
+    func buttonPollingCompletesADragWhenTheLazyGestureViewDisappears() {
+        let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 300, height: 180))
+        scrollView.documentView = FlippedDocumentView(
+            frame: NSRect(x: 0, y: 0, width: 300, height: 1_200)
+        )
+        var isPressed = true
+        let moveID = UUID()
+        var releasedID: UUID?
+        var releasedPointerY: CGFloat?
+        var completionCount = 0
+        let scroller = PriorityDragAutoScroller(
+            releaseGraceInterval: 0,
+            isPrimaryButtonPressed: { isPressed }
+        )
+        scroller.attach(scrollView)
+        scroller.beginSession(
+            moveID: moveID,
+            onRelease: { id, pointerY in
+                releasedID = id
+                releasedPointerY = pointerY
+            },
+            onEnd: { completionCount += 1 }
+        )
+        scroller.update(pointerY: 179)
+
+        scroller.pollPrimaryButtonState()
+        isPressed = false
+        scroller.pollPrimaryButtonState()
+
+        #expect(releasedID == moveID)
+        #expect(releasedPointerY == 179)
+        #expect(completionCount == 1)
+        #expect(scroller.draggedMoveID == nil)
     }
 
     @Test
