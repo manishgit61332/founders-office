@@ -220,6 +220,31 @@ struct PriorityDragAutoScrollerTests {
     }
 
     @Test
+    func locationlessMouseUpUsesTheLastValidatedGestureCoordinate() {
+        let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 300, height: 180))
+        scrollView.documentView = FlippedDocumentView(
+            frame: NSRect(x: 0, y: 0, width: 300, height: 1_200)
+        )
+        let scroller = PriorityDragAutoScroller(releaseGraceInterval: 0)
+        let moveID = UUID()
+        var releasedPointerY: CGFloat?
+        scroller.attach(scrollView)
+        scroller.beginSession(
+            moveID: moveID,
+            onRelease: { _, pointerY in releasedPointerY = pointerY },
+            onEnd: {}
+        )
+        scroller.update(pointerY: 179)
+        scroller.advance(elapsed: 0.5)
+
+        scroller.scheduleRelease()
+
+        #expect(releasedPointerY == 179)
+        #expect(scroller.draggedMoveID == nil)
+        #expect(!scroller.isAutoScrolling)
+    }
+
+    @Test
     func pointerCanLeavePastTheVisibleEdgeAndStillDriveMaximumAutoScroll() {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 300, height: 180),

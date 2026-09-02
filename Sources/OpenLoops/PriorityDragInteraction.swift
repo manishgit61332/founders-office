@@ -143,9 +143,10 @@ final class PriorityDragAutoScroller: ObservableObject {
         }
     }
 
-    /// Tracks the drag in stable viewport coordinates. SwiftUI's `DropInfo`
-    /// location can pause or briefly exit when lazy rows move underneath a
-    /// stationary pointer; AppKit window coordinates do not.
+    /// Converts native drag events into stable viewport coordinates. The last
+    /// validated value remains authoritative while a stationary pointer drives
+    /// auto-scroll; polling the global cursor can diverge from synthesized or
+    /// accessibility-driven mouse events.
     @discardableResult
     func update(pointerInWindow point: NSPoint) -> Bool {
         guard let scrollView, scrollView.window != nil else { return false }
@@ -263,7 +264,7 @@ final class PriorityDragAutoScroller: ObservableObject {
         let workItem = DispatchWorkItem { [weak self] in
             guard let self, let moveID = self.draggedMoveID else { return }
             let isInsideViewport = pointerInWindow.map(self.update(pointerInWindow:))
-                ?? self.refreshPointerFromWindow()
+                ?? (self.pointerY != nil)
             if isInsideViewport {
                 self.releaseRequest?(moveID, self.pointerY)
             }
@@ -298,8 +299,9 @@ final class PriorityDragAutoScroller: ObservableObject {
     }
 
     private func tick() {
-        if draggedMoveID != nil, scrollView?.window != nil {
-            guard refreshPointerFromWindow() else { return }
+        guard draggedMoveID != nil, pointerY != nil else {
+            stop()
+            return
         }
         let now = ProcessInfo.processInfo.systemUptime
         let elapsed = min(max(now - lastTick, 1 / 240), 1 / 15)
