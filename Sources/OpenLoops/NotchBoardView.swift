@@ -1277,35 +1277,36 @@ struct NotchBoardView: View {
                         .frame(width: 1, height: 1)
                         .allowsHitTesting(false)
                     }
+                    // The persistent document stack owns the gesture for its
+                    // entire lifetime. Attaching it outside NSScrollView lets
+                    // a row button consume the first synthesized or physical
+                    // press; attaching it to a lazy row loses the release when
+                    // that row is recycled during edge scrolling.
+                    .highPriorityGesture(
+                        DragGesture(
+                            minimumDistance: 7,
+                            coordinateSpace: .named("priority-move-scroll")
+                        )
+                        .onChanged { value in
+                            let moveID = priorityDragAutoScroller.draggedMoveID
+                                ?? PriorityDragSourcePolicy.source(
+                                    at: value.startLocation,
+                                    rows: priorityMoveRowFrames
+                                )
+                            guard let moveID else { return }
+                            priorityDragOffset = value.translation
+                            updatePriorityDrag(moveID, pointerY: value.location.y)
+                        }
+                        .onEnded { value in
+                            guard let moveID = priorityDragAutoScroller.draggedMoveID else {
+                                priorityDragOffset = .zero
+                                return
+                            }
+                            endPriorityDrag(moveID, pointerY: value.location.y)
+                        }
+                    )
                 }
                 .coordinateSpace(name: "priority-move-scroll")
-                // The viewport owns the gesture for its entire lifetime. A
-                // LazyVStack row can be recycled while edge scrolling; a
-                // gesture attached to that row is then cancelled before its
-                // release can persist the drop.
-                .highPriorityGesture(
-                    DragGesture(
-                        minimumDistance: 7,
-                        coordinateSpace: .named("priority-move-scroll")
-                    )
-                    .onChanged { value in
-                        let moveID = priorityDragAutoScroller.draggedMoveID
-                            ?? PriorityDragSourcePolicy.source(
-                                at: value.startLocation,
-                                rows: priorityMoveRowFrames
-                            )
-                        guard let moveID else { return }
-                        priorityDragOffset = value.translation
-                        updatePriorityDrag(moveID, pointerY: value.location.y)
-                    }
-                    .onEnded { value in
-                        guard let moveID = priorityDragAutoScroller.draggedMoveID else {
-                            priorityDragOffset = .zero
-                            return
-                        }
-                        endPriorityDrag(moveID, pointerY: value.location.y)
-                    }
-                )
                 .accessibilityIdentifier("moves.priority.scroll")
                 .accessibilityValue(
                     priorityDragInteractionLease == nil ? "Idle" : "Dragging"
