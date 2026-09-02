@@ -71,6 +71,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.manish.openloops.uitests
         PRODUCT_NAME: "Founder's Office UI Tests"
+        GENERATE_INFOPLIST_FILE: YES
         SWIFT_VERSION: "5.10"
         TEST_TARGET_NAME: FoundersOfficeMac
 
