@@ -108,6 +108,10 @@ if "MicaKind" in main_window_source:
     fail("MainWindow must not use the unavailable projected MicaKind API")
 if "SystemBackdrop = new MicaBackdrop();" not in main_window_source:
     fail("MainWindow must install the supported WinUI Mica backdrop")
+if "MainWindow : Window, IDisposable" not in main_window_source:
+    fail("MainWindow must own its native resources through IDisposable")
+if "readonly SqliteWorkspaceRepository _repository" not in main_window_source:
+    fail("MainWindow must keep its concrete local repository ownership explicit")
 
 if not (ROOT / "contracts" / "v1" / "openapi.json").is_file():
     fail("shared v1 contract is missing")

@@ -6,11 +6,12 @@ using Microsoft.UI.Xaml.Media;
 
 namespace FoundersOffice.App;
 
-public sealed partial class MainWindow : Window
+public sealed partial class MainWindow : Window, IDisposable
 {
-    private readonly IWorkspaceRepository _repository;
+    private readonly SqliteWorkspaceRepository _repository;
     private readonly TopEdgeSurfaceController _surfaceController;
     private readonly TrayIconService _trayIcon;
+    private bool _disposed;
     private bool _exitRequested;
 
     public MainWindow()
@@ -98,10 +99,19 @@ public sealed partial class MainWindow : Window
         _surfaceController.Hide();
     }
 
-    private async void MainWindow_Closed(object sender, WindowEventArgs args)
+    private void MainWindow_Closed(object sender, WindowEventArgs args) => Dispose();
+
+    public void Dispose()
     {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
         _trayIcon.Dispose();
-        await _repository.DisposeAsync();
+        _repository.Dispose();
+        GC.SuppressFinalize(this);
     }
 
     private async Task RefreshAsync()

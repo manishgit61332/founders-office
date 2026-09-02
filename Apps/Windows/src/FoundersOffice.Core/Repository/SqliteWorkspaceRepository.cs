@@ -10,11 +10,12 @@ namespace FoundersOffice.Core.Repository;
 /// its outbox operation share one SQLite transaction. Provider credentials are
 /// deliberately outside this database and belong in Windows Credential Locker.
 /// </summary>
-public sealed class SqliteWorkspaceRepository : IWorkspaceRepository
+public sealed class SqliteWorkspaceRepository : IWorkspaceRepository, IDisposable
 {
     private const int CurrentSchemaVersion = 1;
     private readonly string _connectionString;
     private readonly SemaphoreSlim _writeGate = new(1, 1);
+    private bool _disposed;
     private bool _initialized;
 
     public SqliteWorkspaceRepository(string databasePath)
@@ -284,9 +285,21 @@ public sealed class SqliteWorkspaceRepository : IWorkspaceRepository
         return operations;
     }
 
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
+        _writeGate.Dispose();
+        GC.SuppressFinalize(this);
+    }
+
     public ValueTask DisposeAsync()
     {
-        _writeGate.Dispose();
+        Dispose();
         return ValueTask.CompletedTask;
     }
 
