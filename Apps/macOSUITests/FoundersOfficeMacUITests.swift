@@ -73,7 +73,7 @@ final class FoundersOfficeMacUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["appearance.preset.manish"].isSelected)
 
         nativePreset.click()
-        notch(in: app).typeKey(XCUIKeyboardKey.escape, modifierFlags: [])
+        sendEscape(to: app)
         let unsaved = app.descendants(matching: .any)["appearance.unsaved.editor"]
         XCTAssertTrue(unsaved.waitForExistence(timeout: 2))
         app.buttons["appearance.unsaved.discard"].click()
@@ -108,10 +108,10 @@ final class FoundersOfficeMacUITests: XCTestCase {
         XCTAssertTrue(nativePreset.waitForExistence(timeout: 4))
         nativePreset.click()
 
-        notch(in: app).typeKey(XCUIKeyboardKey.escape, modifierFlags: [])
+        sendEscape(to: app)
         let editor = app.descendants(matching: .any)["appearance.unsaved.editor"]
         XCTAssertTrue(editor.waitForExistence(timeout: 2))
-        notch(in: app).typeKey(XCUIKeyboardKey.escape, modifierFlags: [])
+        sendEscape(to: app)
 
         XCTAssertTrue(editor.waitForNonExistence(timeout: 2))
         XCTAssertTrue(nativePreset.isSelected)
@@ -132,6 +132,8 @@ final class FoundersOfficeMacUITests: XCTestCase {
         let cancel = app.dialogs.buttons["Cancel"].firstMatch
         XCTAssertTrue(cancel.isHittable)
         cancel.click()
+        app.activate()
+        XCTAssertTrue(notch(in: app).waitForExistence(timeout: 4))
         XCTAssertTrue(nativePreset.waitForExistence(timeout: 2))
         XCTAssertTrue(app.buttons["appearance.save"].isEnabled)
     }
@@ -151,6 +153,7 @@ final class FoundersOfficeMacUITests: XCTestCase {
         let colourWell = app.descendants(matching: .any)["appearance.colour.0"]
         colourWell.click()
         let colours = try requireNativeColourPanel(in: app)
+        app.activate()
         colours.typeKey(XCUIKeyboardKey.escape, modifierFlags: [])
         XCTAssertTrue(colours.waitForNonExistence(timeout: 2))
 
@@ -321,6 +324,8 @@ final class FoundersOfficeMacUITests: XCTestCase {
         XCTAssertTrue(editor.waitForExistence(timeout: 4))
 
         let title = app.textFields["calendarEvent.title"]
+        app.activate()
+        title.click()
         title.typeText("UI test event")
         let save = app.buttons["calendarEvent.save"]
         XCTAssertTrue(save.isEnabled)
@@ -336,8 +341,14 @@ final class FoundersOfficeMacUITests: XCTestCase {
             environment: ["OPENLOOPS_PREVIEW_CALENDAR": "1"]
         )
 
-        XCTAssertTrue(app.buttons["Product review"].waitForExistence(timeout: 4))
-        XCTAssertFalse(app.buttons["Finished planning review"].exists)
+        let productReview = app.buttons.matching(
+            NSPredicate(format: "label BEGINSWITH %@", "Product review")
+        ).firstMatch
+        let finishedReview = app.buttons.matching(
+            NSPredicate(format: "label BEGINSWITH %@", "Finished planning review")
+        ).firstMatch
+        XCTAssertTrue(productReview.waitForExistence(timeout: 4))
+        XCTAssertFalse(finishedReview.exists)
     }
 
     func testNativeColourPanelRestoresTheNotchAfterClosing() throws {
@@ -350,7 +361,8 @@ final class FoundersOfficeMacUITests: XCTestCase {
         colourWell.click()
 
         let colours = try requireNativeColourPanel(in: app)
-        colours.typeKey("w", modifierFlags: .command)
+        app.activate()
+        colours.typeKey(XCUIKeyboardKey.escape, modifierFlags: [])
         XCTAssertTrue(colours.waitForNonExistence(timeout: 2))
 
         let save = app.buttons["appearance.save"]
@@ -455,6 +467,7 @@ final class FoundersOfficeMacUITests: XCTestCase {
             "OPENLOOPS_PREVIEW_CALENDAR": environment["OPENLOOPS_PREVIEW_CALENDAR"] ?? "0"
         ]) { current, _ in current }
         app.launch()
+        app.activate()
         XCTAssertTrue(notch(in: app).waitForExistence(timeout: 5))
         return app
     }
@@ -463,9 +476,13 @@ final class FoundersOfficeMacUITests: XCTestCase {
         app.dialogs["foundersOffice.notch"]
     }
 
+    private func sendEscape(to app: XCUIApplication) {
+        app.activate()
+        notch(in: app).typeKey(XCUIKeyboardKey.escape, modifierFlags: [])
+    }
+
     private func requireNativeColourPanel(in app: XCUIApplication) throws -> XCUIElement {
-        // AppKit exposes NSColorPanel as the only Window while the notch remains a Dialog.
-        let panel = app.windows.firstMatch
+        let panel = app.windows["Colors"]
         return try XCTUnwrap(
             panel.waitForExistence(timeout: 3) ? panel : nil,
             "The required native colour panel was not exposed to UI automation."
