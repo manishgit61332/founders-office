@@ -444,22 +444,9 @@ struct NotchBoardView: View {
             }
             #endif
         }
-        .onExitCommand {
-            if account.requiresSetupOverlay {
-                account.cancelAccountSetup()
-            } else if supportReportPreview != nil {
-                closeSupportReportPreview()
-            } else if isCreatingCalendarEvent {
-                closeCalendarEventEditor()
-            } else if planningItemID != nil {
-                closePlanningEditor()
-            } else if isFinishDatePickerPresented {
-                closeFinishDatePicker()
-            } else if isSettingsPresented {
-                requestAppearanceExit(.dismissSettings)
-            } else {
-                requestAppearanceExit(.closeNotch)
-            }
+        .onExitCommand(perform: handleExitCommand)
+        .onChange(of: presentation.escapeSequence) { _, _ in
+            handleExitCommand()
         }
         .onChange(of: store.items) { _, updatedItems in
             guard let planningItemID else { return }
@@ -3449,6 +3436,24 @@ struct NotchBoardView: View {
 
     private func dismissSettings() {
         requestAppearanceExit(.dismissSettings)
+    }
+
+    private func handleExitCommand() {
+        if account.requiresSetupOverlay {
+            account.cancelAccountSetup()
+        } else if supportReportPreview != nil {
+            closeSupportReportPreview()
+        } else if isCreatingCalendarEvent {
+            closeCalendarEventEditor()
+        } else if planningItemID != nil {
+            closePlanningEditor()
+        } else if isFinishDatePickerPresented {
+            closeFinishDatePicker()
+        } else if isSettingsPresented {
+            requestAppearanceExit(.dismissSettings)
+        } else {
+            requestAppearanceExit(.closeNotch)
+        }
     }
 
     private func select(_ section: BoardSection) {

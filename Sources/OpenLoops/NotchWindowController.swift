@@ -13,6 +13,7 @@ final class NotchPresentationModel: ObservableObject {
     @Published var horizontalPull: CGFloat = 0
     @Published var notchWidth: CGFloat = 185
     @Published var notchHeight: CGFloat = 32
+    @Published private(set) var escapeSequence: UInt64 = 0
     let transients = TransientPresentationCoordinator()
 
     var preventsAutoDismiss: Bool { transients.preventsAutoDismiss }
@@ -33,6 +34,10 @@ final class NotchPresentationModel: ObservableObject {
     @discardableResult
     func closeNativeColorPanels() -> Bool {
         transients.closeNativeColorPanels()
+    }
+
+    func requestEscape() {
+        escapeSequence &+= 1
     }
 }
 
@@ -494,7 +499,13 @@ final class NotchWindowController {
         escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard event.keyCode == 53 else { return event }
             let consumed = MainActor.assumeIsolated {
-                self?.presentation.closeNativeColorPanels() == true
+                guard let self else { return false }
+                if self.presentation.closeNativeColorPanels() {
+                    return true
+                }
+                guard NSApp.keyWindow === self.panel else { return false }
+                self.presentation.requestEscape()
+                return true
             }
             return consumed ? nil : event
         }

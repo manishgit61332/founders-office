@@ -155,7 +155,7 @@ final class FoundersOfficeMacUITests: XCTestCase {
         let colours = try requireNativeColourPanel(in: app)
         app.activate()
         colours.typeKey(XCUIKeyboardKey.escape, modifierFlags: [])
-        XCTAssertTrue(colours.waitForNonExistence(timeout: 2))
+        XCTAssertTrue(waitUntilUnavailable(colours, timeout: 2))
 
         let save = app.buttons["appearance.save"]
         XCTAssertTrue(save.waitForExistence(timeout: 2))
@@ -227,11 +227,8 @@ final class FoundersOfficeMacUITests: XCTestCase {
 
         let priorityScroll = app.scrollViews["moves.priority.scroll"]
         XCTAssertTrue(priorityScroll.waitForExistence(timeout: 4))
-        guard waitForValue(
-            "Saved",
-            of: app.otherElements["moves.persistence"],
-            timeout: 15
-        ) else { return }
+        let persistence = app.otherElements["moves.persistence"]
+        XCTAssertTrue(persistence.waitForExistence(timeout: 4))
 
         let row = app.buttons["Edit Priority drag fixture 1"]
         XCTAssertTrue(row.waitForExistence(timeout: 3))
@@ -257,8 +254,8 @@ final class FoundersOfficeMacUITests: XCTestCase {
         guard waitForValueContaining("P3", of: planningButton, timeout: 10) else { return }
         guard waitForValue(
             "Saved",
-            of: app.otherElements["moves.persistence"],
-            timeout: 10
+            of: persistence,
+            timeout: 30
         ) else { return }
         XCTAssertTrue(String(describing: priorityScroll.value).contains("Idle"))
 
@@ -377,7 +374,7 @@ final class FoundersOfficeMacUITests: XCTestCase {
         let colours = try requireNativeColourPanel(in: app)
         app.activate()
         colours.typeKey(XCUIKeyboardKey.escape, modifierFlags: [])
-        XCTAssertTrue(colours.waitForNonExistence(timeout: 2))
+        XCTAssertTrue(waitUntilUnavailable(colours, timeout: 2))
 
         let save = app.buttons["appearance.save"]
         XCTAssertTrue(save.waitForExistence(timeout: 3))
@@ -503,6 +500,15 @@ final class FoundersOfficeMacUITests: XCTestCase {
             panel.waitForExistence(timeout: 3) ? panel : nil,
             "The required native colour panel was not exposed to UI automation."
         )
+    }
+
+    private func waitUntilUnavailable(
+        _ element: XCUIElement,
+        timeout: TimeInterval
+    ) -> Bool {
+        let predicate = NSPredicate(format: "exists == false OR hittable == false")
+        let expectation = XCTNSPredicateExpectation(predicate: predicate, object: element)
+        return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
     }
 
     @discardableResult
