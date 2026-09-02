@@ -181,7 +181,7 @@ struct PriorityDragAutoScrollerTests {
                 maximumSpeed: maximumSpeed
             ),
             uptime: { uptime },
-            isPrimaryButtonPressed: { true }
+            mouseUpSequence: { 0 }
         )
         scroller.attach(scrollView)
         scroller.beginSession(moveID: UUID(), onEnd: {})
@@ -203,7 +203,7 @@ struct PriorityDragAutoScrollerTests {
             frame: NSRect(x: 0, y: 0, width: 300, height: 300)
         )
         scrollView.documentView = documentView
-        let scroller = PriorityDragAutoScroller(isPrimaryButtonPressed: { true })
+        let scroller = PriorityDragAutoScroller(mouseUpSequence: { 0 })
         scroller.attach(scrollView)
         scroller.beginSession(moveID: UUID(), onEnd: {})
         scroller.update(pointerY: 180)
@@ -335,19 +335,19 @@ struct PriorityDragAutoScrollerTests {
     }
 
     @Test
-    func buttonPollingCompletesADragWhenTheLazyGestureViewDisappears() {
+    func mouseUpSequenceCompletesADragWhenTheLazyGestureViewDisappears() {
         let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 300, height: 180))
         scrollView.documentView = FlippedDocumentView(
             frame: NSRect(x: 0, y: 0, width: 300, height: 1_200)
         )
-        var isPressed = true
+        var mouseUpSequence: UInt32 = 41
         let moveID = UUID()
         var releasedID: UUID?
         var releasedPointerY: CGFloat?
         var completionCount = 0
         let scroller = PriorityDragAutoScroller(
             releaseGraceInterval: 0,
-            isPrimaryButtonPressed: { isPressed }
+            mouseUpSequence: { mouseUpSequence }
         )
         scroller.attach(scrollView)
         scroller.beginSession(
@@ -360,9 +360,10 @@ struct PriorityDragAutoScrollerTests {
         )
         scroller.update(pointerY: 179)
 
-        scroller.pollPrimaryButtonState()
-        isPressed = false
-        scroller.pollPrimaryButtonState()
+        scroller.pollMouseUpSequence()
+        #expect(releasedID == nil)
+        mouseUpSequence &+= 1
+        scroller.pollMouseUpSequence()
 
         #expect(releasedID == moveID)
         #expect(releasedPointerY == 179)

@@ -83,19 +83,19 @@ final class PriorityDragAutoScroller: ObservableObject {
     private var timer: Timer?
     private var localEventMonitor: Any?
     private var globalMouseMonitor: Any?
-    private var primaryButtonMonitorTimer: Timer?
+    private var mouseUpMonitorTimer: Timer?
     private var sessionEnd: (() -> Void)?
     private var pointerUpdate: ((CGFloat?) -> Void)?
     private var releaseRequest: ((UUID, CGFloat?) -> Void)?
     private var pendingRelease: DispatchWorkItem?
     private var velocity: CGFloat = 0
     private var lastTick: TimeInterval = 0
-    private var didObservePrimaryButtonDown = false
+    private var mouseUpSequenceAtSessionStart: UInt32?
     private let policy: DragEdgeScrollPolicy
     private let pointerExitMargin: CGFloat
     private let releaseGraceInterval: TimeInterval
     private let uptime: () -> TimeInterval
-    private let isPrimaryButtonPressed: () -> Bool
+    private let mouseUpSequence: () -> UInt32
     private(set) var pointerY: CGFloat?
     private(set) var draggedMoveID: UUID?
     var isAutoScrolling: Bool { timer != nil }
@@ -107,15 +107,18 @@ final class PriorityDragAutoScroller: ObservableObject {
         uptime: @escaping () -> TimeInterval = {
             ProcessInfo.processInfo.systemUptime
         },
-        isPrimaryButtonPressed: @escaping () -> Bool = {
-            NSEvent.pressedMouseButtons & 1 == 1
+        mouseUpSequence: @escaping () -> UInt32 = {
+            CGEventSource.counterForEventType(
+                .combinedSessionState,
+                eventType: .leftMouseUp
+            )
         }
     ) {
         self.policy = policy
         self.pointerExitMargin = pointerExitMargin
         self.releaseGraceInterval = releaseGraceInterval
         self.uptime = uptime
-        self.isPrimaryButtonPressed = isPrimaryButtonPressed
+        self.mouseUpSequence = mouseUpSequence
     }
 
     func attach(_ scrollView: NSScrollView?) {
@@ -212,8 +215,8 @@ final class PriorityDragAutoScroller: ObservableObject {
         pointerUpdate = onPointerUpdate
         releaseRequest = onRelease
         sessionEnd = onEnd
-        didObservePrimaryButtonDown = false
-        startPrimaryButtonMonitor()
+        mouseUpSequenceAtSessionStart = mouseUpSequence()
+        startMouseUpMonitor()
 
         localEventMonitor = NSEvent.addLocalMonitorForEvents(
             matching: [.leftMouseDragged, .leftMouseUp, .keyDown]
@@ -252,11 +255,11 @@ final class PriorityDragAutoScroller: ObservableObject {
     func endSession() {
         pendingRelease?.cancel()
         pendingRelease = nil
-        stopPrimaryButtonMonitor()
+        stopMouseUpMonitor()
         stop()
         pointerY = nil
         draggedMoveID = nil
-        didObservePrimaryButtonDown = false
+        mouseUpSequenceAtSessionStart = nil
         if let localEventMonitor {
             NSEvent.removeMonitor(localEventMonitor)
             self.localEventMonitor = nil
@@ -314,37 +317,37 @@ final class PriorityDragAutoScroller: ObservableObject {
         timer = nil
     }
 
-    private func startPrimaryButtonMonitor() {
-        guard primaryButtonMonitorTimer == nil else { return }
+    private func startMouseUpMonitor() {
+        guard mouseUpMonitorTimer == nil else { return }
         let timer = Timer(timeInterval: 1 / 30, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
-                self?.pollPrimaryButtonState()
+                self?.pollMouseUpSequence()
             }
         }
-        primaryButtonMonitorTimer = timer
+        mouseUpMonitorTimer = timer
         RunLoop.main.add(timer, forMode: .common)
     }
 
-    private func stopPrimaryButtonMonitor() {
-        primaryButtonMonitorTimer?.invalidate()
-        primaryButtonMonitorTimer = nil
+    private func stopMouseUpMonitor() {
+        mouseUpMonitorTimer?.invalidate()
+        mouseUpMonitorTimer = nil
     }
 
     /// A lazy row can leave the hierarchy while its pointer remains at the
     /// scroll edge. AppKit then cancels SwiftUI's gesture without calling
     /// `onEnded`, and accessibility-synthesized mouse-up events do not always
-    /// pass through either event monitor. Poll only the native button bit; the
-    /// last event-backed viewport coordinate remains the release authority.
-    func pollPrimaryButtonState() {
-        guard draggedMoveID != nil else {
-            stopPrimaryButtonMonitor()
+    /// pass through either event monitor. The combined-session event counter
+    /// records posted releases even when a sampled button bit never reports
+    /// the synthetic press; the last event-backed viewport coordinate remains
+    /// the release authority.
+    func pollMouseUpSequence() {
+        guard draggedMoveID != nil,
+              let sequenceAtStart = mouseUpSequenceAtSessionStart
+        else {
+            stopMouseUpMonitor()
             return
         }
-        if isPrimaryButtonPressed() {
-            didObservePrimaryButtonDown = true
-            return
-        }
-        guard didObservePrimaryButtonDown else { return }
+        guard mouseUpSequence() != sequenceAtStart else { return }
         scheduleRelease()
     }
 
