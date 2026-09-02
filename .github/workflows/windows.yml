@@ -1,0 +1,83 @@
+name: Founder's Office Windows
+
+on:
+  push:
+    branches: [main, "codex/**"]
+    paths:
+      - "Apps/Windows/**"
+      - "contracts/v1/**"
+      - "Scripts/check-repository-safety.sh"
+      - "Scripts/validate-windows-scaffold.py"
+      - ".github/workflows/windows.yml"
+  pull_request:
+    paths:
+      - "Apps/Windows/**"
+      - "contracts/v1/**"
+      - "Scripts/check-repository-safety.sh"
+      - "Scripts/validate-windows-scaffold.py"
+      - ".github/workflows/windows.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: founders-office-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: Native Windows build and tests
+    runs-on: windows-2025
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: Apps/Windows
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+      DOTNET_NOLOGO: "1"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Use pinned .NET SDK
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          global-json-file: Apps/Windows/global.json
+          cache: true
+          cache-dependency-path: Apps/Windows/**/packages.lock.json
+
+      - name: Enforce repository privacy boundary
+        working-directory: .
+        shell: bash
+        run: Scripts/check-repository-safety.sh
+
+      - name: Validate Windows structure and release boundaries
+        working-directory: .
+        run: python Scripts/validate-windows-scaffold.py
+
+      - name: Restore locked dependencies
+        run: dotnet restore .\FoundersOffice.Windows.slnx --locked-mode
+
+      - name: Test platform-neutral Windows core
+        run: >-
+          dotnet test
+          .\tests\FoundersOffice.Core.Tests\FoundersOffice.Core.Tests.csproj
+          --configuration Release
+          --no-restore
+          --collect:"XPlat Code Coverage"
+
+      - name: Compile native WinUI 3 shell
+        run: >-
+          dotnet build
+          .\src\FoundersOffice.App\FoundersOffice.App.csproj
+          --configuration Release
+          --no-restore
+          -p:Platform=x64
+          -p:AppxPackageSigningEnabled=false
+
+      - name: Report vulnerable dependencies
+        run: dotnet list .\FoundersOffice.Windows.slnx package --vulnerable --include-transitive
