@@ -73,11 +73,11 @@ final class FoundersOfficeMacUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["appearance.preset.manish"].isSelected)
 
         nativePreset.click()
-        app.typeKey(XCUIKeyboardKey.escape, modifierFlags: [])
+        notch(in: app).typeKey(XCUIKeyboardKey.escape, modifierFlags: [])
         let unsaved = app.descendants(matching: .any)["appearance.unsaved.editor"]
         XCTAssertTrue(unsaved.waitForExistence(timeout: 2))
         app.buttons["appearance.unsaved.discard"].click()
-        XCTAssertFalse(unsaved.exists)
+        XCTAssertTrue(unsaved.waitForNonExistence(timeout: 2))
         XCTAssertTrue(app.buttons["nav.home"].isSelected)
     }
 
@@ -108,10 +108,10 @@ final class FoundersOfficeMacUITests: XCTestCase {
         XCTAssertTrue(nativePreset.waitForExistence(timeout: 4))
         nativePreset.click()
 
-        app.typeKey(XCUIKeyboardKey.escape, modifierFlags: [])
+        notch(in: app).typeKey(XCUIKeyboardKey.escape, modifierFlags: [])
         let editor = app.descendants(matching: .any)["appearance.unsaved.editor"]
         XCTAssertTrue(editor.waitForExistence(timeout: 2))
-        app.typeKey(XCUIKeyboardKey.escape, modifierFlags: [])
+        notch(in: app).typeKey(XCUIKeyboardKey.escape, modifierFlags: [])
 
         XCTAssertTrue(editor.waitForNonExistence(timeout: 2))
         XCTAssertTrue(nativePreset.isSelected)
@@ -129,7 +129,7 @@ final class FoundersOfficeMacUITests: XCTestCase {
             app.staticTexts["Save your appearance before closing?"]
                 .waitForExistence(timeout: 2)
         )
-        let cancel = app.buttons["Cancel"]
+        let cancel = app.dialogs.buttons["Cancel"].firstMatch
         XCTAssertTrue(cancel.isHittable)
         cancel.click()
         XCTAssertTrue(nativePreset.waitForExistence(timeout: 2))
@@ -151,7 +151,7 @@ final class FoundersOfficeMacUITests: XCTestCase {
         let colourWell = app.descendants(matching: .any)["appearance.colour.0"]
         colourWell.click()
         let colours = try requireNativeColourPanel(in: app)
-        app.typeKey(XCUIKeyboardKey.escape, modifierFlags: [])
+        colours.typeKey(XCUIKeyboardKey.escape, modifierFlags: [])
         XCTAssertTrue(colours.waitForNonExistence(timeout: 2))
 
         let save = app.buttons["appearance.save"]
@@ -181,7 +181,10 @@ final class FoundersOfficeMacUITests: XCTestCase {
         XCTAssertTrue(save.isEnabled)
         save.click()
 
-        XCTAssertFalse(app.descendants(matching: .any)["movePlanning.editor"].exists)
+        XCTAssertTrue(
+            app.descendants(matching: .any)["movePlanning.editor"]
+                .waitForNonExistence(timeout: 2)
+        )
         let move = app.buttons["Edit Prepare launch brief"]
         XCTAssertTrue(move.waitForExistence(timeout: 2))
         XCTAssertTrue(String(describing: move.value).contains("P2"))
@@ -199,13 +202,13 @@ final class FoundersOfficeMacUITests: XCTestCase {
             ]
         )
 
-        let priorityScroll = app.descendants(matching: .any)["moves.priority.scroll"]
+        let priorityScroll = app.scrollViews["moves.priority.scroll"]
         XCTAssertTrue(priorityScroll.waitForExistence(timeout: 4))
-        let targetLane = app.descendants(matching: .any)["moves.priorityLane.p1"]
+        let targetLane = app.groups["moves.priorityLane.p1"]
         XCTAssertTrue(targetLane.waitForExistence(timeout: 2))
         XCTAssertTrue(String(describing: targetLane.value).contains("Drop target"))
         XCTAssertFalse(
-            String(describing: app.descendants(matching: .any)["moves.priorityLane.p0"].value)
+            String(describing: app.groups["moves.priorityLane.p0"].value)
                 .contains("Drop target")
         )
     }
@@ -220,15 +223,15 @@ final class FoundersOfficeMacUITests: XCTestCase {
         ]
         var app = launch(root: root, environment: environment)
 
-        let priorityScroll = app.descendants(matching: .any)["moves.priority.scroll"]
+        let priorityScroll = app.scrollViews["moves.priority.scroll"]
         XCTAssertTrue(priorityScroll.waitForExistence(timeout: 4))
-        waitForValue("Saved", of: app.descendants(matching: .any)["moves.persistence"])
+        waitForValue("Loaded", of: app.otherElements["moves.persistence"])
 
-        let row = app.descendants(matching: .any)["move.row.\(draggedMoveID)"]
+        let row = app.buttons["Edit Priority drag fixture 1"]
         XCTAssertTrue(row.waitForExistence(timeout: 3))
         XCTAssertTrue(row.isHittable)
         XCTAssertFalse(
-            app.descendants(matching: .any)["moves.priorityLane.p3"].isHittable,
+            app.groups["moves.priorityLane.p3"].isHittable,
             "The low-priority lane must begin below the viewport so this tests auto-scroll."
         )
 
@@ -246,7 +249,7 @@ final class FoundersOfficeMacUITests: XCTestCase {
         let planningButton = app.buttons["Edit Priority drag fixture 1"]
         XCTAssertTrue(planningButton.waitForExistence(timeout: 4))
         waitForValueContaining("P3", of: planningButton)
-        waitForValue("Saved", of: app.descendants(matching: .any)["moves.persistence"])
+        waitForValue("Saved", of: app.otherElements["moves.persistence"])
         XCTAssertTrue(String(describing: priorityScroll.value).contains("Idle"))
 
         app.terminate()
@@ -333,8 +336,8 @@ final class FoundersOfficeMacUITests: XCTestCase {
             environment: ["OPENLOOPS_PREVIEW_CALENDAR": "1"]
         )
 
-        XCTAssertTrue(app.staticTexts["Product review"].waitForExistence(timeout: 4))
-        XCTAssertFalse(app.staticTexts["Finished planning review"].exists)
+        XCTAssertTrue(app.buttons["Product review"].waitForExistence(timeout: 4))
+        XCTAssertFalse(app.buttons["Finished planning review"].exists)
     }
 
     func testNativeColourPanelRestoresTheNotchAfterClosing() throws {
@@ -347,7 +350,7 @@ final class FoundersOfficeMacUITests: XCTestCase {
         colourWell.click()
 
         let colours = try requireNativeColourPanel(in: app)
-        app.typeKey("w", modifierFlags: .command)
+        colours.typeKey("w", modifierFlags: .command)
         XCTAssertTrue(colours.waitForNonExistence(timeout: 2))
 
         let save = app.buttons["appearance.save"]
@@ -367,11 +370,11 @@ final class FoundersOfficeMacUITests: XCTestCase {
         let choosePhoto = app.buttons["personalize.photo.choose"]
         XCTAssertTrue(choosePhoto.waitForExistence(timeout: 4))
         XCTAssertTrue(choosePhoto.isHittable)
-        let notch = app.windows["Founder's Office"]
+        let notch = notch(in: app)
         XCTAssertTrue(notch.exists)
         choosePhoto.click()
 
-        let chooser = app.windows["foundersOffice.native-open-panel"]
+        let chooser = app.windows["open-panel"]
         XCTAssertTrue(
             chooser.waitForExistence(timeout: 3),
             "The app-owned native chooser must be exposed above the notch."
@@ -452,12 +455,17 @@ final class FoundersOfficeMacUITests: XCTestCase {
             "OPENLOOPS_PREVIEW_CALENDAR": environment["OPENLOOPS_PREVIEW_CALENDAR"] ?? "0"
         ]) { current, _ in current }
         app.launch()
-        XCTAssertTrue(app.windows["Founder's Office"].waitForExistence(timeout: 5))
+        XCTAssertTrue(notch(in: app).waitForExistence(timeout: 5))
         return app
     }
 
+    private func notch(in app: XCUIApplication) -> XCUIElement {
+        app.dialogs["foundersOffice.notch"]
+    }
+
     private func requireNativeColourPanel(in app: XCUIApplication) throws -> XCUIElement {
-        let panel = app.windows["foundersOffice.native-color-panel"]
+        // AppKit exposes NSColorPanel as the only Window while the notch remains a Dialog.
+        let panel = app.windows.firstMatch
         return try XCTUnwrap(
             panel.waitForExistence(timeout: 3) ? panel : nil,
             "The required native colour panel was not exposed to UI automation."
