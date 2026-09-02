@@ -101,6 +101,14 @@ for forbidden in ("Console.WriteLine", "Debug.WriteLine", "client_secret", "serv
     if forbidden.lower() in source_text.lower():
         fail(f"forbidden diagnostic or credential marker found: {forbidden}")
 
+main_window_source = (
+    WINDOWS / "src" / "FoundersOffice.App" / "MainWindow.xaml.cs"
+).read_text(encoding="utf-8")
+if "MicaKind" in main_window_source:
+    fail("MainWindow must not use the unavailable projected MicaKind API")
+if "SystemBackdrop = new MicaBackdrop();" not in main_window_source:
+    fail("MainWindow must install the supported WinUI Mica backdrop")
+
 if not (ROOT / "contracts" / "v1" / "openapi.json").is_file():
     fail("shared v1 contract is missing")
 

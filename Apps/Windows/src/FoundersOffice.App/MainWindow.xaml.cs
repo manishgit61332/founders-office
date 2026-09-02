@@ -18,7 +18,7 @@ public sealed partial class MainWindow : Window
         InitializeComponent();
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(TitleBarDragRegion);
-        SystemBackdrop = new MicaBackdrop { Kind = MicaKind.BaseAlt };
+        SystemBackdrop = new MicaBackdrop();
 
         var databasePath = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),

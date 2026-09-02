@@ -88,6 +88,7 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Fixed
 
+- The native Windows shell now uses the supported WinUI Mica backdrop API, preventing its code-behind failure from cascading into opaque XAML compiler errors.
 - Priority drag release now completes from the persistent scroll surface when its lazy source row moves off-screen; the final pointer position selects the saved lane, and edge scrolling stops cleanly at the document boundary.
 - Priority dragging now tracks the pointer in stable native viewport coordinates, so edge auto-scroll continues when the cursor is held still and lazy rows move beneath it.
 - First-run onboarding now renders as one continuous squircle with fully transparent exterior corners instead of a clipped rectangular host shadow.
