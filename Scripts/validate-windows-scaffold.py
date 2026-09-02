@@ -113,6 +113,14 @@ if "MainWindow : Window, IDisposable" not in main_window_source:
 if "readonly SqliteWorkspaceRepository _repository" not in main_window_source:
     fail("MainWindow must keep its concrete local repository ownership explicit")
 
+app_source = (
+    WINDOWS / "src" / "FoundersOffice.App" / "App.xaml.cs"
+).read_text(encoding="utf-8")
+if "App : Application, IDisposable" not in app_source:
+    fail("App must close the disposable MainWindow through an explicit lifetime")
+if "_window.Closed += MainWindow_Closed;" not in app_source:
+    fail("App must bind its cleanup to the WinUI window lifetime")
+
 if not (ROOT / "contracts" / "v1" / "openapi.json").is_file():
     fail("shared v1 contract is missing")
 
