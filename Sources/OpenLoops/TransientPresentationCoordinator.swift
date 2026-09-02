@@ -300,12 +300,15 @@ final class TransientPresentationCoordinator {
         return hostWindow.frame.insetBy(dx: -12, dy: -12).contains(NSEvent.mouseLocation)
     }
 
-    func closeNativeColorPanels() {
+    @discardableResult
+    func closeNativeColorPanels() -> Bool {
         let panels = trackedWindows.values.filter { $0.window is NSColorPanel }
+        guard !panels.isEmpty else { return false }
         for tracked in panels {
             tracked.window.orderOut(nil)
             endScoped(to: tracked.window)
         }
+        return true
     }
 
     func cancelAll() {

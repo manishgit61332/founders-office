@@ -1469,7 +1469,10 @@ struct NotchBoardView: View {
         )
         .zIndex(isDropTarget ? 1 : 0)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(priority.title) priority, \(items.count) Moves")
+        .accessibilityLabel(
+            "\(priority.title) priority, \(items.count) Moves"
+                + (isDropTarget ? ", Drop target" : "")
+        )
         .accessibilityValue(isDropTarget ? "Drop target" : "")
         .accessibilityHint("Drop a Move here to set its priority to \(priority.title)")
         .accessibilityIdentifier("moves.priorityLane.\(priority.rawValue.lowercased())")

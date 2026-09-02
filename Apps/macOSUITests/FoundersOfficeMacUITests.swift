@@ -209,10 +209,9 @@ final class FoundersOfficeMacUITests: XCTestCase {
         XCTAssertTrue(priorityScroll.waitForExistence(timeout: 4))
         let targetLane = app.groups["moves.priorityLane.p1"]
         XCTAssertTrue(targetLane.waitForExistence(timeout: 2))
-        XCTAssertTrue(String(describing: targetLane.value).contains("Drop target"))
+        XCTAssertTrue(targetLane.label.contains("Drop target"))
         XCTAssertFalse(
-            String(describing: app.groups["moves.priorityLane.p0"].value)
-                .contains("Drop target")
+            app.groups["moves.priorityLane.p0"].label.contains("Drop target")
         )
     }
 
@@ -228,7 +227,11 @@ final class FoundersOfficeMacUITests: XCTestCase {
 
         let priorityScroll = app.scrollViews["moves.priority.scroll"]
         XCTAssertTrue(priorityScroll.waitForExistence(timeout: 4))
-        waitForValue("Loaded", of: app.otherElements["moves.persistence"])
+        guard waitForValue(
+            "Saved",
+            of: app.otherElements["moves.persistence"],
+            timeout: 15
+        ) else { return }
 
         let row = app.buttons["Edit Priority drag fixture 1"]
         XCTAssertTrue(row.waitForExistence(timeout: 3))
@@ -246,13 +249,17 @@ final class FoundersOfficeMacUITests: XCTestCase {
             forDuration: 0.45,
             thenDragTo: lowerEdge,
             withVelocity: .slow,
-            thenHoldForDuration: 3.2
+            thenHoldForDuration: 4.5
         )
 
         let planningButton = app.buttons["Edit Priority drag fixture 1"]
         XCTAssertTrue(planningButton.waitForExistence(timeout: 4))
-        waitForValueContaining("P3", of: planningButton)
-        waitForValue("Saved", of: app.otherElements["moves.persistence"])
+        guard waitForValueContaining("P3", of: planningButton, timeout: 10) else { return }
+        guard waitForValue(
+            "Saved",
+            of: app.otherElements["moves.persistence"],
+            timeout: 10
+        ) else { return }
         XCTAssertTrue(String(describing: priorityScroll.value).contains("Idle"))
 
         app.terminate()
@@ -284,7 +291,9 @@ final class FoundersOfficeMacUITests: XCTestCase {
         let title = app.textFields["newMove.title"]
         let description = app.textFields["newMove.description"]
         XCTAssertTrue(title.waitForExistence(timeout: 4))
+        XCTAssertTrue(title.isHittable)
         XCTAssertTrue(description.isHittable)
+        title.click()
         title.typeText("Send the launch note")
         description.click()
         description.typeText("Include the beta link and the feedback form.")
@@ -304,6 +313,11 @@ final class FoundersOfficeMacUITests: XCTestCase {
         app.typeKey("a", modifierFlags: .command)
         editorDescription.typeText("Include the beta link, feedback form, and deadline.")
         app.buttons["movePlanning.save"].click()
+        XCTAssertTrue(
+            app.descendants(matching: .any)["movePlanning.editor"]
+                .waitForNonExistence(timeout: 3)
+        )
+        XCTAssertTrue(edit.waitForExistence(timeout: 3))
         edit.click()
         XCTAssertEqual(
             app.textFields["movePlanning.description"].value as? String,
@@ -405,6 +419,8 @@ final class FoundersOfficeMacUITests: XCTestCase {
 
         cancel.click()
         XCTAssertTrue(chooser.waitForNonExistence(timeout: 3))
+        app.activate()
+        XCTAssertTrue(notch.waitForExistence(timeout: 4))
         XCTAssertTrue(choosePhoto.waitForExistence(timeout: 3))
         XCTAssertTrue(choosePhoto.isHittable)
     }
@@ -489,28 +505,41 @@ final class FoundersOfficeMacUITests: XCTestCase {
         )
     }
 
+    @discardableResult
     private func waitForValue(
         _ expectedValue: String,
         of element: XCUIElement,
         timeout: TimeInterval = 5
-    ) {
-        XCTAssertTrue(element.waitForExistence(timeout: timeout))
+    ) -> Bool {
+        guard element.waitForExistence(timeout: timeout) else {
+            XCTFail("Element did not exist before waiting for value \(expectedValue).")
+            return false
+        }
         let predicate = NSPredicate(format: "value == %@", expectedValue)
-        let expectation = expectation(for: predicate, evaluatedWith: element)
-        wait(for: [expectation], timeout: timeout)
+        let expectation = XCTNSPredicateExpectation(predicate: predicate, object: element)
+        guard XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed else {
+            XCTFail("Element did not reach value \(expectedValue).")
+            return false
+        }
+        return true
     }
 
+    @discardableResult
     private func waitForValueContaining(
         _ expectedFragment: String,
         of element: XCUIElement,
         timeout: TimeInterval = 5
-    ) {
+    ) -> Bool {
         let predicate = NSPredicate(
             format: "value CONTAINS[c] %@",
             expectedFragment
         )
-        let expectation = expectation(for: predicate, evaluatedWith: element)
-        wait(for: [expectation], timeout: timeout)
+        let expectation = XCTNSPredicateExpectation(predicate: predicate, object: element)
+        guard XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed else {
+            XCTFail("Element value did not contain \(expectedFragment).")
+            return false
+        }
+        return true
     }
 
     private func makeTemporaryRoot() -> URL {

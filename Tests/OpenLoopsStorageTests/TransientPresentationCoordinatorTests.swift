@@ -318,7 +318,9 @@ struct TransientPresentationCoordinatorTests {
             colour.accessibilityIdentifier()
                 == TransientPresentationCoordinator.nativeColorPanelIdentifier.rawValue
         )
-        coordinator.endScoped(to: colour)
+        colour.orderFrontRegardless()
+        #expect(coordinator.closeNativeColorPanels())
+        #expect(!colour.isVisible)
         #expect(!coordinator.preventsAutoDismiss)
         #expect(colour.identifier == nil)
         #expect(colour.accessibilityIdentifier() == originalColourAccessibilityIdentifier)

@@ -30,7 +30,8 @@ final class NotchPresentationModel: ObservableObject {
         transients.cancelAll()
     }
 
-    func closeNativeColorPanels() {
+    @discardableResult
+    func closeNativeColorPanels() -> Bool {
         transients.closeNativeColorPanels()
     }
 }
@@ -391,6 +392,12 @@ final class NotchWindowController {
         state = .open
     }
 
+    #if !FOUNDER_OFFICE_DISTRIBUTION
+    func makeKeyForUITesting() {
+        panel.makeKey()
+    }
+    #endif
+
     func hide(force: Bool = false) {
         guard state != .hidden, state != .closing else { return }
         guard force || !previewMode else { return }
@@ -487,13 +494,7 @@ final class NotchWindowController {
         escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard event.keyCode == 53 else { return event }
             let consumed = MainActor.assumeIsolated {
-                guard let self,
-                      let colourPanel = NSApp.keyWindow as? NSColorPanel,
-                      self.presentation.transients.isTracking(colourPanel) else {
-                    return false
-                }
-                self.presentation.transients.dismissAndEnd(colourPanel)
-                return true
+                self?.presentation.closeNativeColorPanels() == true
             }
             return consumed ? nil : event
         }
@@ -691,7 +692,7 @@ final class NotchWindowController {
             position(on: screen)
         }
         if state == .hidden || state == .closing || state == .suspended {
-            show()
+            show(preview: previewMode)
             return
         }
         panel.orderFrontRegardless()

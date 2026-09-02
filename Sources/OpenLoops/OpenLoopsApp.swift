@@ -311,6 +311,7 @@ final class FoundersOfficeAppDelegate: NSObject, NSApplicationDelegate {
         if arguments.contains("--ui-testing") {
             controller.showSnapshot()
             NSApp.activate(ignoringOtherApps: true)
+            controller.makeKeyForUITesting()
         } else if arguments.contains("--snapshot") {
             controller.showSnapshot()
         } else if arguments.contains("--preview")
