@@ -1,5 +1,5 @@
 import type { Metadata } from 'next';
-import { Instrument_Serif } from 'next/font/google';
+import { Instrument_Serif, Manrope } from 'next/font/google';
 
 import './globals.css';
 
@@ -9,24 +9,30 @@ const instrumentSerif = Instrument_Serif({
   weight: '400',
 });
 
+const manrope = Manrope({
+  variable: '--font-manrope',
+  subsets: ['latin'],
+  weight: ['400', '600', '700'],
+});
+
 export const metadata: Metadata = {
   metadataBase: new URL('https://founders-office.sampatirao2.chatgpt.site'),
-  title: "Founder's Office — Know the next move in two seconds",
+  title: "Founder's Office — Use the app inside a MacBook",
   description:
-    'A calm MacBook notch app for your next move, calendar, and primary goal.',
+    'Scroll through an interactive MacBook demo of Founder’s Office for macOS.',
   icons: { icon: '/favicon.svg' },
   openGraph: {
     type: 'website',
-    title: "Founder's Office — Know the next move in two seconds",
+    title: "Founder's Office — Use the app inside a MacBook",
     description:
-      'A calm MacBook notch app for your next move, calendar, and primary goal.',
+      'Scroll through an interactive MacBook demo of Founder’s Office for macOS.',
     images: [{ url: '/og.png', width: 1200, height: 630 }],
   },
   twitter: {
     card: 'summary_large_image',
-    title: "Founder's Office — Know the next move in two seconds",
+    title: "Founder's Office — Use the app inside a MacBook",
     description:
-      'A calm MacBook notch app for your next move, calendar, and primary goal.',
+      'Scroll through an interactive MacBook demo of Founder’s Office for macOS.',
     images: ['/og.png'],
   },
 };
@@ -38,7 +44,9 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body className={instrumentSerif.variable}>{children}</body>
+      <body className={`${instrumentSerif.variable} ${manrope.variable}`}>
+        {children}
+      </body>
     </html>
   );
 }

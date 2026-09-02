@@ -20,10 +20,10 @@ export default function PrivacyPage() {
         <section>
           <h2>Workspace data</h2>
           <p>
-            On first run, you choose local-only storage or iCloud. Local-only
-            data stays in this Mac&apos;s Application Support folder. If you
-            choose iCloud, supported workspace data is synced through the
-            private CloudKit container associated with your Apple account.
+            On first run, your workspace stays on your Mac. Signing in is a
+            later, explicit choice. The customer build will not upload or
+            replace local data until the account, export, recovery, and sync
+            checks pass release review.
           </p>
         </section>
         <section>
@@ -38,11 +38,10 @@ export default function PrivacyPage() {
         <section>
           <h2>Diagnostics and assistants</h2>
           <p>
-            Current health diagnostics are bounded, local records without task
-            text, calendar text, photo paths, or credentials. Assistant
-            execution is a development feature and will not be enabled in a
-            customer build until its consent, sandboxing, and data-handling
-            controls pass release review.
+            Health diagnostics use bounded local records without Move text,
+            calendar text, photo paths, prompts, or credentials. Assistant
+            execution stays out of the customer build until its consent,
+            sandbox, and data-handling checks pass release review.
           </p>
         </section>
         <section>
