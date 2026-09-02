@@ -325,7 +325,6 @@ final class PriorityDragAutoScroller: ObservableObject {
         var proposedBounds = scrollView.contentView.bounds
         proposedBounds.origin.y += coordinateVelocity * elapsed
         let constrainedBounds = scrollView.contentView.constrainBoundsRect(proposedBounds)
-        let reachedBoundary = abs(constrainedBounds.origin.y - proposedBounds.origin.y) > 0.01
 
         guard abs(constrainedBounds.origin.y - scrollView.contentView.bounds.origin.y) > 0.01 else {
             velocity = 0
@@ -334,7 +333,16 @@ final class PriorityDragAutoScroller: ObservableObject {
         }
         scrollView.contentView.scroll(to: constrainedBounds.origin)
         scrollView.reflectScrolledClipView(scrollView.contentView)
-        if reachedBoundary {
+
+        // `NSClipView` may align every proposed origin to backing pixels or
+        // content insets. That correction is not a document boundary. Probe a
+        // point beyond the document in the active direction and stop only when
+        // the constrained origin has actually reached that terminal position.
+        var boundaryProbe = constrainedBounds
+        let probeDistance = max(documentView.bounds.height, constrainedBounds.height, 1)
+        boundaryProbe.origin.y += coordinateVelocity > 0 ? probeDistance : -probeDistance
+        let terminalBounds = scrollView.contentView.constrainBoundsRect(boundaryProbe)
+        if abs(terminalBounds.origin.y - constrainedBounds.origin.y) <= 0.01 {
             velocity = 0
             stopTimer()
         }

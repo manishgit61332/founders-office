@@ -105,6 +105,14 @@ struct PriorityDragAutoScrollerTests {
         override var isFlipped: Bool { true }
     }
 
+    private final class PixelAlignedClipView: NSClipView {
+        override func constrainBoundsRect(_ proposedBounds: NSRect) -> NSRect {
+            var constrained = super.constrainBoundsRect(proposedBounds)
+            constrained.origin.y = constrained.origin.y.rounded()
+            return super.constrainBoundsRect(constrained)
+        }
+    }
+
     @Test
     func stationaryPointerNearBottomContinuouslyScrollsUntilStopped() {
         let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 300, height: 180))
@@ -129,6 +137,33 @@ struct PriorityDragAutoScrollerTests {
         #expect(scrolledOffset > startingOffset + 10)
         #expect(!scroller.isAutoScrolling)
         #expect(abs(scrollView.contentView.bounds.origin.y - scrolledOffset) < 0.5)
+    }
+
+    @Test
+    func backingPixelAlignmentDoesNotStopScrollingBeforeTheDocumentBoundary() {
+        let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 300, height: 180))
+        scrollView.contentView = PixelAlignedClipView(frame: scrollView.bounds)
+        scrollView.documentView = FlippedDocumentView(
+            frame: NSRect(x: 0, y: 0, width: 300, height: 1_200)
+        )
+        let scroller = PriorityDragAutoScroller(
+            policy: DragEdgeScrollPolicy(
+                edgeExtent: 50,
+                minimumSpeed: 120,
+                maximumSpeed: 700
+            )
+        )
+        scroller.attach(scrollView)
+        scroller.update(pointerY: 179)
+
+        scroller.advance(elapsed: 1 / 60)
+        let firstOffset = scrollView.contentView.bounds.origin.y
+        scroller.advance(elapsed: 1 / 60)
+
+        #expect(firstOffset > 1)
+        #expect(scrollView.contentView.bounds.origin.y > firstOffset)
+        #expect(scroller.isAutoScrolling)
+        scroller.stop()
     }
 
     @Test
