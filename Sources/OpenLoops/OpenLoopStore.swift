@@ -539,20 +539,9 @@ final class OpenLoopStore: ObservableObject {
                 )
             }
             items = criticalMoves + lowerLaneMoves
-            // The repository intentionally applies Move writes one entity at a
-            // time. Seed every synthetic Move through that same public write
-            // path so this fixture really overflows, persists, and exercises
-            // the production drag/drop code instead of collapsing to row one.
-            for move in items {
-                enqueueCurrentDocument(
-                    entityKind: "move",
-                    entityID: move.id.uuidString.lowercased(),
-                    changedFields: [
-                        "title", "details", "status", "priority", "dueAt", "createdAt", "updatedAt"
-                    ],
-                    at: move.updatedAt
-                )
-            }
+            // Keep synthetic setup in memory. The production drag mutation
+            // persists the complete document in one real repository commit, so
+            // the gate measures that commit instead of a queue of fixture writes.
         }
 
         if ProcessInfo.processInfo.environment["OPENLOOPS_UI_TEST_FIXTURE"] == "1",

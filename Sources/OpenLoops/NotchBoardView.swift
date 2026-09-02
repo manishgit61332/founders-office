@@ -3439,7 +3439,9 @@ struct NotchBoardView: View {
     }
 
     private func handleExitCommand() {
-        if account.requiresSetupOverlay {
+        if pendingAppearanceExit != nil {
+            pendingAppearanceExit = nil
+        } else if account.requiresSetupOverlay {
             account.cancelAccountSetup()
         } else if supportReportPreview != nil {
             closeSupportReportPreview()

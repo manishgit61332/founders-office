@@ -497,7 +497,9 @@ final class NotchWindowController {
 
     private func startEscapeMonitor() {
         escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard event.keyCode == 53 else { return event }
+            let isEscape = event.keyCode == 53
+                || event.charactersIgnoringModifiers == "\u{1B}"
+            guard isEscape else { return event }
             let consumed = MainActor.assumeIsolated {
                 guard let self else { return false }
                 if self.presentation.closeNativeColorPanels() {

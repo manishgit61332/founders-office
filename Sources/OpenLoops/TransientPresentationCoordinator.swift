@@ -302,11 +302,17 @@ final class TransientPresentationCoordinator {
 
     @discardableResult
     func closeNativeColorPanels() -> Bool {
-        let panels = trackedWindows.values.filter { $0.window is NSColorPanel }
+        var panels = trackedWindows.values.compactMap { $0.window as? NSColorPanel }
+        for panel in NSApp.windows.compactMap({ $0 as? NSColorPanel })
+        where panel.isVisible && !panels.contains(where: { $0 === panel }) {
+            panels.append(panel)
+        }
         guard !panels.isEmpty else { return false }
-        for tracked in panels {
-            tracked.window.orderOut(nil)
-            endScoped(to: tracked.window)
+        for panel in panels {
+            panel.orderOut(nil)
+            if isTracking(panel) {
+                endScoped(to: panel)
+            }
         }
         return true
     }
