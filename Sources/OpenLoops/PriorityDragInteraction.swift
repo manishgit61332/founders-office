@@ -85,7 +85,7 @@ final class PriorityDragAutoScroller: ObservableObject {
     private var globalMouseMonitor: Any?
     private var sessionEnd: (() -> Void)?
     private var pointerUpdate: ((CGFloat?) -> Void)?
-    private var releaseRequest: ((UUID) -> Void)?
+    private var releaseRequest: ((UUID, CGFloat?) -> Void)?
     private var pendingRelease: DispatchWorkItem?
     private var velocity: CGFloat = 0
     private var lastTick = ProcessInfo.processInfo.systemUptime
@@ -94,6 +94,7 @@ final class PriorityDragAutoScroller: ObservableObject {
     private let releaseGraceInterval: TimeInterval
     private(set) var pointerY: CGFloat?
     private(set) var draggedMoveID: UUID?
+    var isAutoScrolling: Bool { timer != nil }
 
     init(
         policy: DragEdgeScrollPolicy = DragEdgeScrollPolicy(),
@@ -190,7 +191,7 @@ final class PriorityDragAutoScroller: ObservableObject {
     func beginSession(
         moveID: UUID,
         onPointerUpdate: @escaping (CGFloat?) -> Void = { _ in },
-        onRelease: @escaping (UUID) -> Void = { _ in },
+        onRelease: @escaping (UUID, CGFloat?) -> Void = { _, _ in },
         onEnd: @escaping () -> Void
     ) {
         endSession()
@@ -264,15 +265,19 @@ final class PriorityDragAutoScroller: ObservableObject {
             let isInsideViewport = pointerInWindow.map(self.update(pointerInWindow:))
                 ?? self.refreshPointerFromWindow()
             if isInsideViewport {
-                self.releaseRequest?(moveID)
+                self.releaseRequest?(moveID, self.pointerY)
             }
             self.endSession()
         }
         pendingRelease = workItem
-        DispatchQueue.main.asyncAfter(
-            deadline: .now() + releaseGraceInterval,
-            execute: workItem
-        )
+        if releaseGraceInterval > 0 {
+            DispatchQueue.main.asyncAfter(
+                deadline: .now() + releaseGraceInterval,
+                execute: workItem
+            )
+        } else {
+            workItem.perform()
+        }
     }
 
     private func startTimerIfNeeded() {
@@ -318,12 +323,19 @@ final class PriorityDragAutoScroller: ObservableObject {
         var proposedBounds = scrollView.contentView.bounds
         proposedBounds.origin.y += coordinateVelocity * elapsed
         let constrainedBounds = scrollView.contentView.constrainBoundsRect(proposedBounds)
+        let reachedBoundary = abs(constrainedBounds.origin.y - proposedBounds.origin.y) > 0.01
 
         guard abs(constrainedBounds.origin.y - scrollView.contentView.bounds.origin.y) > 0.01 else {
+            velocity = 0
+            stopTimer()
             return
         }
         scrollView.contentView.scroll(to: constrainedBounds.origin)
         scrollView.reflectScrolledClipView(scrollView.contentView)
+        if reachedBoundary {
+            velocity = 0
+            stopTimer()
+        }
     }
 }
 

@@ -1277,6 +1277,20 @@ struct NotchBoardView: View {
                     }
                 }
                 .coordinateSpace(name: "priority-move-scroll")
+                .simultaneousGesture(
+                    DragGesture(
+                        minimumDistance: 7,
+                        coordinateSpace: .named("priority-move-scroll")
+                    )
+                    .onChanged { value in
+                        guard let moveID = priorityDragAutoScroller.draggedMoveID else { return }
+                        updatePriorityDrag(moveID, pointerY: value.location.y)
+                    }
+                    .onEnded { value in
+                        guard let moveID = priorityDragAutoScroller.draggedMoveID else { return }
+                        endPriorityDrag(moveID, pointerY: value.location.y)
+                    }
+                )
                 .accessibilityIdentifier("moves.priority.scroll")
                 .accessibilityValue(
                     priorityDragInteractionLease == nil ? "Idle" : "Dragging"
@@ -1671,9 +1685,11 @@ struct NotchBoardView: View {
                     )
                 )
             },
-            onRelease: { moveID in
-                guard let priorityDropTarget else { return }
-                _ = handlePriorityDrop(moveID, target: priorityDropTarget)
+            onRelease: { moveID, pointerY in
+                let target = pointerY.flatMap(resolvePriorityDropTarget)
+                    ?? priorityDropTarget
+                guard let target else { return }
+                _ = handlePriorityDrop(moveID, target: target)
             },
             onEnd: handlePriorityDragSessionEnded
         )
@@ -1686,19 +1702,7 @@ struct NotchBoardView: View {
         guard priorityDragAutoScroller.draggedMoveID == id else { return }
 
         priorityDragAutoScroller.update(pointerY: pointerY)
-        setPriorityDropTarget(
-            PriorityDropTargetPolicy.target(
-                pointerY: pointerY,
-                lanes: priorityLaneFrames.map { priority, frame in
-                    PriorityDropLane(
-                        priority: priority,
-                        minY: frame.minY,
-                        maxY: frame.maxY
-                    )
-                },
-                current: priorityDropTarget
-            )
-        )
+        setPriorityDropTarget(resolvePriorityDropTarget(pointerY))
     }
 
     private func endPriorityDrag(_ id: UUID, pointerY: CGFloat) {
@@ -1708,17 +1712,7 @@ struct NotchBoardView: View {
         }
 
         priorityDragAutoScroller.update(pointerY: pointerY)
-        let target = PriorityDropTargetPolicy.target(
-            pointerY: pointerY,
-            lanes: priorityLaneFrames.map { priority, frame in
-                PriorityDropLane(
-                    priority: priority,
-                    minY: frame.minY,
-                    maxY: frame.maxY
-                )
-            },
-            current: priorityDropTarget
-        ) ?? priorityDropTarget
+        let target = resolvePriorityDropTarget(pointerY) ?? priorityDropTarget
 
         if let target {
             _ = handlePriorityDrop(id, target: target)
@@ -1738,6 +1732,20 @@ struct NotchBoardView: View {
         if target != nil {
             NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
         }
+    }
+
+    private func resolvePriorityDropTarget(_ pointerY: CGFloat) -> LoopPriority? {
+        PriorityDropTargetPolicy.target(
+            pointerY: pointerY,
+            lanes: priorityLaneFrames.map { priority, frame in
+                PriorityDropLane(
+                    priority: priority,
+                    minY: frame.minY,
+                    maxY: frame.maxY
+                )
+            },
+            current: priorityDropTarget
+        )
     }
 
     private func finishPriorityDrag() {

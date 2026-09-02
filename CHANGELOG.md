@@ -87,7 +87,7 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Fixed
 
-- Priority drag release no longer clears the Move before SwiftUI can commit the drop; a bounded native fallback now saves the selected lane, pointer tracking updates the magnetic target continuously, and edge scrolling remains active slightly beyond the visible viewport.
+- Priority drag release now completes from the persistent scroll surface when its lazy source row moves off-screen; the final pointer position selects the saved lane, and edge scrolling stops cleanly at the document boundary.
 - Priority dragging now tracks the pointer in stable native viewport coordinates, so edge auto-scroll continues when the cursor is held still and lazy rows move beneath it.
 - First-run onboarding now renders as one continuous squircle with fully transparent exterior corners instead of a clipped rectangular host shadow.
 - A clean quit during asynchronous Mac startup no longer counts as a pre-ready crash. The development installer now requests an AppKit termination, waits for the process to exit, and refuses to replace a live bundle; real abrupt failures and an active safe-mode latch remain preserved.

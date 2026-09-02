@@ -122,12 +122,12 @@ struct PriorityDragAutoScrollerTests {
         let startingOffset = scrollView.contentView.bounds.origin.y
 
         scroller.update(pointerY: 179)
-        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.12))
+        scroller.advance(elapsed: 0.12)
         let scrolledOffset = scrollView.contentView.bounds.origin.y
         scroller.stop()
 
         #expect(scrolledOffset > startingOffset + 10)
-        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.06))
+        #expect(!scroller.isAutoScrolling)
         #expect(abs(scrollView.contentView.bounds.origin.y - scrolledOffset) < 0.5)
     }
 
@@ -160,7 +160,7 @@ struct PriorityDragAutoScrollerTests {
         let maximumOffset = scrollView.documentView!.bounds.height
             - scrollView.contentView.bounds.height
         #expect(abs(scrollView.contentView.bounds.origin.y - maximumOffset) < 0.5)
-        scroller.stop()
+        #expect(!scroller.isAutoScrolling)
     }
 
     @Test
@@ -180,7 +180,7 @@ struct PriorityDragAutoScrollerTests {
     }
 
     @Test
-    func mouseUpFallbackCommitsBeforeEndingWhenSwiftUIDoesNotPerformTheDrop() async throws {
+    func mouseUpFallbackCommitsBeforeEndingWhenSwiftUIDoesNotPerformTheDrop() {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 300, height: 180),
             styleMask: .borderless,
@@ -192,22 +192,29 @@ struct PriorityDragAutoScrollerTests {
             frame: NSRect(x: 0, y: 0, width: 300, height: 1_200)
         )
         window.contentView = scrollView
-        let scroller = PriorityDragAutoScroller(releaseGraceInterval: 0.01)
+        let scroller = PriorityDragAutoScroller(releaseGraceInterval: 0)
         let moveID = UUID()
         var releasedIDs: [UUID] = []
+        var releasedPointerY: CGFloat?
         var completionCount = 0
         scroller.attach(scrollView)
         scroller.beginSession(
             moveID: moveID,
-            onRelease: { releasedIDs.append($0) },
+            onRelease: { releasedID, pointerY in
+                releasedIDs.append(releasedID)
+                releasedPointerY = pointerY
+            },
             onEnd: { completionCount += 1 }
         )
         _ = scroller.update(pointerInWindow: NSPoint(x: 150, y: 2))
 
         scroller.scheduleRelease(pointerInWindow: NSPoint(x: 150, y: 2))
-        try await Task.sleep(for: .milliseconds(50))
 
         #expect(releasedIDs == [moveID])
+        #expect(releasedPointerY != nil)
+        if let releasedPointerY {
+            #expect(releasedPointerY > 170)
+        }
         #expect(completionCount == 1)
         #expect(scroller.draggedMoveID == nil)
     }
