@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/FoundersOffice.App/FoundersOffice.App.csproj" />
+    <Project Path="src/FoundersOffice.Core/FoundersOffice.Core.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/FoundersOffice.Core.Tests/FoundersOffice.Core.Tests.csproj" />
+  </Folder>
+</Solution>

@@ -1,0 +1,16 @@
+<Application
+    x:Class="FoundersOffice.App.App"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Application.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.ThemeDictionaries>
+                <ResourceDictionary x:Key="Dark">
+                    <SolidColorBrush x:Key="SurfaceCardBrush" Color="#CC24262A" />
+                    <SolidColorBrush x:Key="SurfaceBorderBrush" Color="#30FFFFFF" />
+                    <SolidColorBrush x:Key="AccentBrush" Color="#FF76E7BA" />
+                </ResourceDictionary>
+            </ResourceDictionary.ThemeDictionaries>
+        </ResourceDictionary>
+    </Application.Resources>
+</Application>
