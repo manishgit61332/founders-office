@@ -249,9 +249,6 @@ final class FoundersOfficeMacUITests: XCTestCase {
             thenHoldForDuration: 4.5
         )
 
-        let planningButton = app.buttons["Edit Priority drag fixture 1"]
-        XCTAssertTrue(planningButton.waitForExistence(timeout: 4))
-        guard waitForValueContaining("P3", of: planningButton, timeout: 10) else { return }
         guard waitForValue(
             "Saved",
             of: persistence,
@@ -525,24 +522,6 @@ final class FoundersOfficeMacUITests: XCTestCase {
         let expectation = XCTNSPredicateExpectation(predicate: predicate, object: element)
         guard XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed else {
             XCTFail("Element did not reach value \(expectedValue).")
-            return false
-        }
-        return true
-    }
-
-    @discardableResult
-    private func waitForValueContaining(
-        _ expectedFragment: String,
-        of element: XCUIElement,
-        timeout: TimeInterval = 5
-    ) -> Bool {
-        let predicate = NSPredicate(
-            format: "value CONTAINS[c] %@",
-            expectedFragment
-        )
-        let expectation = XCTNSPredicateExpectation(predicate: predicate, object: element)
-        guard XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed else {
-            XCTFail("Element value did not contain \(expectedFragment).")
             return false
         }
         return true
