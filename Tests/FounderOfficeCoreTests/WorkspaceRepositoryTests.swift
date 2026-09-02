@@ -103,6 +103,8 @@ struct WorkspaceRepositoryTests {
         #expect(change.snapshot.revision == WorkspaceRevision(rawValue: 1))
         #expect(change.snapshot.writerID == writerID)
         #expect(change.snapshot.content.openLoops.items.first?.title == "After")
+        #expect(change.snapshot.content.openLoops.items.first?.updatedAt == fixture.date(20))
+        #expect(change.snapshot.content.openLoops.updatedAt == fixture.date(20))
         #expect(change.operation.baseRevision == .initial)
         #expect(change.operation.committedRevision == WorkspaceRevision(rawValue: 1))
         #expect(change.operation.changedFields == ["title", "updatedAt"])
@@ -128,7 +130,40 @@ struct WorkspaceRepositoryTests {
         #expect(durable.revision == WorkspaceRevision(rawValue: 1))
         #expect(durable.writerID == writerID)
         #expect(durable.content.openLoops.items.first?.title == "After")
+        #expect(durable.content.openLoops.items.first?.updatedAt == fixture.date(20))
+        #expect(durable.content.openLoops.updatedAt == fixture.date(20))
         #expect(try await reopened.pendingOperations().count == 1)
+    }
+
+    @Test
+    func commitNormalizesSubsecondDatesBeforeReturning() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.remove() }
+        let repository = try await fixture.open(initial: fixture.snapshot(title: "Before"))
+        let baseline = try await repository.snapshot()
+        var replacement = baseline.content
+        replacement.openLoops.items[0].title = "After"
+        replacement.openLoops.items[0].updatedAt = fixture.date(20.75)
+        replacement.openLoops.updatedAt = fixture.date(20.75)
+
+        let result = try await repository.transact(
+            expectedRevision: baseline.revision,
+            mutation: fixture.mutation(
+                replacement: replacement,
+                changedFields: ["title", "updatedAt"]
+            )
+        )
+
+        guard case let .committed(change) = result else {
+            Issue.record("Expected a committed transaction")
+            return
+        }
+        #expect(change.snapshot.content.openLoops.items[0].updatedAt == fixture.date(20))
+        #expect(change.snapshot.content.openLoops.updatedAt == fixture.date(20))
+
+        let durable = try await repository.snapshot()
+        #expect(durable.content.openLoops.items[0].updatedAt == fixture.date(20))
+        #expect(durable.content.openLoops.updatedAt == fixture.date(20))
     }
 
     @Test

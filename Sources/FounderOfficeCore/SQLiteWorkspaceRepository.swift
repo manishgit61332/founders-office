@@ -4729,6 +4729,9 @@ private final class WorkspaceJSONCodec {
         let normalizedSnapshot = try normalized(snapshot)
         do {
             let data = try encoder.encode(normalizedSnapshot)
+            if Self.hasOnlyDurableSecondPrecisionDates(normalizedSnapshot) {
+                return (normalizedSnapshot, data)
+            }
             return (
                 try decoder.decode(FounderOfficeSnapshot.self, from: data),
                 data
@@ -4738,6 +4741,53 @@ private final class WorkspaceJSONCodec {
         } catch {
             throw WorkspaceRepositoryError.invalidMutation(reason: "data could not be encoded")
         }
+    }
+
+    /// The durable ISO-8601 representation stores whole seconds. Avoid a full
+    /// 10,000-Move decode when every Date already has that exact precision;
+    /// sub-second input still takes the established encode/decode path so the
+    /// committed in-memory snapshot remains byte-for-byte reload-equivalent.
+    private static func hasOnlyDurableSecondPrecisionDates(
+        _ snapshot: FounderOfficeSnapshot
+    ) -> Bool {
+        let openLoops = snapshot.openLoops
+        guard isDurableSecondPrecision(openLoops.updatedAt),
+              openLoops.items.allSatisfy({ move in
+                  isDurableSecondPrecision(move.dueAt)
+                      && isDurableSecondPrecision(move.createdAt)
+                      && isDurableSecondPrecision(move.updatedAt)
+                      && isDurableSecondPrecision(move.priorityUpdatedAt)
+                      && isDurableSecondPrecision(move.dueAtUpdatedAt)
+                      && isDurableSecondPrecision(move.completedAt)
+                      && isDurableSecondPrecision(move.deletedAt)
+              }) else {
+            return false
+        }
+
+        let personalization = snapshot.personalization
+        guard isDurableSecondPrecision(personalization.updatedAt),
+              isDurableSecondPrecision(personalization.appearance?.updatedAt),
+              isDurableSecondPrecision(personalization.visionImageAsset?.importedAt),
+              personalization.milestones.allSatisfy({ milestone in
+                  isDurableSecondPrecision(milestone.dueAt)
+                      && isDurableSecondPrecision(milestone.createdAt)
+                      && isDurableSecondPrecision(milestone.updatedAt)
+                      && isDurableSecondPrecision(milestone.deletedAt)
+              }) else {
+            return false
+        }
+
+        guard let goal = personalization.primaryGoal else { return true }
+        return isDurableSecondPrecision(goal.dueAt)
+            && isDurableSecondPrecision(goal.createdAt)
+            && isDurableSecondPrecision(goal.updatedAt)
+            && isDurableSecondPrecision(goal.deletedAt)
+    }
+
+    private static func isDurableSecondPrecision(_ date: Date?) -> Bool {
+        guard let date else { return true }
+        let seconds = date.timeIntervalSince1970
+        return seconds.isFinite && seconds == floor(seconds)
     }
 }
 
