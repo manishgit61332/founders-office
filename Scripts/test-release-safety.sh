@@ -43,6 +43,9 @@ release_environment=(
     FOUNDER_OFFICE_NOTARY_PROFILE=example-notary
     FOUNDER_OFFICE_UPDATE_CHANNEL=beta
     FOUNDER_OFFICE_UPDATE_PUBLIC_KEY=MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
+    FOUNDER_OFFICE_SUPABASE_URL=https://example-project.supabase.co
+    FOUNDER_OFFICE_SUPABASE_PUBLISHABLE_KEY=sb_publishable_12345678901234567890
+    FOUNDER_OFFICE_AUTH_CALLBACK_SCHEME=founders-office
 )
 assert_refused \
     "exact credential-free HTTPS URL" \
@@ -59,6 +62,18 @@ assert_refused \
     "URL is malformed" \
     env "${release_environment[@]}" \
         FOUNDER_OFFICE_UPDATE_FEED_URL=https://downloads.example.com:70000/channel/beta.json \
+        "$script_dir/release-macos.sh" --version 1.2.3 --build 4
+assert_refused \
+    "public client key is malformed or unsafe" \
+    env "${release_environment[@]}" \
+        FOUNDER_OFFICE_SUPABASE_PUBLISHABLE_KEY=sb_secret_never_embed_this_value \
+        FOUNDER_OFFICE_UPDATE_FEED_URL=https://downloads.example.com/channel/beta.json \
+        "$script_dir/release-macos.sh" --version 1.2.3 --build 4
+assert_refused \
+    "reviewed founders-office callback scheme" \
+    env "${release_environment[@]}" \
+        FOUNDER_OFFICE_AUTH_CALLBACK_SCHEME=founders-office-dev \
+        FOUNDER_OFFICE_UPDATE_FEED_URL=https://downloads.example.com/channel/beta.json \
         "$script_dir/release-macos.sh" --version 1.2.3 --build 4
 
 create_binary_fixture() {

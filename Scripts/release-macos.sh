@@ -19,6 +19,9 @@ usage() {
     print -u2 "  FOUNDER_OFFICE_UPDATE_FEED_URL"
     print -u2 "  FOUNDER_OFFICE_UPDATE_CHANNEL"
     print -u2 "  FOUNDER_OFFICE_UPDATE_PUBLIC_KEY"
+    print -u2 "  FOUNDER_OFFICE_SUPABASE_URL"
+    print -u2 "  FOUNDER_OFFICE_SUPABASE_PUBLISHABLE_KEY"
+    print -u2 "  FOUNDER_OFFICE_AUTH_CALLBACK_SCHEME"
     print -u2 ""
     print -u2 "Release entitlements must be tracked at Config/Release/FoundersOfficeMac.entitlements."
 }
@@ -73,6 +76,9 @@ required_environment=(
     FOUNDER_OFFICE_UPDATE_FEED_URL
     FOUNDER_OFFICE_UPDATE_CHANNEL
     FOUNDER_OFFICE_UPDATE_PUBLIC_KEY
+    FOUNDER_OFFICE_SUPABASE_URL
+    FOUNDER_OFFICE_SUPABASE_PUBLISHABLE_KEY
+    FOUNDER_OFFICE_AUTH_CALLBACK_SCHEME
 )
 
 for variable_name in "${required_environment[@]}"; do
@@ -88,6 +94,9 @@ notary_profile="$FOUNDER_OFFICE_NOTARY_PROFILE"
 update_feed_url="$FOUNDER_OFFICE_UPDATE_FEED_URL"
 update_channel="$FOUNDER_OFFICE_UPDATE_CHANNEL"
 update_public_key="$FOUNDER_OFFICE_UPDATE_PUBLIC_KEY"
+supabase_url="$FOUNDER_OFFICE_SUPABASE_URL"
+supabase_publishable_key="$FOUNDER_OFFICE_SUPABASE_PUBLISHABLE_KEY"
+auth_callback_scheme="$FOUNDER_OFFICE_AUTH_CALLBACK_SCHEME"
 required_archs="${FOUNDER_OFFICE_REQUIRED_ARCHS:-arm64 x86_64}"
 release_entitlements_relative="Config/Release/FoundersOfficeMac.entitlements"
 release_entitlements="${project_dir}/${release_entitlements_relative}"
@@ -154,6 +163,57 @@ except (binascii.Error, ValueError):
     raise SystemExit("release update public key is malformed")
 if len(decoded) != 32 or base64.b64encode(decoded).decode("ascii") != public_key:
     raise SystemExit("release update public key must be one canonical Ed25519 public key")
+PY
+
+# Validate public client configuration without echoing it. OAuth client
+# secrets, Supabase service-role keys, and Apple private keys never belong in
+# the app bundle or this release process.
+python3 - <<'PY'
+import base64
+import json
+import os
+from urllib.parse import urlsplit
+
+endpoint = os.environ["FOUNDER_OFFICE_SUPABASE_URL"]
+key = os.environ["FOUNDER_OFFICE_SUPABASE_PUBLISHABLE_KEY"]
+callback_scheme = os.environ["FOUNDER_OFFICE_AUTH_CALLBACK_SCHEME"]
+
+try:
+    parsed = urlsplit(endpoint)
+    port = parsed.port
+except ValueError:
+    raise SystemExit("Supabase public endpoint is malformed")
+if (
+    parsed.scheme != "https"
+    or not parsed.hostname
+    or parsed.username is not None
+    or parsed.password is not None
+    or parsed.query
+    or parsed.fragment
+    or port is not None
+    or parsed.path not in {"", "/"}
+):
+    raise SystemExit("Supabase public endpoint must be an exact credential-free HTTPS origin")
+
+if key != key.strip() or "placeholder" in key.lower() or "$(" in key or key.startswith("sb_secret_"):
+    raise SystemExit("Supabase public client key is malformed or unsafe")
+if key.startswith("sb_publishable_"):
+    valid_key = len(key) >= 20
+else:
+    valid_key = False
+    pieces = key.split(".")
+    if len(pieces) == 3:
+        payload = pieces[1].replace("-", "+").replace("_", "/")
+        payload += "=" * ((4 - len(payload) % 4) % 4)
+        try:
+            valid_key = json.loads(base64.b64decode(payload, validate=True))["role"] == "anon"
+        except (ValueError, KeyError, TypeError, UnicodeDecodeError):
+            valid_key = False
+if not valid_key:
+    raise SystemExit("Supabase public client key is malformed or unsafe")
+
+if callback_scheme != "founders-office":
+    raise SystemExit("production product auth must use the reviewed founders-office callback scheme")
 PY
 
 [[ -f "$release_entitlements" ]] || fail "release entitlements file does not exist"
@@ -299,6 +359,10 @@ plutil -replace FounderOfficeCloudContainerIdentifier -string "$icloud_container
 plutil -replace FounderOfficeUpdateFeedURL -string "$update_feed_url" "$release_info_plist"
 plutil -replace FounderOfficeUpdateChannel -string "$update_channel" "$release_info_plist"
 plutil -replace FounderOfficeUpdatePublicKey -string "$update_public_key" "$release_info_plist"
+plutil -replace FounderOfficeSupabaseURL -string "$supabase_url" "$release_info_plist"
+plutil -replace FounderOfficeSupabasePublishableKey -string "$supabase_publishable_key" "$release_info_plist"
+plutil -replace FounderOfficeAuthCallbackURL -string "${auth_callback_scheme}://auth/callback" "$release_info_plist"
+plutil -replace CFBundleURLTypes.0.CFBundleURLSchemes.0 -string "$auth_callback_scheme" "$release_info_plist"
 plutil -lint "$release_info_plist" >/dev/null
 
 xcodegen generate \
@@ -378,12 +442,24 @@ runtime_cloud_container="$(plutil -extract FounderOfficeCloudContainerIdentifier
 runtime_update_feed="$(plutil -extract FounderOfficeUpdateFeedURL raw -o - "$info_plist")"
 runtime_update_channel="$(plutil -extract FounderOfficeUpdateChannel raw -o - "$info_plist")"
 runtime_update_public_key="$(plutil -extract FounderOfficeUpdatePublicKey raw -o - "$info_plist")"
+runtime_supabase_url="$(plutil -extract FounderOfficeSupabaseURL raw -o - "$info_plist")"
+runtime_supabase_publishable_key="$(plutil -extract FounderOfficeSupabasePublishableKey raw -o - "$info_plist")"
+runtime_auth_callback_url="$(plutil -extract FounderOfficeAuthCallbackURL raw -o - "$info_plist")"
+runtime_auth_callback_scheme="$(plutil -extract CFBundleURLTypes.0.CFBundleURLSchemes.0 raw -o - "$info_plist")"
 [[ "$runtime_update_feed" == "$update_feed_url" ]] \
     || fail "runtime update feed does not match the reviewed release setting"
 [[ "$runtime_update_channel" == "$update_channel" ]] \
     || fail "runtime update channel does not match the reviewed release setting"
 [[ "$runtime_update_public_key" == "$update_public_key" ]] \
     || fail "runtime update public key does not match the reviewed release setting"
+[[ "$runtime_supabase_url" == "$supabase_url" ]] \
+    || fail "runtime Supabase endpoint does not match the reviewed release setting"
+[[ "$runtime_supabase_publishable_key" == "$supabase_publishable_key" ]] \
+    || fail "runtime Supabase public client key does not match the reviewed release setting"
+[[ "$runtime_auth_callback_url" == "${auth_callback_scheme}://auth/callback" ]] \
+    || fail "runtime product-auth callback does not match the reviewed release setting"
+[[ "$runtime_auth_callback_scheme" == "$auth_callback_scheme" ]] \
+    || fail "registered product-auth URL scheme does not match the reviewed release setting"
 distribution_channel="$(plutil -extract FounderOfficeDistributionChannel raw -o - "$info_plist")"
 notarization_claim="$(plutil -extract FounderOfficeNotarized raw -o - "$info_plist")"
 [[ "$distribution_channel" == "direct" ]] || fail "exported app is not marked for direct distribution"

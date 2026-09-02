@@ -36,9 +36,23 @@ struct FounderOfficeAccountInteractionHooks {
     var end: @MainActor (_ lease: UUID) -> Void
 }
 
-/// Product identity for the Mac surface. This controller intentionally stops
-/// before network workspace binding: authentication and an explicit local-data
-/// disposition are prerequisites, not proof that device sync is active.
+protocol FounderOfficeCloudSyncServing: Actor {
+    func currentBinding() async throws -> WorkspaceSyncBinding?
+    func resume(account: ProductAccountSession) async throws -> FounderOfficeCloudSyncActivation?
+    func provision(
+        account: ProductAccountSession,
+        disposition: WorkspaceProvisioningDisposition,
+        workspaceName: String,
+        reviewedDisplayName: ReviewedDisplayName?
+    ) async throws -> FounderOfficeCloudSyncActivation
+    func currentStatus() async throws -> WorkspaceSyncStatus
+    func stop() async
+}
+
+extension FounderOfficeCloudSyncRuntime: FounderOfficeCloudSyncServing {}
+
+/// Product identity and explicit workspace-provisioning state for the Mac
+/// surface. Authentication alone never uploads, replaces, or claims local data.
 @MainActor
 final class FounderOfficeAccountController: ObservableObject, AccountSyncStatusSignaling {
     @Published private(set) var availability: FounderOfficeAccountAvailability
@@ -50,10 +64,13 @@ final class FounderOfficeAccountController: ObservableObject, AccountSyncStatusS
     @Published private(set) var displayNameError: String?
     @Published private(set) var operationMessage: String?
     @Published private(set) var isSavingReviewedName = false
+    @Published private(set) var syncStatus: WorkspaceSyncStatus = .localOnly
 
     private let service: (any ProductAuthServing)?
+    private let cloudSync: (any FounderOfficeCloudSyncServing)?
     private let appleAuthorizer: (any AppleIdentityAuthorizing)?
     private let localContext: () -> FounderOfficeLocalAccountContext
+    private let workspaceName: () -> String
     private let applyReviewedDisplayName: (String) -> Void
     private let interactions: FounderOfficeAccountInteractionHooks
     private var observationTask: Task<Void, Never>?
@@ -68,19 +85,24 @@ final class FounderOfficeAccountController: ObservableObject, AccountSyncStatusS
     private var reviewedAccountID: UUID?
     private var pendingReviewedDisplayName: ReviewedDisplayName?
     private var claimContextAtSignIn: FounderOfficeLocalAccountContext?
+    private var runtimeBoundAccountID: UUID?
 
     init(
         availability: FounderOfficeAccountAvailability,
         service: (any ProductAuthServing)?,
+        cloudSync: (any FounderOfficeCloudSyncServing)? = nil,
         appleAuthorizer: (any AppleIdentityAuthorizing)?,
         localContext: @escaping () -> FounderOfficeLocalAccountContext,
+        workspaceName: @escaping () -> String = { "Founder's Office" },
         applyReviewedDisplayName: @escaping (String) -> Void,
         interactions: FounderOfficeAccountInteractionHooks? = nil
     ) {
         self.availability = availability
         self.service = service
+        self.cloudSync = cloudSync
         self.appleAuthorizer = appleAuthorizer
         self.localContext = localContext
+        self.workspaceName = workspaceName
         self.applyReviewedDisplayName = applyReviewedDisplayName
         self.interactions = interactions ?? FounderOfficeAccountInteractionHooks(
             begin: { _, _ in UUID() },
@@ -92,7 +114,9 @@ final class FounderOfficeAccountController: ObservableObject, AccountSyncStatusS
         infoDictionary: [String: Any],
         hostWindow: NSWindow,
         presentation: NotchPresentationModel,
+        repository: SQLiteWorkspaceRepository,
         localContext: @escaping () -> FounderOfficeLocalAccountContext,
+        workspaceName: @escaping () -> String,
         applyReviewedDisplayName: @escaping (String) -> Void
     ) -> FounderOfficeAccountController {
         let configuration = ProductAuthConfiguration.load(infoDictionary: infoDictionary)
@@ -104,14 +128,37 @@ final class FounderOfficeAccountController: ObservableObject, AccountSyncStatusS
                     hostWindow ?? NSApp.keyWindow
                 }
             )
+            let cloudSync: FounderOfficeCloudSyncRuntime
+            do {
+                let transport = try SupabaseWorkspaceSyncTransport(
+                    configuration: configuration,
+                    tokenProvider: service
+                )
+                cloudSync = try FounderOfficeCloudSyncRuntime(
+                    repository: repository,
+                    auth: service,
+                    transport: transport,
+                    deviceID: FounderOfficeDeviceIdentityStore.loadOrCreate()
+                )
+            } catch {
+                return localOnlyController(
+                    detail: "Device sync is unavailable in this build. Your workspace stays on this Mac.",
+                    localContext: localContext,
+                    workspaceName: workspaceName,
+                    applyReviewedDisplayName: applyReviewedDisplayName,
+                    presentation: presentation
+                )
+            }
             let authorizer = AppleIdentityAuthorizer { [weak hostWindow] in
                 hostWindow ?? NSApp.keyWindow
             }
             return FounderOfficeAccountController(
                 availability: .available,
                 service: service,
+                cloudSync: cloudSync,
                 appleAuthorizer: authorizer,
                 localContext: localContext,
+                workspaceName: workspaceName,
                 applyReviewedDisplayName: applyReviewedDisplayName,
                 interactions: FounderOfficeAccountInteractionHooks(
                     begin: { reason, suspendsHost in
@@ -128,20 +175,38 @@ final class FounderOfficeAccountController: ObservableObject, AccountSyncStatusS
             default:
                 detail = "Sign-in is unavailable in this build. Your workspace stays on this Mac."
             }
-            return FounderOfficeAccountController(
-                availability: .localOnly(detail),
-                service: nil,
-                appleAuthorizer: nil,
+            return localOnlyController(
+                detail: detail,
                 localContext: localContext,
+                workspaceName: workspaceName,
                 applyReviewedDisplayName: applyReviewedDisplayName,
-                interactions: FounderOfficeAccountInteractionHooks(
-                    begin: { reason, suspendsHost in
-                        presentation.beginInteraction(reason, suspendsHost: suspendsHost)
-                    },
-                    end: presentation.endInteraction
-                )
+                presentation: presentation
             )
         }
+    }
+
+    private static func localOnlyController(
+        detail: String,
+        localContext: @escaping () -> FounderOfficeLocalAccountContext,
+        workspaceName: @escaping () -> String,
+        applyReviewedDisplayName: @escaping (String) -> Void,
+        presentation: NotchPresentationModel
+    ) -> FounderOfficeAccountController {
+        FounderOfficeAccountController(
+            availability: .localOnly(detail),
+            service: nil,
+            cloudSync: nil,
+            appleAuthorizer: nil,
+            localContext: localContext,
+            workspaceName: workspaceName,
+            applyReviewedDisplayName: applyReviewedDisplayName,
+            interactions: FounderOfficeAccountInteractionHooks(
+                begin: { reason, suspendsHost in
+                    presentation.beginInteraction(reason, suspendsHost: suspendsHost)
+                },
+                end: presentation.endInteraction
+            )
+        )
     }
 
     var isAuthenticationAvailable: Bool {
@@ -177,6 +242,9 @@ final class FounderOfficeAccountController: ObservableObject, AccountSyncStatusS
             if selectedWorkspaceChoice == .keepLocalOnly {
                 return "Signed in · sync off"
             }
+            if syncStatus.phase == .idle || syncStatus.phase == .syncing {
+                return syncStatus.phase == .syncing ? "Syncing securely" : "Synced securely"
+            }
             return "Signed in with \(session.provider.title)"
         case .failed:
             return "Sign-in needs attention"
@@ -202,7 +270,22 @@ final class FounderOfficeAccountController: ObservableObject, AccountSyncStatusS
             if selectedWorkspaceChoice == .keepLocalOnly {
                 return "The account is connected, but this workspace remains local-only."
             }
-            return "No data was uploaded. Device sync is not active in this build."
+            switch syncStatus.phase {
+            case .idle:
+                return "Your approved workspace is available on your signed-in devices."
+            case .syncing:
+                return "Sending and receiving workspace changes securely."
+            case .retryScheduled:
+                return "Sync will retry automatically; local changes remain safe."
+            case .authenticationRequired:
+                return "Sign in again to continue device sync."
+            case .conflictReviewRequired:
+                return "A sync conflict needs your review before it can continue."
+            case .adapterBlocked, .contractBlocked:
+                return "Device sync stopped safely and needs attention."
+            case .localOnly:
+                return "Choose how this workspace should sync before anything is uploaded."
+            }
         case let .failed(failure):
             return failure.recoveryMessage
         }
@@ -236,10 +319,27 @@ final class FounderOfficeAccountController: ObservableObject, AccountSyncStatusS
                 detail: "Finish account setup"
             )
         case .signedIn:
+            let condition: HealthCondition
+            let detail: String
+            switch syncStatus.phase {
+            case .idle:
+                condition = .ready
+                detail = "Device sync ready"
+            case .syncing, .retryScheduled:
+                condition = .working
+                detail = syncStatus.phase == .syncing ? "Syncing" : "Retry scheduled"
+            case .authenticationRequired, .conflictReviewRequired,
+                 .adapterBlocked, .contractBlocked:
+                condition = .attention
+                detail = "Device sync needs attention"
+            case .localOnly:
+                condition = .off
+                detail = "Signed in; sync is off"
+            }
             return HealthComponentStatus(
                 component: .sync,
-                condition: .off,
-                detail: "Signed in; sync is off"
+                condition: condition,
+                detail: detail
             )
         case .localOnly:
             return HealthComponentStatus(
@@ -268,7 +368,12 @@ final class FounderOfficeAccountController: ObservableObject, AccountSyncStatusS
                 self?.receive(state)
             }
         }
-        restoreTask = Task { [weak self, service] in
+        restoreTask = Task { [weak self, service, cloudSync] in
+            if let cloudSync,
+               let binding = try? await cloudSync.currentBinding() {
+                self?.runtimeBoundAccountID = binding.accountID.rawValue
+                self?.syncStatus = (try? await cloudSync.currentStatus()) ?? .localOnly
+            }
             await service.restoreSession()
             guard !Task.isCancelled else { return }
             let restored = await service.currentState()
@@ -288,6 +393,9 @@ final class FounderOfficeAccountController: ObservableObject, AccountSyncStatusS
         restoreTask = nil
         operationTask = nil
         isRestoringSession = false
+        if let cloudSync {
+            Task { await cloudSync.stop() }
+        }
         releaseNativeInteraction()
         releaseSetupInteraction()
     }
@@ -400,19 +508,78 @@ final class FounderOfficeAccountController: ObservableObject, AccountSyncStatusS
 
     func chooseWorkspaceDisposition(_ choice: LocalWorkspaceAccountChoice) {
         guard setupStage == .chooseWorkspace else { return }
-        guard choice == .keepLocalOnly else {
-            operationMessage = "This option stays unavailable until secure device sync passes its release gate."
+        guard isWorkspaceChoiceEnabled(choice) else {
+            operationMessage = "That option is unavailable because it is not safe for this workspace yet."
             return
         }
+        if choice == .keepLocalOnly {
+            selectedWorkspaceChoice = choice
+            operationMessage = "This workspace remains only on this Mac."
+            pendingReviewedDisplayName = nil
+            setupStage = .none
+            syncStatus = .localOnly
+            releaseSetupInteraction()
+            if let cloudSync {
+                Task { await cloudSync.stop() }
+            }
+            return
+        }
+
+        guard let cloudSync, let session = activeSession else { return }
+        let disposition: WorkspaceProvisioningDisposition
+        switch choice {
+        case .claimAsNewWorkspace:
+            disposition = .claimLocalAsNew
+        case .switchWorkspace:
+            disposition = .attachExisting(.freshDevice)
+        case .keepLocalOnly, .exportAndReplace:
+            return
+        }
+
         selectedWorkspaceChoice = choice
-        operationMessage = "This workspace remains only on this Mac."
-        pendingReviewedDisplayName = nil
-        setupStage = .none
-        releaseSetupInteraction()
+        operationMessage = "Connecting this workspace securely…"
+        operationTask = Task { [weak self, cloudSync] in
+            guard let self else { return }
+            do {
+                let activation = try await cloudSync.provision(
+                    account: session,
+                    disposition: disposition,
+                    workspaceName: workspaceName(),
+                    reviewedDisplayName: session.reviewedDisplayName
+                )
+                guard !Task.isCancelled else { return }
+                let status = (try? await cloudSync.currentStatus()) ?? .localOnly
+                runtimeBoundAccountID = activation.binding.accountID.rawValue
+                syncStatus = status
+                operationTask = nil
+                operationMessage = Self.message(for: activation.outcome)
+                applyPendingReviewedDisplayName()
+                setupStage = .none
+                releaseSetupInteraction()
+            } catch {
+                guard !Task.isCancelled else { return }
+                operationTask = nil
+                selectedWorkspaceChoice = nil
+                operationMessage = error.localizedDescription
+            }
+        }
     }
 
     func isWorkspaceChoiceEnabled(_ choice: LocalWorkspaceAccountChoice) -> Bool {
-        choice == .keepLocalOnly
+        guard choice != .keepLocalOnly else { return true }
+        guard cloudSync != nil,
+              let context = claimContextAtSignIn else { return false }
+        switch choice {
+        case .keepLocalOnly:
+            return true
+        case .claimAsNewWorkspace:
+            return context.hasCustomerData && context.boundAccountID == nil
+        case .switchWorkspace:
+            return !context.hasCustomerData && context.boundAccountID == nil
+        case .exportAndReplace:
+            // Requires a separately coordinated native export destination.
+            return false
+        }
     }
 
     func cancelAccountSetup() {
@@ -423,7 +590,10 @@ final class FounderOfficeAccountController: ObservableObject, AccountSyncStatusS
         guard operationTask == nil, let service else { return }
         releaseSetupInteraction()
         setupStage = .none
-        operationTask = Task { [weak self, service] in
+        operationTask = Task { [weak self, service, cloudSync] in
+            if let cloudSync {
+                await cloudSync.stop()
+            }
             await service.signOut()
             guard !Task.isCancelled else { return }
             let finalState = await service.currentState()
@@ -483,7 +653,11 @@ final class FounderOfficeAccountController: ObservableObject, AccountSyncStatusS
         let isNewIdentity = activeSession?.accountID != session.accountID
         activeSession = session
         if isNewIdentity {
-            claimContextAtSignIn = localContext()
+            var context = localContext()
+            if let runtimeBoundAccountID {
+                context.boundAccountID = runtimeBoundAccountID
+            }
+            claimContextAtSignIn = context
             selectedWorkspaceChoice = nil
             workspacePlan = nil
             operationMessage = nil
@@ -526,13 +700,25 @@ final class FounderOfficeAccountController: ObservableObject, AccountSyncStatusS
         case .requiresCustomerChoice:
             setupStage = .chooseWorkspace
             ensureSetupInteraction()
-        case .bootstrapRemoteWorkspace, .continueBoundWorkspace:
-            // Identity is ready, but this controller has no authority to bind,
-            // upload, replace, or claim a workspace. The transport coordinator
-            // may consume the reviewed plan in a later release.
-            applyPendingReviewedDisplayName()
-            setupStage = .none
-            releaseSetupInteraction()
+        case .bootstrapRemoteWorkspace:
+            guard cloudSync != nil else {
+                applyPendingReviewedDisplayName()
+                setupStage = .none
+                releaseSetupInteraction()
+                return
+            }
+            // Even a fresh device requires one visible decision before remote
+            // discovery creates or attaches a workspace.
+            setupStage = .chooseWorkspace
+            ensureSetupInteraction()
+        case .continueBoundWorkspace:
+            if cloudSync == nil {
+                applyPendingReviewedDisplayName()
+                setupStage = .none
+                releaseSetupInteraction()
+            } else {
+                resumeCloudSync(for: activeSession)
+            }
         }
     }
 
@@ -546,7 +732,64 @@ final class FounderOfficeAccountController: ObservableObject, AccountSyncStatusS
         reviewedDisplayNameDraft = ""
         displayNameError = nil
         setupStage = .none
+        syncStatus = .localOnly
+        if let cloudSync {
+            Task { await cloudSync.stop() }
+        }
         releaseSetupInteraction()
+    }
+
+    private func resumeCloudSync(for session: ProductAccountSession?) {
+        guard let cloudSync, let session, operationTask == nil else {
+            operationMessage = "Device sync is unavailable. Local data was not changed."
+            return
+        }
+        operationMessage = "Checking for changes…"
+        operationTask = Task { [weak self, cloudSync] in
+            guard let self else { return }
+            do {
+                guard let activation = try await cloudSync.resume(account: session) else {
+                    operationTask = nil
+                    setupStage = .chooseWorkspace
+                    ensureSetupInteraction()
+                    return
+                }
+                guard !Task.isCancelled else { return }
+                runtimeBoundAccountID = activation.binding.accountID.rawValue
+                syncStatus = (try? await cloudSync.currentStatus()) ?? .localOnly
+                operationTask = nil
+                operationMessage = Self.message(for: activation.outcome)
+                applyPendingReviewedDisplayName()
+                setupStage = .none
+                releaseSetupInteraction()
+            } catch {
+                guard !Task.isCancelled else { return }
+                operationTask = nil
+                syncStatus = (try? await cloudSync.currentStatus()) ?? .localOnly
+                operationMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private static func message(for outcome: WorkspaceSyncRunOutcome) -> String {
+        switch outcome {
+        case .synchronized:
+            return "Workspace synced."
+        case let .conflicts(count):
+            return count == 1 ? "One change needs review." : "\(count) changes need review."
+        case .retryScheduled:
+            return "Sync will retry automatically. Local changes remain safe."
+        case .authenticationRequired:
+            return "Sign in again to continue device sync."
+        case .blocked:
+            return "Device sync stopped safely and needs attention."
+        case .localOnly:
+            return "This workspace remains only on this Mac."
+        case .stateChanged:
+            return "Workspace connected; finishing initial sync."
+        case .cancelled:
+            return "Sync was cancelled. Local changes remain safe."
+        }
     }
 
     /// Account profile review and local workspace mutation are separate trust

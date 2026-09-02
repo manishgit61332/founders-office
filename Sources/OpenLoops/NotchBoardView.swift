@@ -2338,7 +2338,7 @@ struct NotchBoardView: View {
 
                 case .signedIn:
                     HStack(spacing: 8) {
-                        Text("Authentication is connected. Workspace sync is still off until a reviewed transport binds it.")
+                        Text(account.statusDetail)
                             .font(interfaceFont(.tertiary, weight: .semibold))
                             .foregroundStyle(secondaryText)
                         Spacer(minLength: 6)
@@ -4620,7 +4620,7 @@ private struct AccountSetupEditor: View {
             }
 
             HStack {
-                Text("Other choices unlock only after export and sync safety are verified.")
+                Text("Nothing is uploaded or replaced until you choose.")
                     .font(theme.interfaceFont(.tertiary, weight: .semibold))
                     .foregroundStyle(Color.white.opacity(0.68))
                 Spacer(minLength: 6)
@@ -4678,9 +4678,9 @@ private struct AccountSetupEditor: View {
     private func workspaceChoiceDetail(_ choice: LocalWorkspaceAccountChoice) -> String {
         switch choice {
         case .keepLocalOnly: return "Stay signed in without sending this Mac’s data."
-        case .claimAsNewWorkspace: return "Requires the reviewed upload and conflict engine."
-        case .switchWorkspace: return "Requires a safe local export and remote download."
-        case .exportAndReplace: return "Requires verified export, erase, and recovery paths."
+        case .claimAsNewWorkspace: return "Upload this Mac’s Moves to a new private workspace."
+        case .switchWorkspace: return "Use the private workspace already linked to this account."
+        case .exportAndReplace: return "Create a local export before replacing this workspace."
         }
     }
 }

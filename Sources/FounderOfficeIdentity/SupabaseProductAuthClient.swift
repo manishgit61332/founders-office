@@ -81,7 +81,8 @@ public actor SupabaseProductAuthClient: ProductAuthServing {
             let callbackConfiguration = configuration
             let presentationAnchor = oauthPresentationAnchor
             let session = try await client.auth.signInWithOAuth(
-                provider: .google
+                provider: .google,
+                scopes: ProductAuthConfiguration.googleProductIdentityScopes
             ) { authorizationURL in
                 try await Self.launchOAuthSession(
                     authorizationURL: authorizationURL,

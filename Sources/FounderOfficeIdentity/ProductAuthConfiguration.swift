@@ -1,6 +1,10 @@
 import Foundation
 
 public struct ProductAuthConfiguration: Equatable, Sendable {
+    /// Product identity only. Calendar, Gmail, Drive, and every other Google
+    /// connector use separately consented connector sessions.
+    public static let googleProductIdentityScopes = "openid email profile"
+
     public enum Environment: Equatable, Sendable {
         case production
         case localDevelopment

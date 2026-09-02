@@ -117,6 +117,7 @@ final class NotchWindowController {
             infoDictionary: Bundle.main.infoDictionary ?? [:],
             hostWindow: panel,
             presentation: presentation,
+            repository: store.session.repository,
             localContext: { [weak store, weak personalizationStore] in
                 guard let store, let personalizationStore else {
                     return FounderOfficeLocalAccountContext(
@@ -134,6 +135,9 @@ final class NotchWindowController {
                     hasCustomerData: hasMoves || hasPersonalization,
                     boundAccountID: nil
                 )
+            },
+            workspaceName: { [weak personalizationStore] in
+                personalizationStore?.workspaceName ?? "Founder's Office"
             },
             applyReviewedDisplayName: { [weak personalizationStore] name in
                 personalizationStore?.updatePreferredName(name)
