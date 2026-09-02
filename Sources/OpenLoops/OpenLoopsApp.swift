@@ -184,10 +184,24 @@ final class FoundersOfficeAppDelegate: NSObject, NSApplicationDelegate {
         isCaptureLaunch: Bool
     ) async {
         do {
+            let initialSnapshot: FounderOfficeSnapshot
+            #if FOUNDER_OFFICE_DISTRIBUTION
+            initialSnapshot = WorkspaceSession.freshSnapshot
+            #else
+            if ProcessInfo.processInfo.environment["OPENLOOPS_UI_TEST_LONG_PRIORITY_FIXTURE"] == "1" {
+                let freshSnapshot = WorkspaceSession.freshSnapshot
+                initialSnapshot = FounderOfficeSnapshot(
+                    openLoops: OpenLoopStore.longPriorityPreviewDocument(),
+                    personalization: freshSnapshot.personalization
+                )
+            } else {
+                initialSnapshot = WorkspaceSession.freshSnapshot
+            }
+            #endif
             let session = try await WorkspaceSession.open(
                 rootURL: rootURL,
                 workspaceID: workspaceID,
-                initialSnapshot: WorkspaceSession.freshSnapshot
+                initialSnapshot: initialSnapshot
             )
 
             if identityNeedsCommit {

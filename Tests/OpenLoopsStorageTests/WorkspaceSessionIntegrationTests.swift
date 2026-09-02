@@ -180,6 +180,59 @@ struct WorkspaceSessionIntegrationTests {
     }
 
     @Test
+    func longPriorityFixturePersistsOneProductionPlanningUpdateAcrossRelaunch() async throws {
+        let fixture = try MacStorageFixture()
+        defer { fixture.remove() }
+        let workspaceID = UUID()
+        let freshSnapshot = WorkspaceSession.freshSnapshot
+        let initialSnapshot = FounderOfficeSnapshot(
+            openLoops: OpenLoopStore.longPriorityPreviewDocument(
+                at: Date(timeIntervalSince1970: 2_000_000_000)
+            ),
+            personalization: freshSnapshot.personalization
+        )
+        let session = try await WorkspaceSession.open(
+            rootURL: fixture.root,
+            workspaceID: workspaceID,
+            initialSnapshot: initialSnapshot
+        )
+        let store = OpenLoopStore(session: session)
+        let moveID = try #require(
+            UUID(uuidString: "aaaaaaaa-bbbb-cccc-dddd-000000000001")
+        )
+
+        #expect(store.items.count == 17)
+        #expect(try await session.repository.pendingOperations().isEmpty)
+        let result = await store.updatePlanning(
+            id: moveID,
+            priorityChange: .set(.p3),
+            deadlineChange: .unchanged
+        )
+        guard case .saved = result else {
+            Issue.record("Expected the priority drag fixture mutation to save")
+            return
+        }
+
+        let durable = try await session.repository.snapshot()
+        #expect(durable.revision == WorkspaceRevision(rawValue: 1))
+        #expect(durable.content.openLoops.items.first(where: { $0.id == moveID })?.priority == .p3)
+        #expect(try await session.repository.pendingOperations().count == 1)
+        store.stop()
+        session.stop()
+
+        let reopened = try await WorkspaceSession.open(
+            rootURL: fixture.root,
+            workspaceID: workspaceID,
+            initialSnapshot: WorkspaceSession.freshSnapshot
+        )
+        #expect(
+            reopened.snapshot.content.openLoops.items.first(where: { $0.id == moveID })?.priority
+                == .p3
+        )
+        reopened.stop()
+    }
+
+    @Test
     func moveContentAndPlanningSaveAsOneDurableOperation() async throws {
         let fixture = try MacStorageFixture()
         defer { fixture.remove() }

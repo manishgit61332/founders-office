@@ -486,64 +486,63 @@ final class OpenLoopStore: ObservableObject {
     }
 
     #if !FOUNDER_OFFICE_DISTRIBUTION
-    private func applyPreviewOverrides() {
-        if ProcessInfo.processInfo.environment["OPENLOOPS_UI_TEST_LONG_PRIORITY_FIXTURE"] == "1",
-           items.isEmpty {
-            let now = Date()
-            let criticalMoves = (0..<14).map { index in
-                let timestamp = now.addingTimeInterval(-Double(index))
-                return OpenLoop(
-                    id: UUID(
-                        uuidString: String(
-                            format: "aaaaaaaa-bbbb-cccc-dddd-%012x",
-                            index + 1
-                        )
-                    )!,
-                    title: "Priority drag fixture \(index + 1)",
-                    details: "Synthetic overflowing priority lane",
-                    status: .doing,
-                    previousStatus: nil,
-                    priority: .p0,
-                    dueAt: nil,
-                    createdAt: timestamp,
-                    updatedAt: timestamp,
-                    completedAt: nil,
-                    deletedAt: nil,
-                    source: "ui-test",
-                    priorityUpdatedAt: timestamp,
-                    dueAtUpdatedAt: timestamp
-                )
-            }
-            let lowerLaneMoves = LoopPriority.allCases.dropFirst().enumerated().map { index, priority in
-                let timestamp = now.addingTimeInterval(-Double(100 + index))
-                return OpenLoop(
-                    id: UUID(
-                        uuidString: String(
-                            format: "eeeeeeee-ffff-cccc-dddd-%012x",
-                            index + 1
-                        )
-                    )!,
-                    title: "\(priority.title) lane anchor",
-                    details: "Synthetic drop destination",
-                    status: .doing,
-                    previousStatus: nil,
-                    priority: priority,
-                    dueAt: nil,
-                    createdAt: timestamp,
-                    updatedAt: timestamp,
-                    completedAt: nil,
-                    deletedAt: nil,
-                    source: "ui-test",
-                    priorityUpdatedAt: timestamp,
-                    dueAtUpdatedAt: timestamp
-                )
-            }
-            items = criticalMoves + lowerLaneMoves
-            // Keep synthetic setup in memory. The production drag mutation
-            // persists the complete document in one real repository commit, so
-            // the gate measures that commit instead of a queue of fixture writes.
+    static func longPriorityPreviewDocument(at now: Date = Date()) -> OpenLoopsDocument {
+        let criticalMoves = (0..<14).map { index in
+            let timestamp = now.addingTimeInterval(-Double(index))
+            return OpenLoop(
+                id: UUID(
+                    uuidString: String(
+                        format: "aaaaaaaa-bbbb-cccc-dddd-%012x",
+                        index + 1
+                    )
+                )!,
+                title: "Priority drag fixture \(index + 1)",
+                details: "Synthetic overflowing priority lane",
+                status: .doing,
+                previousStatus: nil,
+                priority: .p0,
+                dueAt: nil,
+                createdAt: timestamp,
+                updatedAt: timestamp,
+                completedAt: nil,
+                deletedAt: nil,
+                source: "ui-test",
+                priorityUpdatedAt: timestamp,
+                dueAtUpdatedAt: timestamp
+            )
         }
+        let lowerLaneMoves = LoopPriority.allCases.dropFirst().enumerated().map { index, priority in
+            let timestamp = now.addingTimeInterval(-Double(100 + index))
+            return OpenLoop(
+                id: UUID(
+                    uuidString: String(
+                        format: "eeeeeeee-ffff-cccc-dddd-%012x",
+                        index + 1
+                    )
+                )!,
+                title: "\(priority.title) lane anchor",
+                details: "Synthetic drop destination",
+                status: .doing,
+                previousStatus: nil,
+                priority: priority,
+                dueAt: nil,
+                createdAt: timestamp,
+                updatedAt: timestamp,
+                completedAt: nil,
+                deletedAt: nil,
+                source: "ui-test",
+                priorityUpdatedAt: timestamp,
+                dueAtUpdatedAt: timestamp
+            )
+        }
+        return OpenLoopsDocument(
+            schemaVersion: 3,
+            updatedAt: now,
+            items: criticalMoves + lowerLaneMoves
+        )
+    }
 
+    private func applyPreviewOverrides() {
         if ProcessInfo.processInfo.environment["OPENLOOPS_UI_TEST_FIXTURE"] == "1",
            items.isEmpty {
             let now = Date()
