@@ -97,6 +97,51 @@ struct PriorityDragInteractionTests {
         #expect(PriorityDropTargetPolicy.target(pointerY: 240, lanes: lanes, current: nil) == .p1)
         #expect(PriorityDropTargetPolicy.target(pointerY: 40, lanes: [], current: .p0) == nil)
     }
+
+    @Test
+    func viewportGestureResolvesItsSourceFromTheVisibleRowAtDragStart() {
+        let firstID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-000000000001")!
+        let secondID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-000000000002")!
+        let rows = [
+            firstID: CGRect(x: 10, y: 20, width: 280, height: 48),
+            secondID: CGRect(x: 10, y: 76, width: 280, height: 48)
+        ]
+
+        #expect(
+            PriorityDragSourcePolicy.source(
+                at: CGPoint(x: 150, y: 44),
+                rows: rows
+            ) == firstID
+        )
+        #expect(
+            PriorityDragSourcePolicy.source(
+                at: CGPoint(x: 150, y: 100),
+                rows: rows
+            ) == secondID
+        )
+        #expect(
+            PriorityDragSourcePolicy.source(
+                at: CGPoint(x: 150, y: 72),
+                rows: rows
+            ) == nil
+        )
+    }
+
+    @Test
+    func viewportGestureIgnoresInvalidOrOffscreenSourceFrames() {
+        let invalidID = UUID()
+        let offscreenID = UUID()
+
+        #expect(
+            PriorityDragSourcePolicy.source(
+                at: CGPoint(x: 30, y: 30),
+                rows: [
+                    invalidID: CGRect(x: 0, y: 0, width: 0, height: 40),
+                    offscreenID: CGRect(x: 0, y: 200, width: 100, height: 40)
+                ]
+            ) == nil
+        )
+    }
 }
 
 @MainActor

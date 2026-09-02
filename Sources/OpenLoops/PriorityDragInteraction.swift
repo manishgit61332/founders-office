@@ -77,6 +77,36 @@ enum PriorityDropTargetPolicy {
     }
 }
 
+enum PriorityDragSourcePolicy {
+    static func source(
+        at point: CGPoint,
+        rows: [UUID: CGRect]
+    ) -> UUID? {
+        rows
+            .filter { _, frame in
+                frame.minX.isFinite
+                    && frame.maxX.isFinite
+                    && frame.minY.isFinite
+                    && frame.maxY.isFinite
+                    && frame.width > 0
+                    && frame.height > 0
+                    && frame.contains(point)
+            }
+            .sorted { lhs, rhs in
+                let lhsFrame = lhs.value
+                let rhsFrame = rhs.value
+                if lhsFrame.minY != rhsFrame.minY {
+                    return lhsFrame.minY < rhsFrame.minY
+                }
+                if lhsFrame.minX != rhsFrame.minX {
+                    return lhsFrame.minX < rhsFrame.minX
+                }
+                return lhs.key.uuidString < rhs.key.uuidString
+            }
+            .first?.key
+    }
+}
+
 @MainActor
 final class PriorityDragAutoScroller: ObservableObject {
     private weak var scrollView: NSScrollView?
@@ -487,6 +517,17 @@ struct PriorityLaneFramePreferenceKey: PreferenceKey {
     static func reduce(
         value: inout [LoopPriority: CGRect],
         nextValue: () -> [LoopPriority: CGRect]
+    ) {
+        value.merge(nextValue(), uniquingKeysWith: { _, latest in latest })
+    }
+}
+
+struct PriorityMoveRowFramePreferenceKey: PreferenceKey {
+    static let defaultValue: [UUID: CGRect] = [:]
+
+    static func reduce(
+        value: inout [UUID: CGRect],
+        nextValue: () -> [UUID: CGRect]
     ) {
         value.merge(nextValue(), uniquingKeysWith: { _, latest in latest })
     }

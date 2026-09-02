@@ -211,6 +211,8 @@ struct NotchBoardView: View {
         #endif
     }()
     @State private var priorityLaneFrames: [LoopPriority: CGRect] = [:]
+    @State private var priorityMoveRowFrames: [UUID: CGRect] = [:]
+    @State private var priorityDragOffset: CGSize = .zero
     @State private var priorityDragInteractionLease: UUID?
     @StateObject private var priorityDragAutoScroller = PriorityDragAutoScroller()
     @State private var selectedCalendarDay = Calendar.current.startOfDay(for: Date())
@@ -1277,17 +1279,30 @@ struct NotchBoardView: View {
                     }
                 }
                 .coordinateSpace(name: "priority-move-scroll")
-                .simultaneousGesture(
+                // The viewport owns the gesture for its entire lifetime. A
+                // LazyVStack row can be recycled while edge scrolling; a
+                // gesture attached to that row is then cancelled before its
+                // release can persist the drop.
+                .highPriorityGesture(
                     DragGesture(
                         minimumDistance: 7,
                         coordinateSpace: .named("priority-move-scroll")
                     )
                     .onChanged { value in
-                        guard let moveID = priorityDragAutoScroller.draggedMoveID else { return }
+                        let moveID = priorityDragAutoScroller.draggedMoveID
+                            ?? PriorityDragSourcePolicy.source(
+                                at: value.startLocation,
+                                rows: priorityMoveRowFrames
+                            )
+                        guard let moveID else { return }
+                        priorityDragOffset = value.translation
                         updatePriorityDrag(moveID, pointerY: value.location.y)
                     }
                     .onEnded { value in
-                        guard let moveID = priorityDragAutoScroller.draggedMoveID else { return }
+                        guard let moveID = priorityDragAutoScroller.draggedMoveID else {
+                            priorityDragOffset = .zero
+                            return
+                        }
                         endPriorityDrag(moveID, pointerY: value.location.y)
                     }
                 )
@@ -1311,6 +1326,9 @@ struct NotchBoardView: View {
                             current: priorityDropTarget
                         )
                     )
+                }
+                .onPreferenceChange(PriorityMoveRowFramePreferenceKey.self) { frames in
+                    priorityMoveRowFrames = frames
                 }
                 .onDisappear(perform: finishPriorityDrag)
                 .overlay(alignment: .topLeading) {
@@ -1601,8 +1619,8 @@ struct NotchBoardView: View {
                 .modifier(
                     ConditionalMoveDragModifier(
                         id: isDraggable ? item.id : nil,
-                        onDragChanged: updatePriorityDrag,
-                        onDragEnded: endPriorityDrag
+                        activeID: priorityDragAutoScroller.draggedMoveID,
+                        dragOffset: priorityDragOffset
                     )
                 )
                 #else
@@ -1624,8 +1642,8 @@ struct NotchBoardView: View {
                 .modifier(
                     ConditionalMoveDragModifier(
                         id: isDraggable ? item.id : nil,
-                        onDragChanged: updatePriorityDrag,
-                        onDragEnded: endPriorityDrag
+                        activeID: priorityDragAutoScroller.draggedMoveID,
+                        dragOffset: priorityDragOffset
                     )
                 )
                 #endif
@@ -1751,11 +1769,13 @@ struct NotchBoardView: View {
     private func finishPriorityDrag() {
         priorityDragAutoScroller.endSession()
         priorityDragAutoScroller.stop()
+        priorityDragOffset = .zero
         priorityDropTarget = nil
         releasePriorityDragInteraction()
     }
 
     private func handlePriorityDragSessionEnded() {
+        priorityDragOffset = .zero
         priorityDropTarget = nil
         releasePriorityDragInteraction()
     }
@@ -4065,42 +4085,35 @@ private struct CalendarEventEditor: View {
 
 private struct ConditionalMoveDragModifier: ViewModifier {
     let id: UUID?
-    let onDragChanged: (UUID, CGFloat) -> Void
-    let onDragEnded: (UUID, CGFloat) -> Void
-
-    @GestureState private var dragOffset: CGSize = .zero
+    let activeID: UUID?
+    let dragOffset: CGSize
 
     @ViewBuilder
     func body(content: Content) -> some View {
         if let id {
             content
                 .contentShape(Rectangle())
-                .offset(dragOffset)
-                .scaleEffect(dragOffset == .zero ? 1 : 1.012)
+                .background {
+                    GeometryReader { proxy in
+                        Color.clear.preference(
+                            key: PriorityMoveRowFramePreferenceKey.self,
+                            value: [
+                                id: proxy.frame(in: .named("priority-move-scroll"))
+                            ]
+                        )
+                    }
+                }
+                .offset(activeID == id ? dragOffset : .zero)
+                .scaleEffect(activeID == id ? 1.012 : 1)
                 .shadow(
-                    color: Color.black.opacity(dragOffset == .zero ? 0 : 0.34),
-                    radius: dragOffset == .zero ? 0 : 14,
-                    y: dragOffset == .zero ? 0 : 7
+                    color: Color.black.opacity(activeID == id ? 0.34 : 0),
+                    radius: activeID == id ? 14 : 0,
+                    y: activeID == id ? 7 : 0
                 )
-                .zIndex(dragOffset == .zero ? 0 : 10)
+                .zIndex(activeID == id ? 10 : 0)
                 .animation(
                     .spring(response: 0.22, dampingFraction: 0.84),
-                    value: dragOffset == .zero
-                )
-                .highPriorityGesture(
-                    DragGesture(
-                        minimumDistance: 7,
-                        coordinateSpace: .named("priority-move-scroll")
-                    )
-                    .updating($dragOffset) { value, state, _ in
-                        state = value.translation
-                    }
-                    .onChanged { value in
-                        onDragChanged(id, value.location.y)
-                    }
-                    .onEnded { value in
-                        onDragEnded(id, value.location.y)
-                    }
+                    value: activeID == id
                 )
                 .help("Drag to change priority")
         } else {
