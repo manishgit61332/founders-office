@@ -83,8 +83,10 @@ disabled until all of the following are approved and configured outside Git:
 - an asset-storage bucket and policies that match the `assets.storage_path`
   ownership contract, plus a privileged adapter that exports and deletes the
   exact server manifest before it records private transfer proof; and
-- a one-time, verified CloudKit/local-workspace claim and cutover. CloudKit and
-Supabase must not remain concurrent writers for the same workspace.
+- a one-time, verified local-workspace claim and cutover. A remote-only legacy
+  CloudKit workspace requires a separate migration build or utility; the Mac
+  customer app has no CloudKit capability. CloudKit and Supabase must never be
+  concurrent writers for the same workspace.
 
 Session revocation is an explicit **unpassed production release gate**. The
 checked-in local configuration uses a 3,600-second access-token lifetime. Signing
@@ -118,23 +120,27 @@ stale erased UUID. Do not expose direct `profiles` deletion as an account API.
 
 The repository includes a schema-4 SQLite sync-state boundary, an exhaustive
 v2-local-to-v1-wire adapter for supported entities, a bounded HTTPS RPC
-transport, and an event-driven coordinator. These components are exercised only
-by tests. The customer Mac binary does not construct the transport or enable a
-cloud-sync UI, so their presence is not a claim that production sync is live.
+transport, and an event-driven coordinator. A Mac customer build now composes
+those boundaries only when its public product configuration passes the production
+validator. Missing or rejected configuration keeps the same binary local-only.
+Construction and sign-in do not start a workspace request.
 
-The test-only provisioning boundary also separates a new local claim from a
-returning-account attachment. Attachment calls `bootstrap_workspace` without a
-local UUID, validates the account/provider/device, reads the complete bounded
-feed from cursor zero, and atomically establishes the replacement snapshot,
-binding, cursor, remote revisions, and dedupe evidence. Customer-authored local
-data requires an immutable export before that transaction. This does not enable
-the Account & Sync controls in a distribution build.
+The provisioning boundary separates a new local claim from a returning-account
+attachment. The Account & Sync surface enables claim only for a data-bearing
+unbound workspace and direct attachment only for a repository-proven fresh
+device. Attachment calls `bootstrap_workspace` without a local UUID, validates
+the account/provider/device, reads the complete bounded feed from cursor zero,
+and atomically establishes the replacement snapshot, binding, cursor, remote
+revisions, and dedupe evidence. Customer-authored local data still requires the
+explicit export-and-replace path, which remains disabled until its native export
+ceremony is integrated.
 
-Runtime enablement requires an explicit local workspace claim, matching restored
-product session, approved production endpoint and publishable key, deployed and
+Runtime activation requires an explicit local workspace claim/attachment or a
+matching restored product session and durable binding. Public distribution still
+requires the approved production endpoint and publishable key, deployed and
 integration-tested RPC contract, RLS evidence, revocation decision, migration
-plan, monitoring, and incident response. Without all of these, the repository
-reports local-only or blocks at the adapter/contract boundary.
+plan, monitoring, and incident response. Without valid client configuration the
+app remains local-only; adapter or contract failures stop safely.
 
 Primary goals use the canonical exact `GoalDecimal` model and map its
 `decimalValue` directly to `SyncJSONValue.number`; no sync path converts through

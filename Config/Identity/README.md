@@ -4,14 +4,16 @@ Founder’s Office remains fully usable in local-only mode when this configurati
 
 The Apple clients use Supabase Auth with:
 
-- Google through OAuth and PKCE in `ASWebAuthenticationSession`;
+- Google through OAuth and PKCE in `ASWebAuthenticationSession`, requesting
+  only `openid email profile`;
 - native Sign in with Apple through `AuthenticationServices` and a one-time nonce;
 - session persistence in an app-specific Keychain service;
 - a token-free account summary for UI and diagnostics.
 
 ## Required public build values
 
-Supply these as Xcode build settings for a configured build:
+Supply these as Xcode build settings for a configured development build, or as
+environment values to `Scripts/release-macos.sh` for a signed direct release:
 
 ```text
 FOUNDER_OFFICE_SUPABASE_URL = https://PROJECT_REF.supabase.co
@@ -21,20 +23,21 @@ FOUNDER_OFFICE_AUTH_CALLBACK_SCHEME = founders-office
 
 The publishable key is intended for public clients, but it is still validated so a secret/service-role key cannot be embedded accidentally. Never place a Supabase secret key, service-role key, Apple private key, or OAuth client secret in the app or repository.
 
-The provisional custom callback registered in Supabase is:
+The reviewed production custom callback registered in Supabase is:
 
 ```text
 founders-office://auth/callback
 ```
 
-The client callback allowlist accepts that provisional scheme or
+The client callback allowlist accepts that production scheme or
 `founders-office-dev://auth/callback` for local development. It rejects all other schemes,
 including `javascript`, `file`, `data`, and `http`, as well as callbacks with
 credentials, query strings, fragments, or a different route. A production
 universal-link flow would require an organization-owned domain,
 associated-domain entitlements, an exact redirect registration, and a separate
-client implementation; it is not accepted by this build. The committed custom
-schemes are provisional and cannot be used for a release without review.
+client implementation; it is not accepted by this build. The direct-release
+script accepts only `founders-office` and verifies the same scheme and callback
+inside the exported signed application.
 
 The browser result is checked a second time before Supabase sees its PKCE code.
 The scheme, host, port, and encoded path must match the signed build's callback
@@ -67,11 +70,43 @@ Signing in does not upload the current Mac workspace. After authentication the a
 - switch to the account’s existing workspace; or
 - export the local workspace and then replace it.
 
-Only the selected path may start the sync outbox. Switching accounts never reuses another account’s workspace binding.
+Only the selected path may start the sync outbox. Switching accounts never
+reuses another account’s workspace binding. A configured customer build now
+constructs the reviewed transport and event-driven coordinator, but it performs
+no network request merely because it was constructed or because a customer
+signed in.
+
+- A data-bearing, unbound Mac may explicitly claim its current workspace.
+- A repository-proven fresh device may explicitly attach the account workspace.
+- A matching durable binding may resume after secure session restoration.
+- A binding for another account or provider fails before a request is sent.
+- Signing out stops network work while preserving the local binding and outbox,
+  allowing only the same account to resume them later.
+- Export-and-replace remains unavailable in the customer UI until its native
+  file-selection and immutable-export ceremony passes acceptance.
+
+Missing, unresolved, or malformed public configuration always keeps the app in
+local-only mode. The installation device ID is a random opaque UUID persisted
+locally; it is not derived from hardware, an email address, or provider metadata.
+
+## Secure injection
+
+Keep the three public client values in the release system's protected environment
+or local shell session and pass them directly to `Scripts/release-macos.sh`.
+Do not source a credentials file into a tracked script, copy an `.env` file into
+the application bundle, print the environment, or commit generated release
+plists. The script validates the values, refuses `sb_secret_` and non-anonymous
+JWT material, embeds only the public endpoint/key and exact callback, then
+verifies the exported bundle without printing their values.
+
+Google's OAuth client secret is entered only in the Supabase dashboard. It is
+never a Mac build setting. Calendar, Gmail, Drive, Notion, Composio, and assistant
+connections require their own separately explained consent and credentials; the
+product identity session cannot grant those capabilities.
 
 ## External setup still required
 
-Before a distributable beta, the product owner must provide the organization-owned domain, bundle IDs, callback scheme, Apple App ID/capability, Supabase project, Google OAuth credentials, and Apple provider configuration. RLS and RPC migrations must be deployed and their pgTAP suite must pass against that exact project.
+Before a distributable beta, the product owner must provide the organization-owned domain, bundle IDs, callback scheme, Apple App ID/capability, Supabase project, Google OAuth credentials, and Apple provider configuration. RLS and RPC migrations must be deployed and their pgTAP suite must pass against that exact project. Production-equivalent two-account/two-device testing, revocation acceptance, monitoring, private-asset export/deletion, signing, and notarization remain release gates.
 
 References:
 

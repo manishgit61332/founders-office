@@ -7,6 +7,41 @@ import Testing
 struct ProductAuthTests {
     private let publishableKey = "sb_publishable_12345678901234567890"
 
+    @Test("Missing or unresolved build configuration fails closed")
+    func unresolvedConfigurationFailsClosed() {
+        #expect(
+            ProductAuthConfiguration.load(infoDictionary: [:])
+                == .failure(.missingConfiguration)
+        )
+        #expect(
+            ProductAuthConfiguration.load(infoDictionary: [
+                ProductAuthConfiguration.endpointInfoKey: "$(FOUNDER_OFFICE_SUPABASE_URL)",
+                ProductAuthConfiguration.publishableKeyInfoKey: "$(FOUNDER_OFFICE_SUPABASE_PUBLISHABLE_KEY)",
+                ProductAuthConfiguration.callbackURLInfoKey: "$(FOUNDER_OFFICE_AUTH_CALLBACK_SCHEME)://auth/callback"
+            ]) == .failure(.missingConfiguration)
+        )
+        #expect(
+            ProductAuthConfiguration.load(infoDictionary: [
+                ProductAuthConfiguration.endpointInfoKey: " ",
+                ProductAuthConfiguration.publishableKeyInfoKey: "",
+                ProductAuthConfiguration.callbackURLInfoKey: "\n"
+            ]) == .failure(.missingConfiguration)
+        )
+    }
+
+    @Test("Google product login requests identity scopes only")
+    func googleScopesRemainIdentityOnly() {
+        let scopes = Set(
+            ProductAuthConfiguration.googleProductIdentityScopes
+                .split(separator: " ")
+                .map(String.init)
+        )
+        #expect(scopes == ["openid", "email", "profile"])
+        #expect(!scopes.contains(where: { $0.localizedCaseInsensitiveContains("calendar") }))
+        #expect(!scopes.contains(where: { $0.localizedCaseInsensitiveContains("gmail") }))
+        #expect(!scopes.contains(where: { $0.localizedCaseInsensitiveContains("drive") }))
+    }
+
     @Test("Production configuration requires HTTPS and rejects service-role material")
     func validatesProductionConfiguration() throws {
         #expect(throws: ProductAuthConfigurationError.productionRequiresHTTPS) {

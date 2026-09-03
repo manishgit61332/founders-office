@@ -64,12 +64,14 @@ assert_refused \
 release_environment=(
     FOUNDER_OFFICE_TEAM_ID=ABCDE12345
     FOUNDER_OFFICE_BUNDLE_ID=com.example.foundersoffice
-    FOUNDER_OFFICE_ICLOUD_CONTAINER=iCloud.com.example.foundersoffice
     "FOUNDER_OFFICE_DEVELOPER_ID_APPLICATION=Developer ID Application: Example (ABCDE12345)"
     FOUNDER_OFFICE_PROVISIONING_PROFILE_SPECIFIER=ExampleProfile
     FOUNDER_OFFICE_NOTARY_PROFILE=example-notary
     FOUNDER_OFFICE_UPDATE_CHANNEL=beta
     FOUNDER_OFFICE_UPDATE_PUBLIC_KEY=MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
+    FOUNDER_OFFICE_SUPABASE_URL=https://example-project.supabase.co
+    FOUNDER_OFFICE_SUPABASE_PUBLISHABLE_KEY=sb_publishable_12345678901234567890
+    FOUNDER_OFFICE_AUTH_CALLBACK_SCHEME=founders-office
 )
 assert_refused \
     "exact credential-free HTTPS URL" \
@@ -86,6 +88,18 @@ assert_refused \
     "URL is malformed" \
     env "${release_environment[@]}" \
         FOUNDER_OFFICE_UPDATE_FEED_URL=https://downloads.example.com:70000/channel/beta.json \
+        "$script_dir/release-macos.sh" --version 1.2.3 --build 4
+assert_refused \
+    "public client key is malformed or unsafe" \
+    env "${release_environment[@]}" \
+        FOUNDER_OFFICE_SUPABASE_PUBLISHABLE_KEY=sb_secret_never_embed_this_value \
+        FOUNDER_OFFICE_UPDATE_FEED_URL=https://downloads.example.com/channel/beta.json \
+        "$script_dir/release-macos.sh" --version 1.2.3 --build 4
+assert_refused \
+    "reviewed founders-office callback scheme" \
+    env "${release_environment[@]}" \
+        FOUNDER_OFFICE_AUTH_CALLBACK_SCHEME=founders-office-dev \
+        FOUNDER_OFFICE_UPDATE_FEED_URL=https://downloads.example.com/channel/beta.json \
         "$script_dir/release-macos.sh" --version 1.2.3 --build 4
 
 create_binary_fixture() {
@@ -288,14 +302,14 @@ with open(artifact_path, "rb") as handle:
     payload = handle.read()
 
 manifest = {
-    "schemaVersion": 1,
+    "schemaVersion": 2,
     "writeOnce": True,
     "createdAt": "2026-08-31T00:00:00Z",
     "product": {
         "name": "Founder's Office",
         "bundleIdentifier": "com.example.foundersoffice",
         "cloudEnabled": mode != "cloud-disabled",
-        "iCloudContainer": "iCloud.com.example.foundersoffice",
+        "syncAuthority": "cloudkit" if mode == "wrong-sync-authority" else "supabase",
         "minimumSystemVersion": "14.0",
         "architectures": ["arm64"],
     },
@@ -339,7 +353,6 @@ verify_fixture() {
         --metadata "${fixture_root}/${mode}/release.json" \
         --expected-team-id ABCDE12345 \
         --expected-bundle-id com.example.foundersoffice \
-        --expected-icloud-container iCloud.com.example.foundersoffice \
         --expected-update-feed-url https://downloads.example.com/channel/beta.json \
         --expected-update-channel beta \
         --expected-update-public-key MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY= \
@@ -347,7 +360,10 @@ verify_fixture() {
 }
 
 create_fixture cloud-disabled
-assert_refused "does not require CloudKit" verify_fixture cloud-disabled
+assert_refused "does not enable device sync" verify_fixture cloud-disabled
+
+create_fixture wrong-sync-authority
+assert_refused "does not name Supabase as the sole sync authority" verify_fixture wrong-sync-authority
 
 create_fixture extra-payload
 assert_refused "outside the app bundle" verify_fixture extra-payload
@@ -502,7 +518,6 @@ assert_refused \
         --metadata "${fixture_root}/clean/release.json" \
         --expected-team-id ABCDE12345 \
         --expected-bundle-id com.example.foundersoffice \
-        --expected-icloud-container iCloud.com.example.foundersoffice \
         --expected-update-feed-url http://downloads.example.com/channel/beta.json \
         --expected-update-channel beta \
         --expected-update-public-key MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY= \

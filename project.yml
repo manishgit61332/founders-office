@@ -32,8 +32,6 @@ targets:
       - package: FounderOfficePackage
         product: FounderOfficeCore
       - package: FounderOfficePackage
-        product: FounderOfficeCloud
-      - package: FounderOfficePackage
         product: FounderOfficeIdentity
     settings:
       base:

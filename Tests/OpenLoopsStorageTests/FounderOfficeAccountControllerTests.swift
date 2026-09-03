@@ -302,26 +302,279 @@ struct FounderOfficeAccountControllerTests {
         controller.stop()
     }
 
+    @Test
+    func configuredCloudClaimsLocalWorkspaceOnlyAfterExplicitChoice() async throws {
+        let reviewed = try ReviewedDisplayName(reviewedInput: "Asha")
+        let accountID = UUID()
+        let session = ProductAccountSession(
+            accountID: accountID,
+            provider: .google,
+            reviewedDisplayName: reviewed,
+            onboardingDisplayNameSuggestion: nil,
+            expiresAt: .distantFuture
+        )
+        let binding = try WorkspaceSyncBinding(
+            accountID: FounderAccountID(rawValue: accountID),
+            workspaceID: WorkspaceID(rawValue: UUID()),
+            deviceID: DeviceID(rawValue: UUID()),
+            identityProvider: .google
+        )
+        let cloud = TestCloudSyncService(
+            initialBinding: nil,
+            activation: FounderOfficeCloudSyncActivation(
+                binding: binding,
+                outcome: .synchronized
+            )
+        )
+        let service = TestProductAuthService(initialState: .signedIn(session))
+        var appliedNames: [String] = []
+        let controller = makeController(
+            service: service,
+            cloudSync: cloud,
+            context: FounderOfficeLocalAccountContext(hasCustomerData: true),
+            workspaceName: { "Studio" },
+            applyName: { appliedNames.append($0) }
+        )
+
+        controller.start()
+        await controller.waitForPendingOperations()
+
+        #expect(controller.setupStage == .chooseWorkspace)
+        #expect(controller.isWorkspaceChoiceEnabled(.claimAsNewWorkspace))
+        #expect(await cloud.provisionCallCount() == 0)
+
+        controller.chooseWorkspaceDisposition(.claimAsNewWorkspace)
+        await controller.waitForPendingOperations()
+
+        #expect(await cloud.provisionCallCount() == 1)
+        #expect(await cloud.lastWorkspaceName() == "Studio")
+        #expect(await cloud.lastDispositionIsClaim())
+        #expect(controller.setupStage == .none)
+        #expect(controller.syncStatus.phase == .idle)
+        #expect(controller.accountSyncHealthStatus.condition == .ready)
+        #expect(appliedNames == ["Asha"])
+        controller.stop()
+    }
+
+    @Test
+    func restoredBindingForAnotherAccountCannotBeClaimedOrResumed() async throws {
+        let localAccountID = UUID()
+        let incomingAccountID = UUID()
+        let binding = try WorkspaceSyncBinding(
+            accountID: FounderAccountID(rawValue: localAccountID),
+            workspaceID: WorkspaceID(rawValue: UUID()),
+            deviceID: DeviceID(rawValue: UUID()),
+            identityProvider: .google
+        )
+        let incoming = ProductAccountSession(
+            accountID: incomingAccountID,
+            provider: .google,
+            reviewedDisplayName: try ReviewedDisplayName(reviewedInput: "Asha"),
+            onboardingDisplayNameSuggestion: nil,
+            expiresAt: .distantFuture
+        )
+        let cloud = TestCloudSyncService(
+            initialBinding: binding,
+            activation: FounderOfficeCloudSyncActivation(
+                binding: binding,
+                outcome: .synchronized
+            )
+        )
+        let controller = makeController(
+            service: TestProductAuthService(initialState: .signedIn(incoming)),
+            cloudSync: cloud,
+            context: FounderOfficeLocalAccountContext(hasCustomerData: true)
+        )
+
+        controller.start()
+        await controller.waitForPendingOperations()
+
+        #expect(controller.setupStage == .chooseWorkspace)
+        #expect(!controller.isWorkspaceChoiceEnabled(.claimAsNewWorkspace))
+        #expect(!controller.isWorkspaceChoiceEnabled(.switchWorkspace))
+        #expect(await cloud.resumeCallCount() == 0)
+        #expect(await cloud.provisionCallCount() == 0)
+        controller.stop()
+    }
+
+    @Test
+    func unreadableBindingCannotBeTreatedAsAnUnboundWorkspace() async throws {
+        let accountID = UUID()
+        let binding = try WorkspaceSyncBinding(
+            accountID: FounderAccountID(rawValue: accountID),
+            workspaceID: WorkspaceID(rawValue: UUID()),
+            deviceID: DeviceID(rawValue: UUID()),
+            identityProvider: .google
+        )
+        let session = ProductAccountSession(
+            accountID: accountID,
+            provider: .google,
+            reviewedDisplayName: try ReviewedDisplayName(reviewedInput: "Asha"),
+            onboardingDisplayNameSuggestion: nil,
+            expiresAt: .distantFuture
+        )
+        let cloud = TestCloudSyncService(
+            initialBinding: binding,
+            activation: FounderOfficeCloudSyncActivation(
+                binding: binding,
+                outcome: .synchronized
+            ),
+            bindingReadFails: true
+        )
+        let controller = makeController(
+            service: TestProductAuthService(initialState: .signedIn(session)),
+            cloudSync: cloud,
+            context: FounderOfficeLocalAccountContext(hasCustomerData: true)
+        )
+
+        controller.start()
+        await controller.waitForPendingOperations()
+
+        #expect(controller.setupStage == .chooseWorkspace)
+        #expect(controller.isWorkspaceChoiceEnabled(.keepLocalOnly))
+        #expect(!controller.isWorkspaceChoiceEnabled(.claimAsNewWorkspace))
+        #expect(!controller.isWorkspaceChoiceEnabled(.switchWorkspace))
+        #expect(controller.accountSyncHealthStatus.condition == .attention)
+        #expect(controller.statusTitle == "Device sync needs attention")
+        #expect(await cloud.resumeCallCount() == 0)
+        #expect(await cloud.provisionCallCount() == 0)
+        controller.stop()
+    }
+
+    @Test
+    func signOutStopsCloudRuntimeAndPreservesLocalBinding() async throws {
+        let accountID = UUID()
+        let binding = try WorkspaceSyncBinding(
+            accountID: FounderAccountID(rawValue: accountID),
+            workspaceID: WorkspaceID(rawValue: UUID()),
+            deviceID: DeviceID(rawValue: UUID()),
+            identityProvider: .google
+        )
+        let session = ProductAccountSession(
+            accountID: accountID,
+            provider: .google,
+            reviewedDisplayName: try ReviewedDisplayName(reviewedInput: "Asha"),
+            onboardingDisplayNameSuggestion: nil,
+            expiresAt: .distantFuture
+        )
+        let cloud = TestCloudSyncService(
+            initialBinding: binding,
+            activation: FounderOfficeCloudSyncActivation(
+                binding: binding,
+                outcome: .synchronized
+            )
+        )
+        let controller = makeController(
+            service: TestProductAuthService(initialState: .signedIn(session)),
+            cloudSync: cloud,
+            context: FounderOfficeLocalAccountContext(hasCustomerData: true)
+        )
+
+        controller.start()
+        await controller.waitForPendingOperations()
+        #expect(await cloud.resumeCallCount() == 1)
+
+        controller.signOut()
+        await controller.waitForPendingOperations()
+
+        #expect(controller.authState == .localOnly)
+        #expect(await cloud.stopCallCount() >= 1)
+        #expect(try await cloud.currentBinding() == binding)
+        controller.stop()
+    }
+
     private func makeController(
         service: TestProductAuthService,
+        cloudSync: (any FounderOfficeCloudSyncServing)? = nil,
         authorizer: (any AppleIdentityAuthorizing)? = nil,
         context: FounderOfficeLocalAccountContext = FounderOfficeLocalAccountContext(
             hasCustomerData: false,
             boundAccountID: nil
         ),
         interactions: FounderOfficeAccountInteractionHooks? = nil,
+        workspaceName: @escaping () -> String = { "Founder's Office" },
         applyName: @escaping (String) -> Void = { _ in }
     ) -> FounderOfficeAccountController {
         FounderOfficeAccountController(
             availability: .available,
             service: service,
+            cloudSync: cloudSync,
             appleAuthorizer: authorizer,
             localContext: { context },
+            workspaceName: workspaceName,
             applyReviewedDisplayName: applyName,
             interactions: interactions
         )
     }
 
+}
+
+private actor TestCloudSyncService: FounderOfficeCloudSyncServing {
+    private var binding: WorkspaceSyncBinding?
+    private let activation: FounderOfficeCloudSyncActivation
+    private var provisionCalls = 0
+    private var resumeCalls = 0
+    private var stopCalls = 0
+    private var capturedWorkspaceName: String?
+    private var capturedDisposition: WorkspaceProvisioningDisposition?
+    private var status = try! WorkspaceSyncStatus(phase: .idle)
+    private let bindingReadFails: Bool
+
+    init(
+        initialBinding: WorkspaceSyncBinding?,
+        activation: FounderOfficeCloudSyncActivation,
+        bindingReadFails: Bool = false
+    ) {
+        binding = initialBinding
+        self.activation = activation
+        self.bindingReadFails = bindingReadFails
+    }
+
+    func currentBinding() async throws -> WorkspaceSyncBinding? {
+        if bindingReadFails { throw TestCloudSyncFailure.bindingUnavailable }
+        return binding
+    }
+
+    func resume(
+        account: ProductAccountSession
+    ) async throws -> FounderOfficeCloudSyncActivation? {
+        _ = account
+        resumeCalls += 1
+        return binding == nil ? nil : activation
+    }
+
+    func provision(
+        account: ProductAccountSession,
+        disposition: WorkspaceProvisioningDisposition,
+        workspaceName: String,
+        reviewedDisplayName: ReviewedDisplayName?
+    ) async throws -> FounderOfficeCloudSyncActivation {
+        _ = account
+        _ = reviewedDisplayName
+        provisionCalls += 1
+        capturedDisposition = disposition
+        capturedWorkspaceName = workspaceName
+        binding = activation.binding
+        return activation
+    }
+
+    func currentStatus() async throws -> WorkspaceSyncStatus { status }
+
+    func stop() async { stopCalls += 1 }
+
+    func provisionCallCount() -> Int { provisionCalls }
+    func resumeCallCount() -> Int { resumeCalls }
+    func stopCallCount() -> Int { stopCalls }
+    func lastWorkspaceName() -> String? { capturedWorkspaceName }
+    func lastDispositionIsClaim() -> Bool {
+        guard let capturedDisposition else { return false }
+        if case .claimLocalAsNew = capturedDisposition { return true }
+        return false
+    }
+}
+
+private enum TestCloudSyncFailure: Error {
+    case bindingUnavailable
 }
 
 private actor TestProductAuthService: ProductAuthServing {

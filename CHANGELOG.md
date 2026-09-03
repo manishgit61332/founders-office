@@ -9,6 +9,12 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 - A fail-closed source-preview installer and documented workflow for technical
   Mac testers to build Development locally without weakening the signed and
   notarized Beta download gate.
+- A configuration-gated Mac customer sync runtime that composes Supabase product
+  identity, explicit workspace provisioning, the bounded HTTPS transport, and the
+  event-driven coordinator while remaining safely local-only when configuration
+  is absent or invalid.
+- A stable opaque per-installation device identity for cross-device sync which is
+  never derived from hardware, account metadata, or customer content.
 - New Moves now accept an optional user-written description, and the full Move editor can read or change the title and description alongside priority and deadline in one save.
 - A Vercel-compatible Next.js production build and project configuration for the Founder’s Office website while retaining the existing Sites/Cloudflare build path.
 - A CI version-consistency gate that prevents the locally installed development app and the macOS Xcode target from presenting different version/build numbers.
@@ -32,7 +38,7 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 - A preview-first redacted support report that shows every allow-listed field before saving and excludes Moves, events, names, paths, prompts, credentials, and log payloads by construction.
 - An XcodeGen macOS UI-test target with deterministic scenarios for transactional Appearance, Move planning, Calendar creation, popup restoration, and support-report preview.
 - A configuration-gated Supabase product-identity client for Google OAuth and native Sign in with Apple, with PKCE, Keychain session storage, token-free UI state, and an explicit local-workspace claim decision before sync can begin.
-- A local-first **Account & Sync** page inside Personalize, with reviewed display-name confirmation, explicit existing-workspace choices, native Google and Apple sign-in, and honest Health status while the transport remains unavailable.
+- A local-first **Account & Sync** page inside Personalize, with reviewed display-name confirmation, explicit existing-workspace choices, native Google and Apple sign-in, and Health status backed by the configuration-gated sync runtime.
 - A serialized, transactional local workspace repository foundation with durable revisions, device-writer identity, idempotent mutation receipts, a sync operation outbox, fail-closed legacy import, and immutable JSON/Markdown exports.
 - Transactional Appearance editing with live preview, explicit Save Changes and Discard actions, conflict choices, retryable save errors, and an unsaved-quit guard.
 - A centralized transient-presentation lifecycle that collapses the expanded notch for native panels, menus, and popovers, keeps overlapping interactions balanced, and restores the notch and keyboard focus after the final popup closes.
@@ -70,6 +76,15 @@ All notable customer-visible changes are recorded here. This project follows [Ke
   keeps sign-in, upload, replacement, export, recovery, and sync behind their
   reviewed release gates.
 - Priority drag now begins on the persistent Moves document stack and finishes from its stable viewport, so the first drag receives immediate lift feedback and still persists after auto-scroll recycles its original row.
+- Google product sign-in now requests identity-only scopes (`openid`, `email`,
+  and `profile`); Calendar, Gmail, Drive, and other connectors remain separately
+  authorized.
+- Signed Mac releases now require, validate, embed, and verify the public
+  Supabase endpoint, publishable key, and exact reviewed product-auth callback
+  while refusing secret/service-role key material.
+- The Mac customer app now declares Supabase as its sole cloud authority and no
+  longer ships CloudKit or APNs configuration, capability, or linkage. Legacy
+  CloudKit data remains eligible only for a separate verified one-time migration.
 - The canonical Mac development build is now 0.11.2 (build 16), matching the macOS project target and replacing 0.11.1 (build 15).
 - Primary-goal current and target values now use one exact, nonnegative `numeric(30,8)`-compatible type across Mac, iPhone, SQLite snapshots, JSON projections, and local outbox records while retaining the existing JSON-number shape.
 - Primary-goal bootstrap, push, pull, nullable values, date-only deadlines, and tombstones now preserve exact base-10 values without a `Double` conversion.
@@ -77,7 +92,7 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 - Workspace retry receipts now version their fingerprint algorithm so schema-1 idempotent retries remain valid while new mutations avoid a redundant full-snapshot fingerprint encoding pass.
 - The Mac personal-image widget now renders only a bounded ImageIO thumbnail; file copies, thumbnail generation, export, and cleanup run outside the main actor.
 - The Mac app now uses one transactional SQLite workspace for Moves, personalization, goals, Appearance, tombstones, revisions, idempotency receipts, and sync outbox operations. Legacy JSON and Recovery files remain byte-for-byte migration inputs; JSON and Markdown are generated as immutable revision projections.
-- The legacy polling-based Mac CloudKit JSON bridge has been removed so it cannot compete with the canonical workspace. Cross-device sync remains unavailable until the new authenticated sync contract passes its release gate.
+- The legacy polling-based Mac CloudKit JSON bridge has been removed so it cannot compete with the canonical workspace. Configured builds now use only the authenticated Supabase contract after an explicit workspace decision.
 - Provider-supplied account names are now non-authoritative onboarding suggestions; only an explicitly reviewed, NFC-normalized display-name value can cross a durable identity update boundary.
 - Product identity now publishes a signed-in state only after its secure session can be read back durably, and Mac OAuth accepts only the reviewed custom callback schemes supported by the current native browser session.
 - First-run setup no longer offers the retired CloudKit writer. It starts locally and explains that Google or Apple sign-in is a later, explicit Account & Sync choice; existing local data is never uploaded from onboarding.
@@ -86,7 +101,7 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 - The Appearance accent editor now uses one compact macOS-style control surface with a native segmented mode picker, exact colour wells, and a focused gradient-direction slider instead of loose oversized controls and technical helper copy.
 - Codex runs are now scoped to the Founder’s Office workspace instead of the parent Application Support directory.
 - Development builds and release builds now use separate scripts; the development path cannot accidentally produce a distributable release artifact.
-- CloudKit now resolves one explicit container from product configuration instead of a source-code default; macOS also verifies the signed process entitlement, while iOS relies on its provisioning profile and CKContainer enforcement.
+- Migration-only CloudKit code resolves one explicit container from product configuration instead of a source-code default; iOS relies on its provisioning profile and CKContainer enforcement, while the Mac customer target no longer links this module.
 - Existing beta workspaces remain local until their owner completes the new storage and privacy review.
 - Customer Release builds compile external Codex CLI execution out until its separately scoped helper and consent gates pass.
 - Customer Release builds now omit the complete development assistant runner, its task actions, status UI, callbacks, and identifying strings rather than retaining an inert shell.
@@ -97,6 +112,11 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Fixed
 
+- An unreadable durable sync binding can no longer be mistaken for an unbound
+  workspace. Cloud claim, attach, and resume stay disabled while local work
+  remains available and Health reports the verification failure.
+- Empty or unresolved public auth settings now report a clearly unconfigured
+  local-only build instead of a malformed customer workspace.
 - Priority drag release now completes from the persistent scroll surface when its lazy source row moves off-screen; the final pointer position selects the saved lane, and edge scrolling stops cleanly at the document boundary.
 - Priority dragging now tracks the pointer in stable native viewport coordinates, so edge auto-scroll continues when the cursor is held still and lazy rows move beneath it.
 - First-run onboarding now renders as one continuous squircle with fully transparent exterior corners instead of a clipped rectangular host shadow.

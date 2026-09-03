@@ -71,6 +71,7 @@ private struct SealedReleaseMetadata: Decodable {
         let name: String
         let minimumSystemVersion: String
         let cloudEnabled: Bool
+        let syncAuthority: String
     }
 
     struct Release: Decodable {
@@ -106,10 +107,11 @@ private struct SealedReleaseMetadata: Decodable {
     let notarization: Notarization
 
     func validate(artifactURL: URL, evidenceURL: URL) throws -> Int {
-        guard schemaVersion == 1,
+        guard schemaVersion == 2,
               writeOnce,
               product.name == "Founder's Office",
               product.cloudEnabled,
+              product.syncAuthority == "supabase",
               release.version.range(
                 of: "^[0-9]+\\.[0-9]+\\.[0-9]+$",
                 options: .regularExpression

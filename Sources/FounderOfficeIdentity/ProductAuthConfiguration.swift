@@ -1,6 +1,10 @@
 import Foundation
 
 public struct ProductAuthConfiguration: Equatable, Sendable {
+    /// Product identity only. Calendar, Gmail, Drive, and every other Google
+    /// connector use separately consented connector sessions.
+    public static let googleProductIdentityScopes = "openid email profile"
+
     public enum Environment: Equatable, Sendable {
         case production
         case localDevelopment
@@ -150,8 +154,19 @@ public struct ProductAuthConfiguration: Equatable, Sendable {
               let callbackString = infoDictionary[callbackURLInfoKey] as? String else {
             return .failure(.missingConfiguration)
         }
-        guard let endpoint = URL(string: endpointString),
-              let callbackURL = URL(string: callbackString) else {
+
+        let endpointValue = endpointString.trimmingCharacters(in: .whitespacesAndNewlines)
+        let publishableKeyValue = publishableKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let callbackValue = callbackString.trimmingCharacters(in: .whitespacesAndNewlines)
+        let configuredValues = [endpointValue, publishableKeyValue, callbackValue]
+        guard configuredValues.allSatisfy({ !$0.isEmpty && !$0.contains("$(") }) else {
+            // Xcode leaves unresolved build settings in Info.plist as either an
+            // empty string or the literal `$(SETTING)`. Both mean this build
+            // was not configured; they are not a corrupt customer workspace.
+            return .failure(.missingConfiguration)
+        }
+        guard let endpoint = URL(string: endpointValue),
+              let callbackURL = URL(string: callbackValue) else {
             return .failure(.malformedConfiguration)
         }
 
@@ -159,7 +174,7 @@ public struct ProductAuthConfiguration: Equatable, Sendable {
             return .success(
                 try ProductAuthConfiguration(
                     endpoint: endpoint,
-                    publishableKey: publishableKey,
+                    publishableKey: publishableKeyValue,
                     callbackURL: callbackURL,
                     environment: environment
                 )

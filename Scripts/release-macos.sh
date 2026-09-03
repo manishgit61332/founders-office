@@ -12,13 +12,15 @@ usage() {
     print -u2 "Required environment variables:"
     print -u2 "  FOUNDER_OFFICE_TEAM_ID"
     print -u2 "  FOUNDER_OFFICE_BUNDLE_ID"
-    print -u2 "  FOUNDER_OFFICE_ICLOUD_CONTAINER"
     print -u2 "  FOUNDER_OFFICE_DEVELOPER_ID_APPLICATION"
     print -u2 "  FOUNDER_OFFICE_PROVISIONING_PROFILE_SPECIFIER"
     print -u2 "  FOUNDER_OFFICE_NOTARY_PROFILE"
     print -u2 "  FOUNDER_OFFICE_UPDATE_FEED_URL"
     print -u2 "  FOUNDER_OFFICE_UPDATE_CHANNEL"
     print -u2 "  FOUNDER_OFFICE_UPDATE_PUBLIC_KEY"
+    print -u2 "  FOUNDER_OFFICE_SUPABASE_URL"
+    print -u2 "  FOUNDER_OFFICE_SUPABASE_PUBLISHABLE_KEY"
+    print -u2 "  FOUNDER_OFFICE_AUTH_CALLBACK_SCHEME"
     print -u2 ""
     print -u2 "Release entitlements must be tracked at Config/Release/FoundersOfficeMac.entitlements."
 }
@@ -66,13 +68,15 @@ done
 required_environment=(
     FOUNDER_OFFICE_TEAM_ID
     FOUNDER_OFFICE_BUNDLE_ID
-    FOUNDER_OFFICE_ICLOUD_CONTAINER
     FOUNDER_OFFICE_DEVELOPER_ID_APPLICATION
     FOUNDER_OFFICE_PROVISIONING_PROFILE_SPECIFIER
     FOUNDER_OFFICE_NOTARY_PROFILE
     FOUNDER_OFFICE_UPDATE_FEED_URL
     FOUNDER_OFFICE_UPDATE_CHANNEL
     FOUNDER_OFFICE_UPDATE_PUBLIC_KEY
+    FOUNDER_OFFICE_SUPABASE_URL
+    FOUNDER_OFFICE_SUPABASE_PUBLISHABLE_KEY
+    FOUNDER_OFFICE_AUTH_CALLBACK_SCHEME
 )
 
 for variable_name in "${required_environment[@]}"; do
@@ -81,13 +85,15 @@ done
 
 team_id="$FOUNDER_OFFICE_TEAM_ID"
 bundle_id="$FOUNDER_OFFICE_BUNDLE_ID"
-icloud_container="$FOUNDER_OFFICE_ICLOUD_CONTAINER"
 signing_identity="$FOUNDER_OFFICE_DEVELOPER_ID_APPLICATION"
 provisioning_profile="$FOUNDER_OFFICE_PROVISIONING_PROFILE_SPECIFIER"
 notary_profile="$FOUNDER_OFFICE_NOTARY_PROFILE"
 update_feed_url="$FOUNDER_OFFICE_UPDATE_FEED_URL"
 update_channel="$FOUNDER_OFFICE_UPDATE_CHANNEL"
 update_public_key="$FOUNDER_OFFICE_UPDATE_PUBLIC_KEY"
+supabase_url="$FOUNDER_OFFICE_SUPABASE_URL"
+supabase_publishable_key="$FOUNDER_OFFICE_SUPABASE_PUBLISHABLE_KEY"
+auth_callback_scheme="$FOUNDER_OFFICE_AUTH_CALLBACK_SCHEME"
 required_archs="${FOUNDER_OFFICE_REQUIRED_ARCHS:-arm64 x86_64}"
 release_entitlements_relative="Config/Release/FoundersOfficeMac.entitlements"
 release_entitlements="${project_dir}/${release_entitlements_relative}"
@@ -105,13 +111,10 @@ done
 
 [[ "$team_id" =~ '^[A-Z0-9]{10}$' ]] || fail "FOUNDER_OFFICE_TEAM_ID is malformed"
 [[ "$bundle_id" =~ '^[A-Za-z0-9][A-Za-z0-9.-]+$' ]] || fail "FOUNDER_OFFICE_BUNDLE_ID is malformed"
-[[ "$icloud_container" == iCloud.* ]] || fail "FOUNDER_OFFICE_ICLOUD_CONTAINER must start with iCloud."
 [[ "$signing_identity" == 'Developer ID Application:'* ]] \
     || fail "the signing identity must be a Developer ID Application identity"
 [[ "$bundle_id" != "com.manish.openloops" ]] \
     || fail "the known provisional macOS bundle identifier cannot be released"
-[[ "$icloud_container" != "iCloud.com.manish.foundersoffice" ]] \
-    || fail "the known provisional iCloud container cannot be released"
 
 python3 - "$update_feed_url" "$update_channel" "$update_public_key" <<'PY'
 import base64
@@ -156,6 +159,57 @@ if len(decoded) != 32 or base64.b64encode(decoded).decode("ascii") != public_key
     raise SystemExit("release update public key must be one canonical Ed25519 public key")
 PY
 
+# Validate public client configuration without echoing it. OAuth client
+# secrets, Supabase service-role keys, and Apple private keys never belong in
+# the app bundle or this release process.
+python3 - <<'PY'
+import base64
+import json
+import os
+from urllib.parse import urlsplit
+
+endpoint = os.environ["FOUNDER_OFFICE_SUPABASE_URL"]
+key = os.environ["FOUNDER_OFFICE_SUPABASE_PUBLISHABLE_KEY"]
+callback_scheme = os.environ["FOUNDER_OFFICE_AUTH_CALLBACK_SCHEME"]
+
+try:
+    parsed = urlsplit(endpoint)
+    port = parsed.port
+except ValueError:
+    raise SystemExit("Supabase public endpoint is malformed")
+if (
+    parsed.scheme != "https"
+    or not parsed.hostname
+    or parsed.username is not None
+    or parsed.password is not None
+    or parsed.query
+    or parsed.fragment
+    or port is not None
+    or parsed.path not in {"", "/"}
+):
+    raise SystemExit("Supabase public endpoint must be an exact credential-free HTTPS origin")
+
+if key != key.strip() or "placeholder" in key.lower() or "$(" in key or key.startswith("sb_secret_"):
+    raise SystemExit("Supabase public client key is malformed or unsafe")
+if key.startswith("sb_publishable_"):
+    valid_key = len(key) >= 20
+else:
+    valid_key = False
+    pieces = key.split(".")
+    if len(pieces) == 3:
+        payload = pieces[1].replace("-", "+").replace("_", "/")
+        payload += "=" * ((4 - len(payload) % 4) % 4)
+        try:
+            valid_key = json.loads(base64.b64decode(payload, validate=True))["role"] == "anon"
+        except (ValueError, KeyError, TypeError, UnicodeDecodeError):
+            valid_key = False
+if not valid_key:
+    raise SystemExit("Supabase public client key is malformed or unsafe")
+
+if callback_scheme != "founders-office":
+    raise SystemExit("production product auth must use the reviewed founders-office callback scheme")
+PY
+
 [[ -f "$release_entitlements" ]] || fail "release entitlements file does not exist"
 [[ ! -L "$release_entitlements" ]] || fail "release entitlements file must not be a symlink"
 
@@ -179,21 +233,17 @@ security find-identity -v -p codesigning \
     | grep -F -- "\"${signing_identity}\"" >/dev/null \
     || fail "the requested Developer ID Application identity is not in the active keychain"
 
-python3 - "$release_entitlements" "$icloud_container" <<'PY'
+python3 - "$release_entitlements" <<'PY'
 import plistlib
 import sys
 
-path, expected_container = sys.argv[1:]
+path = sys.argv[1]
 with open(path, "rb") as handle:
     entitlements = plistlib.load(handle)
 
 errors = []
 allowed_keys = {
-    "aps-environment",
     "com.apple.developer.applesignin",
-    "com.apple.developer.icloud-container-environment",
-    "com.apple.developer.icloud-container-identifiers",
-    "com.apple.developer.icloud-services",
     "com.apple.security.app-sandbox",
     "com.apple.security.application-groups",
     "com.apple.security.files.user-selected.read-only",
@@ -221,18 +271,8 @@ if entitlements.get("com.apple.security.personal-information.calendars") is not 
     errors.append("Calendar access must be explicitly entitled")
 if entitlements.get("com.apple.security.files.user-selected.read-only") is not True:
     errors.append("read-only access to user-selected files must be explicitly entitled")
-if entitlements.get("aps-environment") != "production":
-    errors.append("aps-environment must be production")
 if entitlements.get("com.apple.developer.applesignin") != ["Default"]:
     errors.append("Sign in with Apple must be enabled for the primary app")
-if entitlements.get("com.apple.developer.icloud-container-environment") != "Production":
-    errors.append("the iCloud container environment must be Production")
-if "CloudKit" not in entitlements.get("com.apple.developer.icloud-services", []):
-    errors.append("CloudKit must be present in the iCloud services entitlement")
-if entitlements.get("com.apple.developer.icloud-container-identifiers") != [expected_container]:
-    errors.append("the production app must declare exactly the expected iCloud container")
-if entitlements.get("com.apple.developer.icloud-services") != ["CloudKit"]:
-    errors.append("the production app must declare exactly the CloudKit iCloud service")
 if entitlements.get("com.apple.security.network.client") is not True:
     errors.append("the network client entitlement must be true")
 groups = entitlements.get("com.apple.security.application-groups")
@@ -294,11 +334,13 @@ plutil -replace FounderOfficeDistributionChannel -string "direct" "$release_info
     || plutil -insert FounderOfficeDistributionChannel -string "direct" "$release_info_plist"
 plutil -replace FounderOfficeNotarized -bool true "$release_info_plist" 2>/dev/null \
     || plutil -insert FounderOfficeNotarized -bool true "$release_info_plist"
-plutil -replace FounderOfficeCloudContainerIdentifier -string "$icloud_container" "$release_info_plist" 2>/dev/null \
-    || plutil -insert FounderOfficeCloudContainerIdentifier -string "$icloud_container" "$release_info_plist"
 plutil -replace FounderOfficeUpdateFeedURL -string "$update_feed_url" "$release_info_plist"
 plutil -replace FounderOfficeUpdateChannel -string "$update_channel" "$release_info_plist"
 plutil -replace FounderOfficeUpdatePublicKey -string "$update_public_key" "$release_info_plist"
+plutil -replace FounderOfficeSupabaseURL -string "$supabase_url" "$release_info_plist"
+plutil -replace FounderOfficeSupabasePublishableKey -string "$supabase_publishable_key" "$release_info_plist"
+plutil -replace FounderOfficeAuthCallbackURL -string "${auth_callback_scheme}://auth/callback" "$release_info_plist"
+plutil -replace CFBundleURLTypes.0.CFBundleURLSchemes.0 -string "$auth_callback_scheme" "$release_info_plist"
 plutil -lint "$release_info_plist" >/dev/null
 
 xcodegen generate \
@@ -370,20 +412,31 @@ if plutil -extract OpenLoopsWorkspace raw -o - "$info_plist" >/dev/null 2>&1; th
     fail "the exported app contains a developer workspace path"
 fi
 
-cloud_enabled="$(plutil -extract FounderOfficeCloudEnabled raw -o - "$info_plist")"
-[[ "$cloud_enabled" == "true" ]] || fail "CloudKit is not enabled in the exported app"
-runtime_cloud_container="$(plutil -extract FounderOfficeCloudContainerIdentifier raw -o - "$info_plist")"
-[[ "$runtime_cloud_container" == "$icloud_container" ]] \
-    || fail "runtime CloudKit container does not match the release entitlement"
+if plutil -extract FounderOfficeCloudEnabled raw -o - "$info_plist" >/dev/null 2>&1 \
+    || plutil -extract FounderOfficeCloudContainerIdentifier raw -o - "$info_plist" >/dev/null 2>&1; then
+    fail "the customer app must not enable the retired CloudKit writer"
+fi
 runtime_update_feed="$(plutil -extract FounderOfficeUpdateFeedURL raw -o - "$info_plist")"
 runtime_update_channel="$(plutil -extract FounderOfficeUpdateChannel raw -o - "$info_plist")"
 runtime_update_public_key="$(plutil -extract FounderOfficeUpdatePublicKey raw -o - "$info_plist")"
+runtime_supabase_url="$(plutil -extract FounderOfficeSupabaseURL raw -o - "$info_plist")"
+runtime_supabase_publishable_key="$(plutil -extract FounderOfficeSupabasePublishableKey raw -o - "$info_plist")"
+runtime_auth_callback_url="$(plutil -extract FounderOfficeAuthCallbackURL raw -o - "$info_plist")"
+runtime_auth_callback_scheme="$(plutil -extract CFBundleURLTypes.0.CFBundleURLSchemes.0 raw -o - "$info_plist")"
 [[ "$runtime_update_feed" == "$update_feed_url" ]] \
     || fail "runtime update feed does not match the reviewed release setting"
 [[ "$runtime_update_channel" == "$update_channel" ]] \
     || fail "runtime update channel does not match the reviewed release setting"
 [[ "$runtime_update_public_key" == "$update_public_key" ]] \
     || fail "runtime update public key does not match the reviewed release setting"
+[[ "$runtime_supabase_url" == "$supabase_url" ]] \
+    || fail "runtime Supabase endpoint does not match the reviewed release setting"
+[[ "$runtime_supabase_publishable_key" == "$supabase_publishable_key" ]] \
+    || fail "runtime Supabase public client key does not match the reviewed release setting"
+[[ "$runtime_auth_callback_url" == "${auth_callback_scheme}://auth/callback" ]] \
+    || fail "runtime product-auth callback does not match the reviewed release setting"
+[[ "$runtime_auth_callback_scheme" == "$auth_callback_scheme" ]] \
+    || fail "registered product-auth URL scheme does not match the reviewed release setting"
 distribution_channel="$(plutil -extract FounderOfficeDistributionChannel raw -o - "$info_plist")"
 notarization_claim="$(plutil -extract FounderOfficeNotarized raw -o - "$info_plist")"
 [[ "$distribution_channel" == "direct" ]] || fail "exported app is not marked for direct distribution"
@@ -441,11 +494,11 @@ for required_arch in "${required_arch_array[@]}"; do
     codesign -d --architecture "$required_arch" --entitlements :- "$app_path" \
         >"$effective_entitlements" 2>"${work_root}/entitlements-${required_arch}.log"
     plutil -lint "$effective_entitlements" >/dev/null
-    python3 - "$effective_entitlements" "$team_id" "$bundle_id" "$icloud_container" <<'PY'
+    python3 - "$effective_entitlements" "$team_id" "$bundle_id" <<'PY'
 import plistlib
 import sys
 
-path, team_id, bundle_id, expected_container = sys.argv[1:]
+path, team_id, bundle_id = sys.argv[1:]
 with open(path, "rb") as handle:
     entitlements = plistlib.load(handle)
 
@@ -474,16 +527,16 @@ if entitlements.get("com.apple.developer.team-identifier") not in (None, team_id
     errors.append("team identifier does not match")
 if entitlements.get("com.apple.application-identifier") not in (None, f"{team_id}.{bundle_id}"):
     errors.append("application identifier does not match")
-if entitlements.get("aps-environment") != "production":
-    errors.append("effective push environment is not production")
 if entitlements.get("com.apple.developer.applesignin") != ["Default"]:
     errors.append("effective Sign in with Apple entitlement is missing or invalid")
-if entitlements.get("com.apple.developer.icloud-container-environment") != "Production":
-    errors.append("effective iCloud environment is not Production")
-if entitlements.get("com.apple.developer.icloud-container-identifiers") != [expected_container]:
-    errors.append("effective iCloud container does not match exactly")
-if entitlements.get("com.apple.developer.icloud-services") != ["CloudKit"]:
-    errors.append("effective iCloud services do not match exactly")
+for retired_key in (
+    "aps-environment",
+    "com.apple.developer.icloud-container-environment",
+    "com.apple.developer.icloud-container-identifiers",
+    "com.apple.developer.icloud-services",
+):
+    if retired_key in entitlements:
+        errors.append(f"retired CloudKit/push entitlement is present: {retired_key}")
 
 if errors:
     raise SystemExit("Invalid effective entitlements: " + "; ".join(errors))
@@ -570,7 +623,6 @@ python3 - \
     "$artifact_size" \
     "$signing_identity" \
     "$team_id" \
-    "$icloud_container" \
     "$notarization_id" \
     "$notarization_status" \
     "$created_at" <<'PY'
@@ -591,21 +643,20 @@ import sys
     artifact_size,
     signing_identity,
     team_id,
-    icloud_container,
     notarization_id,
     notarization_status,
     created_at,
 ) = sys.argv[1:]
 
 manifest = {
-    "schemaVersion": 1,
+    "schemaVersion": 2,
     "writeOnce": True,
     "createdAt": created_at,
     "product": {
         "name": "Founder's Office",
         "bundleIdentifier": bundle_id,
         "cloudEnabled": True,
-        "iCloudContainer": icloud_container,
+        "syncAuthority": "supabase",
         "minimumSystemVersion": minimum_system_version,
         "architectures": architectures.split(),
     },
@@ -646,7 +697,6 @@ PY
     --metadata "$manifest_path" \
     --expected-team-id "$team_id" \
     --expected-bundle-id "$bundle_id" \
-    --expected-icloud-container "$icloud_container" \
     --expected-update-feed-url "$update_feed_url" \
     --expected-update-channel "$update_channel" \
     --expected-update-public-key "$update_public_key" \
