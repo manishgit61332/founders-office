@@ -66,6 +66,7 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 - The public privacy page now reflects the current local-first workspace and
   keeps sign-in, upload, replacement, export, recovery, and sync behind their
   reviewed release gates.
+- Priority drag now begins on the persistent Moves document stack and finishes from its stable viewport, so the first drag receives immediate lift feedback and still persists after auto-scroll recycles its original row.
 - The canonical Mac development build is now 0.11.2 (build 16), matching the macOS project target and replacing 0.11.1 (build 15).
 - Primary-goal current and target values now use one exact, nonnegative `numeric(30,8)`-compatible type across Mac, iPhone, SQLite snapshots, JSON projections, and local outbox records while retaining the existing JSON-number shape.
 - Primary-goal bootstrap, push, pull, nullable values, date-only deadlines, and tombstones now preserve exact base-10 values without a `Double` conversion.

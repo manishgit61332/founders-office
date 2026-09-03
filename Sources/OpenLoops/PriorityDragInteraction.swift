@@ -77,9 +77,41 @@ enum PriorityDropTargetPolicy {
     }
 }
 
+enum PriorityDragSourcePolicy {
+    static func source(
+        at point: CGPoint,
+        rows: [UUID: CGRect]
+    ) -> UUID? {
+        rows
+            .filter { _, frame in
+                frame.minX.isFinite
+                    && frame.maxX.isFinite
+                    && frame.minY.isFinite
+                    && frame.maxY.isFinite
+                    && frame.width > 0
+                    && frame.height > 0
+                    && frame.contains(point)
+            }
+            .sorted { lhs, rhs in
+                let lhsFrame = lhs.value
+                let rhsFrame = rhs.value
+                if lhsFrame.minY != rhsFrame.minY {
+                    return lhsFrame.minY < rhsFrame.minY
+                }
+                if lhsFrame.minX != rhsFrame.minX {
+                    return lhsFrame.minX < rhsFrame.minX
+                }
+                return lhs.key.uuidString < rhs.key.uuidString
+            }
+            .first?.key
+    }
+}
+
 @MainActor
 final class PriorityDragAutoScroller: ObservableObject {
     private weak var scrollView: NSScrollView?
+    private var viewportPanRecognizer: NSPanGestureRecognizer?
+    private var viewportPanObserver: PriorityViewportPanObserver?
     private var timer: Timer?
     private var localEventMonitor: Any?
     private var globalMouseMonitor: Any?
@@ -132,8 +164,10 @@ final class PriorityDragAutoScroller: ObservableObject {
         }
         guard self.scrollView !== scrollView else { return }
         let existingPointerY = pointerY
+        detachViewportPanRecognizer()
         stop()
         self.scrollView = scrollView
+        attachViewportPanRecognizer(to: scrollView)
         if let existingPointerY, scrollView != nil {
             update(pointerY: existingPointerY)
         }
@@ -300,6 +334,33 @@ final class PriorityDragAutoScroller: ObservableObject {
         }
     }
 
+    /// Owns the drag on the stable scroll viewport as well as on the lazy row.
+    /// SwiftUI removes an off-screen `LazyVStack` row while edge scrolling;
+    /// when that happens the row gesture is cancelled and never receives
+    /// `onEnded`. This viewport recognizer remains installed for the entire
+    /// scroll lifetime, so a real or accessibility-synthesized release still
+    /// commits the last magnetic destination.
+    func handleViewportPan(
+        state: NSGestureRecognizer.State,
+        pointerInWindow: NSPoint
+    ) {
+        guard draggedMoveID != nil else { return }
+
+        switch state {
+        case .began, .changed:
+            _ = update(pointerInWindow: pointerInWindow)
+        case .ended:
+            scheduleRelease(pointerInWindow: pointerInWindow)
+        case .cancelled, .failed:
+            // Cancellation can be the exact symptom of a lazy row leaving the
+            // hierarchy. Use only the last coordinate already validated by a
+            // viewport-backed drag event; never poll a divergent global cursor.
+            scheduleRelease()
+        default:
+            break
+        }
+    }
+
     private func startTimerIfNeeded() {
         guard timer == nil else { return }
         lastTick = uptime()
@@ -331,6 +392,39 @@ final class PriorityDragAutoScroller: ObservableObject {
     private func stopMouseUpMonitor() {
         mouseUpMonitorTimer?.invalidate()
         mouseUpMonitorTimer = nil
+    }
+
+    private func attachViewportPanRecognizer(to scrollView: NSScrollView?) {
+        guard let scrollView else { return }
+        let observer = PriorityViewportPanObserver { [weak self, weak scrollView] recognizer in
+            guard let self, let scrollView, let window = scrollView.window else { return }
+            let pointInScrollView = recognizer.location(in: scrollView)
+            let pointInWindow = scrollView.convert(pointInScrollView, to: nil)
+            guard window === self.scrollView?.window else { return }
+            self.handleViewportPan(
+                state: recognizer.state,
+                pointerInWindow: pointInWindow
+            )
+        }
+        let recognizer = NSPanGestureRecognizer(
+            target: observer,
+            action: #selector(PriorityViewportPanObserver.handle(_:))
+        )
+        recognizer.buttonMask = 0x1
+        recognizer.delaysPrimaryMouseButtonEvents = false
+        recognizer.delegate = observer
+        scrollView.addGestureRecognizer(recognizer)
+        viewportPanObserver = observer
+        viewportPanRecognizer = recognizer
+    }
+
+    private func detachViewportPanRecognizer() {
+        if let viewportPanRecognizer,
+           let view = viewportPanRecognizer.view {
+            view.removeGestureRecognizer(viewportPanRecognizer)
+        }
+        viewportPanRecognizer = nil
+        viewportPanObserver = nil
     }
 
     /// A lazy row can leave the hierarchy while its pointer remains at the
@@ -397,12 +491,43 @@ final class PriorityDragAutoScroller: ObservableObject {
     }
 }
 
+@MainActor
+private final class PriorityViewportPanObserver: NSObject, NSGestureRecognizerDelegate {
+    private let onChange: (NSPanGestureRecognizer) -> Void
+
+    init(onChange: @escaping (NSPanGestureRecognizer) -> Void) {
+        self.onChange = onChange
+    }
+
+    @objc func handle(_ recognizer: NSPanGestureRecognizer) {
+        onChange(recognizer)
+    }
+
+    func gestureRecognizer(
+        _ gestureRecognizer: NSGestureRecognizer,
+        shouldRecognizeSimultaneouslyWith otherGestureRecognizer: NSGestureRecognizer
+    ) -> Bool {
+        true
+    }
+}
+
 struct PriorityLaneFramePreferenceKey: PreferenceKey {
     static let defaultValue: [LoopPriority: CGRect] = [:]
 
     static func reduce(
         value: inout [LoopPriority: CGRect],
         nextValue: () -> [LoopPriority: CGRect]
+    ) {
+        value.merge(nextValue(), uniquingKeysWith: { _, latest in latest })
+    }
+}
+
+struct PriorityMoveRowFramePreferenceKey: PreferenceKey {
+    static let defaultValue: [UUID: CGRect] = [:]
+
+    static func reduce(
+        value: inout [UUID: CGRect],
+        nextValue: () -> [UUID: CGRect]
     ) {
         value.merge(nextValue(), uniquingKeysWith: { _, latest in latest })
     }
