@@ -24,6 +24,13 @@ new session is not exposed as signed in until its user ID and tokens can be
 read back from durable storage. Read, write, mismatch, or removal failures
 fail closed as a secure-storage error without logging credentials.
 
+The product-owned Security.framework storage adapter maps only
+`errSecItemNotFound` to an absent session or an already-completed deletion.
+Supabase 2.54.1's default Keychain adapter throws for absent items, which does
+not satisfy the product's signed-out verification contract. All other OS errors
+remain failures. New items are device-only, and replacements update in place
+without deleting the prior credential first.
+
 A provider name is a suggestion, never a durable greeting. The user must
 review a normalized display name before the account update and local profile
 change occur.
@@ -80,3 +87,17 @@ Supabase project to have the reviewed migrations and RLS/RPC tests, exact Google
 and Apple provider settings, physical two-account/two-device convergence evidence,
 revocation acceptance, monitoring, private-asset export/deletion, and the normal
 Developer ID/notarization gates.
+
+### Google checkpoint — 4 September 2026
+
+The dedicated beta backend has the three reviewed migrations and Google product
+authentication configured. An isolated native harness using this repository's
+`SupabaseProductAuthClient` completed real Google sign-in, verified Keychain
+read-back, restored the session after process termination/relaunch, and verified
+sign-out followed by a signed-out restore. It did not open or upload a workspace.
+This is authentication evidence, not two-device sync or signed-app acceptance.
+
+The hosted database passed schema lint on PostgreSQL 17. The 97 executable
+RLS/RPC assertions passed separately in CI on pinned PostgreSQL 15; those are not
+interchangeable environments. Apple provider configuration, live workspace
+convergence, and signed distribution remain unverified.

@@ -3,8 +3,27 @@ import FounderOfficeCore
 import SwiftUI
 
 final class NotchPanel: NSPanel {
+    static let notchStyleMask: NSWindow.StyleMask = [.borderless, .fullSizeContentView, .nonactivatingPanel]
+    static let notchCollectionBehavior: NSWindow.CollectionBehavior = [
+        .canJoinAllSpaces, .canJoinAllApplications, .fullScreenAuxiliary, .stationary, .ignoresCycle
+    ]
+
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+}
+
+enum NotchPanelState: Sendable {
+    case hidden, opening, open, suspended, closing
+}
+
+enum NotchSpaceChangeAction: Equatable {
+    case checkHover, deferToTransient, reorderExpanded
+
+    static func resolve(state: NotchPanelState, hasTransient: Bool) -> Self {
+        if state == .hidden || state == .closing { return .checkHover }
+        if state == .suspended || hasTransient { return .deferToTransient }
+        return .reorderExpanded
+    }
 }
 
 @MainActor
@@ -43,14 +62,6 @@ final class NotchPresentationModel: ObservableObject {
 
 @MainActor
 final class NotchWindowController {
-    private enum PanelState {
-        case hidden
-        case opening
-        case open
-        case suspended
-        case closing
-    }
-
     private let store: OpenLoopStore
     #if !FOUNDER_OFFICE_DISTRIBUTION
     private let codexRunner: CodexRunner
@@ -68,7 +79,7 @@ final class NotchWindowController {
     private var lastSpringFrameAt: Date?
     private var springVelocity: CGFloat = 0
     private var springTarget: CGFloat = 0
-    private var state: PanelState = .hidden
+    private var state: NotchPanelState = .hidden
     private var previewMode = false
     private var awaitingManualEntry = false
     private var suppressHoverRevealUntilHidden = false
@@ -95,7 +106,7 @@ final class NotchWindowController {
         calendarProvider = calendar
         panel = NotchPanel(
             contentRect: NSRect(x: 0, y: 0, width: 720, height: 350),
-            styleMask: [.borderless, .fullSizeContentView],
+            styleMask: NotchPanel.notchStyleMask,
             backing: .buffered,
             defer: false
         )
@@ -109,7 +120,7 @@ final class NotchWindowController {
         panel.hidesOnDeactivate = false
         panel.isMovable = false
         panel.isMovableByWindowBackground = false
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        panel.collectionBehavior = NotchPanel.notchCollectionBehavior
         panel.animationBehavior = .none
         panel.isReleasedWhenClosed = false
         panel.ignoresMouseEvents = true
@@ -520,6 +531,17 @@ final class NotchWindowController {
     private func startSystemObservers() {
         let center = NotificationCenter.default
         systemObservers.append(
+            NSWorkspace.shared.notificationCenter.addObserver(
+                forName: NSWorkspace.activeSpaceDidChangeNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.activeSpaceDidChange()
+                }
+            }
+        )
+        systemObservers.append(
             center.addObserver(
                 forName: NSApplication.didChangeScreenParametersNotification,
                 object: nil,
@@ -700,6 +722,32 @@ final class NotchWindowController {
             return
         }
         position(on: screen)
+    }
+
+    private func activeSpaceDidChange() {
+        // AppKit can leave the window ordered behind a new Space even while
+        // the presentation model still says "open". Reconcile once per Space
+        // transition; never activate the app or switch the user's Space back.
+        exitStartedAt = nil
+        let action = NotchSpaceChangeAction.resolve(
+            state: state,
+            hasTransient: presentation.preventsAutoDismiss
+                || presentation.transients.hasVisiblePresentedWindow
+        )
+        switch action {
+        case .checkHover:
+            checkPointer()
+        case .deferToTransient:
+            // A colour/file/auth panel still owns the interaction. The notch
+            // must not reappear above it or cancel its unfinished work.
+            pendingRepositionAfterTransient = true
+        case .reorderExpanded:
+            guard let screen = targetScreen() else { return }
+            position(on: screen)
+            panel.orderFrontRegardless()
+            updatePanelMouseHandling()
+            checkPointer()
+        }
     }
 
     private func restoreAfterTransientPresentation() {

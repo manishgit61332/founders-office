@@ -17,7 +17,7 @@ public actor SupabaseProductAuthClient: ProductAuthServing {
         presentationAnchor: @escaping @MainActor @Sendable () -> ASPresentationAnchor? = { nil }
     ) {
         let durableStorage = VerifiedProductAuthStorage(
-            storage: KeychainLocalStorage(service: configuration.keychainService),
+            storage: ProductKeychainStorage(service: configuration.keychainService),
             sessionKey: "founders-office-session"
         )
         self.durableStorage = durableStorage

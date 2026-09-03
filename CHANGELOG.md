@@ -112,6 +112,12 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Fixed
 
+- The Mac notch now uses a nonactivating, all-apps overlay and reconciles its
+  window ordering after desktop changes without reopening it over an unfinished
+  popup or switching the user back to the previous desktop.
+- An empty Keychain and repeated sign-out now correctly mean no saved session.
+  Product identity handles missing items separately from access, decoding, and
+  write failures; replacement session writes never delete the previous item first.
 - An unreadable durable sync binding can no longer be mistaken for an unbound
   workspace. Cloud claim, attach, and resume stay disabled while local work
   remains available and Health reports the verification failure.
