@@ -17,7 +17,9 @@ jobs:
   build:
     name: Build and verify
     runs-on: macos-15
-    timeout-minutes: 45
+    # The complete Mac gate takes roughly 45 minutes on a cold hosted runner.
+    # Leave enough time for the final iOS simulator dependency resolution/build.
+    timeout-minutes: 60
 
     steps:
       - name: Check out repository
