@@ -46,6 +46,37 @@ open "$HOME/Applications/Founder's Office.app"
 
 This command creates an ad-hoc signed development app in `dist/development/`. It embeds the current checkout path and is not notarized. Do not distribute it or connect it to the website download.
 
+### Source preview for a technical friend
+
+A technical tester can clone an explicitly approved commit and build the app on
+their own Mac without an Apple Developer certificate. Replace `FULL_COMMIT_SHA`
+with the 40-character commit supplied by the release coordinator:
+
+```bash
+git clone https://github.com/manishgit61332/founders-office.git
+cd founders-office
+git checkout FULL_COMMIT_SHA
+Scripts/install-source-preview.sh --expected-commit FULL_COMMIT_SHA
+```
+
+This installs the same **Development** channel locally. It is not the external
+Beta: the resulting app is ad-hoc signed, is not notarized, and remains tied to
+that source checkout. Do not send its `.app` bundle or ZIP to another person,
+do not bypass Gatekeeper, and do not use it to enable the website download.
+The tester should inspect and trust the selected commit before running it.
+
+The preview is local-only unless a separately reviewed development service is
+configured. Keep the checkout because it contains the preview's private local
+workspace. To update after reviewing the incoming commits:
+
+```bash
+git pull --ff-only
+Scripts/install-source-preview.sh --expected-commit FULL_COMMIT_SHA
+```
+
+Export any work before deleting the checkout. A normal invited Beta still
+requires the Developer ID-signed and notarized artifact described below.
+
 Launch at login is opt-in. Right-click the checklist icon to enable or disable it.
 
 ## macOS release
@@ -76,6 +107,7 @@ python3 Scripts/openloops.py restore "Approve new homepage"
 - `Generated/revision-*`: bounded read-only JSON and Markdown projections.
 - `workspace-identity.json`: durable local workspace identity used to bind storage consent and fail closed during partial restores.
 - `Scripts/openloops.py`: read interface for migrated projections and mutation interface only for unmigrated legacy workspaces.
+- `Scripts/install-source-preview.sh`: fail-closed installer for a technical tester building an approved Development commit locally.
 - `Scripts/validate-notch-geometry.swift`: verifies top-edge attachment and hardware-notch-safe header regions on the current display.
 - `Resources/Info.plist`: contains the shared workspace path.
 - `MOTION_SPEC.md`: documents the reveal, retraction, and reversal physics.

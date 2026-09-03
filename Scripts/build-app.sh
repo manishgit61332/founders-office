@@ -16,6 +16,50 @@ bundle_name="Founder's Office"
 bundle_dir="${project_dir}/dist/development/${bundle_name}.app"
 binary_path="${project_dir}/.build/release/OpenLoops"
 executable_name="FoundersOffice"
+install_requested=0
+
+usage() {
+    cat <<'EOF'
+Usage: Scripts/build-app.sh [--install]
+
+Builds an ad-hoc signed development app from the current checkout.
+
+  --install  Install it in the current user's Applications folder.
+  --help     Show this help text.
+
+This command cannot create a distributable, notarized Beta or Stable build.
+EOF
+}
+
+while (( $# > 0 )); do
+    case "$1" in
+        --install)
+            (( install_requested += 1 ))
+            ;;
+        --help|-h)
+            usage
+            exit 0
+            ;;
+        *)
+            print -u2 "Unknown option: $1"
+            usage >&2
+            exit 64
+            ;;
+    esac
+    shift
+done
+
+if (( install_requested > 1 )); then
+    print -u2 "--install may be supplied only once."
+    exit 64
+fi
+
+if (( install_requested == 1 )) && [[ -n "${FOUNDER_OFFICE_INSTALL_ROOT:-}" ]]; then
+    if [[ "${FOUNDER_OFFICE_INSTALL_ROOT}" != /* || "${FOUNDER_OFFICE_INSTALL_ROOT}" == "/" ]]; then
+        print -u2 "FOUNDER_OFFICE_INSTALL_ROOT must be an absolute directory below the filesystem root."
+        exit 64
+    fi
+fi
 
 cd "${project_dir}"
 swift build -c release
@@ -44,7 +88,7 @@ rm -rf "${app_icon_staging}"
 codesign --force --deep --sign - "${bundle_dir}"
 codesign --verify --deep --strict --verbose=2 "${bundle_dir}"
 
-if [[ "${1:-}" == "--install" ]]; then
+if (( install_requested == 1 )); then
     if [[ -n "${FOUNDER_OFFICE_INSTALL_ROOT:-}" ]]; then
         install_root="${FOUNDER_OFFICE_INSTALL_ROOT}"
     else

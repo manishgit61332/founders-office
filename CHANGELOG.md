@@ -6,6 +6,9 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Added
 
+- A fail-closed source-preview installer and documented workflow for technical
+  Mac testers to build Development locally without weakening the signed and
+  notarized Beta download gate.
 - New Moves now accept an optional user-written description, and the full Move editor can read or change the title and description alongside priority and deadline in one save.
 - A Vercel-compatible Next.js production build and project configuration for the Founder’s Office website while retaining the existing Sites/Cloudflare build path.
 - A CI version-consistency gate that prevents the locally installed development app and the macOS Xcode target from presenting different version/build numbers.
