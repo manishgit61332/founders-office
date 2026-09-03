@@ -227,8 +227,6 @@ final class FoundersOfficeMacUITests: XCTestCase {
 
         let priorityScroll = app.scrollViews["moves.priority.scroll"]
         XCTAssertTrue(priorityScroll.waitForExistence(timeout: 4))
-        let persistence = app.otherElements["moves.persistence"]
-        XCTAssertTrue(persistence.waitForExistence(timeout: 4))
 
         let row = app.buttons["Edit Priority drag fixture 1"]
         XCTAssertTrue(row.waitForExistence(timeout: 3))
@@ -250,11 +248,15 @@ final class FoundersOfficeMacUITests: XCTestCase {
         )
 
         guard waitForValue(
-            "Saved",
-            of: persistence,
+            "P3, no deadline",
+            of: app.buttons["Edit Priority drag fixture 1"],
+            timeout: 5
+        ) else { return }
+        guard waitForValue(
+            "Idle, Saved",
+            of: priorityScroll,
             timeout: 30
         ) else { return }
-        XCTAssertTrue(String(describing: priorityScroll.value).contains("Idle"))
 
         app.terminate()
         app = launch(

@@ -1308,9 +1308,7 @@ struct NotchBoardView: View {
                 }
                 .coordinateSpace(name: "priority-move-scroll")
                 .accessibilityIdentifier("moves.priority.scroll")
-                .accessibilityValue(
-                    priorityDragInteractionLease == nil ? "Idle" : "Dragging"
-                )
+                .accessibilityValue(priorityDragAccessibilityValue)
                 .onPreferenceChange(PriorityLaneFramePreferenceKey.self) { frames in
                     priorityLaneFrames = frames
                     guard let pointerY = priorityDragAutoScroller.pointerY else { return }
@@ -1332,16 +1330,6 @@ struct NotchBoardView: View {
                     priorityMoveRowFrames = frames
                 }
                 .onDisappear(perform: finishPriorityDrag)
-                .overlay(alignment: .topLeading) {
-                    #if !FOUNDER_OFFICE_DISTRIBUTION
-                    Color.clear
-                        .frame(width: 1, height: 1)
-                        .accessibilityElement()
-                        .accessibilityLabel("Move persistence")
-                        .accessibilityValue(store.syncMessage)
-                        .accessibilityIdentifier("moves.persistence")
-                    #endif
-                }
             } else {
                 let groups = movePresentation.activeGroups.compactMap { group -> ActiveMoveGroup? in
                     let items = group.items.filter { $0.status == selectedStatus }
@@ -1674,6 +1662,19 @@ struct NotchBoardView: View {
 
         guard item.priority != target else { return true }
         return updatePriority(of: item, to: target)
+    }
+
+    private var priorityDragAccessibilityValue: String {
+        let dragState = priorityDragInteractionLease == nil ? "Idle" : "Dragging"
+        #if FOUNDER_OFFICE_DISTRIBUTION
+        return dragState
+        #else
+        // The persistent ScrollView is a real accessibility element. Keeping
+        // the store state here lets UI automation observe the same durable
+        // commit state customers use without relying on a transparent probe
+        // that AppKit omits from AXValue.
+        return "\(dragState), \(store.syncMessage)"
+        #endif
     }
 
     private func beginPriorityDrag(_ id: UUID) {
