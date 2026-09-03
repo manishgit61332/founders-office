@@ -37,7 +37,6 @@ assert_refused \
 release_environment=(
     FOUNDER_OFFICE_TEAM_ID=ABCDE12345
     FOUNDER_OFFICE_BUNDLE_ID=com.example.foundersoffice
-    FOUNDER_OFFICE_ICLOUD_CONTAINER=iCloud.com.example.foundersoffice
     "FOUNDER_OFFICE_DEVELOPER_ID_APPLICATION=Developer ID Application: Example (ABCDE12345)"
     FOUNDER_OFFICE_PROVISIONING_PROFILE_SPECIFIER=ExampleProfile
     FOUNDER_OFFICE_NOTARY_PROFILE=example-notary
@@ -276,14 +275,14 @@ with open(artifact_path, "rb") as handle:
     payload = handle.read()
 
 manifest = {
-    "schemaVersion": 1,
+    "schemaVersion": 2,
     "writeOnce": True,
     "createdAt": "2026-08-31T00:00:00Z",
     "product": {
         "name": "Founder's Office",
         "bundleIdentifier": "com.example.foundersoffice",
         "cloudEnabled": mode != "cloud-disabled",
-        "iCloudContainer": "iCloud.com.example.foundersoffice",
+        "syncAuthority": "cloudkit" if mode == "wrong-sync-authority" else "supabase",
         "minimumSystemVersion": "14.0",
         "architectures": ["arm64"],
     },
@@ -327,7 +326,6 @@ verify_fixture() {
         --metadata "${fixture_root}/${mode}/release.json" \
         --expected-team-id ABCDE12345 \
         --expected-bundle-id com.example.foundersoffice \
-        --expected-icloud-container iCloud.com.example.foundersoffice \
         --expected-update-feed-url https://downloads.example.com/channel/beta.json \
         --expected-update-channel beta \
         --expected-update-public-key MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY= \
@@ -335,7 +333,10 @@ verify_fixture() {
 }
 
 create_fixture cloud-disabled
-assert_refused "does not require CloudKit" verify_fixture cloud-disabled
+assert_refused "does not enable device sync" verify_fixture cloud-disabled
+
+create_fixture wrong-sync-authority
+assert_refused "does not name Supabase as the sole sync authority" verify_fixture wrong-sync-authority
 
 create_fixture extra-payload
 assert_refused "outside the app bundle" verify_fixture extra-payload
@@ -490,7 +491,6 @@ assert_refused \
         --metadata "${fixture_root}/clean/release.json" \
         --expected-team-id ABCDE12345 \
         --expected-bundle-id com.example.foundersoffice \
-        --expected-icloud-container iCloud.com.example.foundersoffice \
         --expected-update-feed-url http://downloads.example.com/channel/beta.json \
         --expected-update-channel beta \
         --expected-update-public-key MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY= \

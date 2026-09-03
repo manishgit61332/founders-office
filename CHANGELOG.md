@@ -72,6 +72,9 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 - Signed Mac releases now require, validate, embed, and verify the public
   Supabase endpoint, publishable key, and exact reviewed product-auth callback
   while refusing secret/service-role key material.
+- The Mac customer app now declares Supabase as its sole cloud authority and no
+  longer ships CloudKit or APNs configuration, capability, or linkage. Legacy
+  CloudKit data remains eligible only for a separate verified one-time migration.
 - The canonical Mac development build is now 0.11.2 (build 16), matching the macOS project target and replacing 0.11.1 (build 15).
 - Primary-goal current and target values now use one exact, nonnegative `numeric(30,8)`-compatible type across Mac, iPhone, SQLite snapshots, JSON projections, and local outbox records while retaining the existing JSON-number shape.
 - Primary-goal bootstrap, push, pull, nullable values, date-only deadlines, and tombstones now preserve exact base-10 values without a `Double` conversion.
@@ -88,7 +91,7 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 - The Appearance accent editor now uses one compact macOS-style control surface with a native segmented mode picker, exact colour wells, and a focused gradient-direction slider instead of loose oversized controls and technical helper copy.
 - Codex runs are now scoped to the Founder’s Office workspace instead of the parent Application Support directory.
 - Development builds and release builds now use separate scripts; the development path cannot accidentally produce a distributable release artifact.
-- CloudKit now resolves one explicit container from product configuration instead of a source-code default; macOS also verifies the signed process entitlement, while iOS relies on its provisioning profile and CKContainer enforcement.
+- Migration-only CloudKit code resolves one explicit container from product configuration instead of a source-code default; iOS relies on its provisioning profile and CKContainer enforcement, while the Mac customer target no longer links this module.
 - Existing beta workspaces remain local until their owner completes the new storage and privacy review.
 - Customer Release builds compile external Codex CLI execution out until its separately scoped helper and consent gates pass.
 - Customer Release builds now omit the complete development assistant runner, its task actions, status UI, callbacks, and identifying strings rather than retaining an inert shell.
@@ -99,6 +102,11 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Fixed
 
+- An unreadable durable sync binding can no longer be mistaken for an unbound
+  workspace. Cloud claim, attach, and resume stay disabled while local work
+  remains available and Health reports the verification failure.
+- Empty or unresolved public auth settings now report a clearly unconfigured
+  local-only build instead of a malformed customer workspace.
 - Priority drag release now completes from the persistent scroll surface when its lazy source row moves off-screen; the final pointer position selects the saved lane, and edge scrolling stops cleanly at the document boundary.
 - Priority dragging now tracks the pointer in stable native viewport coordinates, so edge auto-scroll continues when the cursor is held still and lazy rows move beneath it.
 - First-run onboarding now renders as one continuous squircle with fully transparent exterior corners instead of a clipped rectangular host shadow.

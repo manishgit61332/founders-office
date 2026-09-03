@@ -398,6 +398,50 @@ struct FounderOfficeAccountControllerTests {
     }
 
     @Test
+    func unreadableBindingCannotBeTreatedAsAnUnboundWorkspace() async throws {
+        let accountID = UUID()
+        let binding = try WorkspaceSyncBinding(
+            accountID: FounderAccountID(rawValue: accountID),
+            workspaceID: WorkspaceID(rawValue: UUID()),
+            deviceID: DeviceID(rawValue: UUID()),
+            identityProvider: .google
+        )
+        let session = ProductAccountSession(
+            accountID: accountID,
+            provider: .google,
+            reviewedDisplayName: try ReviewedDisplayName(reviewedInput: "Asha"),
+            onboardingDisplayNameSuggestion: nil,
+            expiresAt: .distantFuture
+        )
+        let cloud = TestCloudSyncService(
+            initialBinding: binding,
+            activation: FounderOfficeCloudSyncActivation(
+                binding: binding,
+                outcome: .synchronized
+            ),
+            bindingReadFails: true
+        )
+        let controller = makeController(
+            service: TestProductAuthService(initialState: .signedIn(session)),
+            cloudSync: cloud,
+            context: FounderOfficeLocalAccountContext(hasCustomerData: true)
+        )
+
+        controller.start()
+        await controller.waitForPendingOperations()
+
+        #expect(controller.setupStage == .chooseWorkspace)
+        #expect(controller.isWorkspaceChoiceEnabled(.keepLocalOnly))
+        #expect(!controller.isWorkspaceChoiceEnabled(.claimAsNewWorkspace))
+        #expect(!controller.isWorkspaceChoiceEnabled(.switchWorkspace))
+        #expect(controller.accountSyncHealthStatus.condition == .attention)
+        #expect(controller.statusTitle == "Device sync needs attention")
+        #expect(await cloud.resumeCallCount() == 0)
+        #expect(await cloud.provisionCallCount() == 0)
+        controller.stop()
+    }
+
+    @Test
     func signOutStopsCloudRuntimeAndPreservesLocalBinding() async throws {
         let accountID = UUID()
         let binding = try WorkspaceSyncBinding(
@@ -474,16 +518,22 @@ private actor TestCloudSyncService: FounderOfficeCloudSyncServing {
     private var capturedWorkspaceName: String?
     private var capturedDisposition: WorkspaceProvisioningDisposition?
     private var status = try! WorkspaceSyncStatus(phase: .idle)
+    private let bindingReadFails: Bool
 
     init(
         initialBinding: WorkspaceSyncBinding?,
-        activation: FounderOfficeCloudSyncActivation
+        activation: FounderOfficeCloudSyncActivation,
+        bindingReadFails: Bool = false
     ) {
         binding = initialBinding
         self.activation = activation
+        self.bindingReadFails = bindingReadFails
     }
 
-    func currentBinding() async throws -> WorkspaceSyncBinding? { binding }
+    func currentBinding() async throws -> WorkspaceSyncBinding? {
+        if bindingReadFails { throw TestCloudSyncFailure.bindingUnavailable }
+        return binding
+    }
 
     func resume(
         account: ProductAccountSession
@@ -521,6 +571,10 @@ private actor TestCloudSyncService: FounderOfficeCloudSyncServing {
         if case .claimLocalAsNew = capturedDisposition { return true }
         return false
     }
+}
+
+private enum TestCloudSyncFailure: Error {
+    case bindingUnavailable
 }
 
 private actor TestProductAuthService: ProductAuthServing {

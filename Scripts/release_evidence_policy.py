@@ -131,7 +131,7 @@ class ValidatedRelease:
 
 def validate_release_manifest(manifest: Any) -> ValidatedRelease:
     exact_keys(manifest, RELEASE_MANIFEST_KEYS, "canonical metadata")
-    if type(manifest.get("schemaVersion")) is not int or manifest["schemaVersion"] != 1:
+    if type(manifest.get("schemaVersion")) is not int or manifest["schemaVersion"] != 2:
         raise ReleaseEvidenceError("canonical metadata schema version is malformed")
     if manifest.get("writeOnce") is not True:
         raise ReleaseEvidenceError("canonical metadata is not write-once")
@@ -148,7 +148,7 @@ def validate_release_manifest(manifest: Any) -> ValidatedRelease:
             "name",
             "bundleIdentifier",
             "cloudEnabled",
-            "iCloudContainer",
+            "syncAuthority",
             "minimumSystemVersion",
             "architectures",
         },
@@ -164,15 +164,15 @@ def validate_release_manifest(manifest: Any) -> ValidatedRelease:
     )
 
     bundle_identifier = bounded_text(product.get("bundleIdentifier"), "bundle identifier", 255)
-    icloud_container = bounded_text(product.get("iCloudContainer"), "iCloud container", 255)
+    sync_authority = bounded_text(product.get("syncAuthority"), "sync authority", 32)
     minimum_system_version = product.get("minimumSystemVersion")
     architectures = product.get("architectures")
     if (
         product.get("name") != "Founder's Office"
         or product.get("cloudEnabled") is not True
+        or sync_authority != "supabase"
         or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.-]+", bundle_identifier)
         or ".." in bundle_identifier
-        or not icloud_container.startswith("iCloud.")
         or not isinstance(minimum_system_version, str)
         or not re.fullmatch(r"[0-9]+\.[0-9]+(?:\.[0-9]+)?", minimum_system_version)
         or not isinstance(architectures, list)

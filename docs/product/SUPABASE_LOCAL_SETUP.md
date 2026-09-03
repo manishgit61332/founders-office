@@ -83,8 +83,10 @@ disabled until all of the following are approved and configured outside Git:
 - an asset-storage bucket and policies that match the `assets.storage_path`
   ownership contract, plus a privileged adapter that exports and deletes the
   exact server manifest before it records private transfer proof; and
-- a one-time, verified CloudKit/local-workspace claim and cutover. CloudKit and
-Supabase must not remain concurrent writers for the same workspace.
+- a one-time, verified local-workspace claim and cutover. A remote-only legacy
+  CloudKit workspace requires a separate migration build or utility; the Mac
+  customer app has no CloudKit capability. CloudKit and Supabase must never be
+  concurrent writers for the same workspace.
 
 Session revocation is an explicit **unpassed production release gate**. The
 checked-in local configuration uses a 3,600-second access-token lifetime. Signing

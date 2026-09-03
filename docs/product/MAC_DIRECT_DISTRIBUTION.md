@@ -11,8 +11,8 @@ A website build is publishable only when all of these statements are true:
 3. Apple product identifiers belong to the production organization and will not change after launch.
 4. Xcode signs the app with a `Developer ID Application` certificate and the production provisioning profile.
 5. Every required architecture has the expected signature, hardened runtime, and trusted timestamp.
-6. Every required architecture's effective entitlements name the production iCloud container, production push environment, Sign in with Apple capability, Calendar access, and user-selected read-only file access.
-7. The app's runtime CloudKit container is explicit in `Info.plist` and exactly matches its entitlement.
+6. Every required architecture's effective entitlements enable App Sandbox, outbound HTTPS, Sign in with Apple, Calendar access, and user-selected read-only file access, with no CloudKit or APNs capability.
+7. The app's runtime configuration names the reviewed public Supabase endpoint and key and contains no retired CloudKit writer configuration.
 8. Apple accepts the notarization submission.
 9. The notarization ticket is stapled to the app.
 10. Gatekeeper reports `Notarized Developer ID` for the stapled app.
@@ -29,21 +29,17 @@ Complete these steps before the first external beta:
 
 1. Install full Xcode and select it with `xcode-select`. Command Line Tools alone are insufficient.
 2. Install XcodeGen 2.46.0, the same version pinned in CI. The release script rejects another version and generates the Xcode project from the committed `project.yml`.
-3. Freeze the organization Team ID, macOS bundle ID, App Group, and iCloud container. The release script explicitly rejects the known provisional bundle and iCloud identifiers in the repository.
+3. Freeze the organization Team ID, macOS bundle ID, App Group, and product-auth callback scheme. The release script explicitly rejects the known provisional bundle identifier in the repository.
 4. Create a `Developer ID Application` certificate for that team and install its private key in the release keychain.
-5. Create a Developer ID provisioning profile for the final macOS bundle ID. It must authorize the production CloudKit, push, and Sign in with Apple entitlements.
+5. Create a Developer ID provisioning profile for the final macOS bundle ID. It must authorize Sign in with Apple without granting the retired CloudKit or push capabilities.
 6. Create and commit `Config/Release/FoundersOfficeMac.entitlements` after the identifiers are frozen. The release script accepts no external or untracked entitlement file. It must contain:
    - `com.apple.security.app-sandbox` set to `true`;
-   - `aps-environment` set to `production`;
    - `com.apple.developer.applesignin` set to an array containing only `Default`;
-   - `com.apple.developer.icloud-container-environment` set to `Production`;
-   - the final iCloud container in `com.apple.developer.icloud-container-identifiers`;
-   - `CloudKit` in `com.apple.developer.icloud-services`;
    - `com.apple.security.personal-information.calendars` set to `true`;
    - `com.apple.security.files.user-selected.read-only` set to `true` so a customer can explicitly choose a vision image without broad file access.
    - `com.apple.security.network.client` set to `true` for the signed update feed and production sync transport.
 
-   Debug, JIT, unsigned-memory, library-validation bypass, and temporary-exception entitlements are release blockers.
+   CloudKit, APNs, debug, JIT, unsigned-memory, library-validation bypass, and temporary-exception entitlements are release blockers.
 7. Store notarization credentials in Keychain. Do not put an Apple password, private key, issuer ID, or notary token in the repository.
 
 For an interactive local release, create the Keychain profile once:
@@ -69,7 +65,6 @@ Apple's current process is documented in [Notarizing macOS software before distr
 ```bash
 export FOUNDER_OFFICE_TEAM_ID="TEAM_ID"
 export FOUNDER_OFFICE_BUNDLE_ID="FINAL_ORGANIZATION_BUNDLE_ID"
-export FOUNDER_OFFICE_ICLOUD_CONTAINER="iCloud.FINAL_ORGANIZATION_CONTAINER"
 export FOUNDER_OFFICE_DEVELOPER_ID_APPLICATION="Developer ID Application: ORGANIZATION (TEAM_ID)"
 export FOUNDER_OFFICE_PROVISIONING_PROFILE_SPECIFIER="PRODUCTION_PROFILE_NAME"
 export FOUNDER_OFFICE_NOTARY_PROFILE="founders-office-notary"
@@ -93,11 +88,12 @@ Scripts/release-macos.sh --version X.Y.Z --build N
 The script performs an Xcode archive and Developer ID export, then:
 
 - accepts only a three-component numeric product version such as `1.2.3`;
-- checks the bundle identifier, version, build, CloudKit flag and runtime container, architectures, app icon, and the exact reviewed privacy-manifest semantics;
+- checks the bundle identifier, version, build, Supabase-only sync authority, architectures, app icon, and the exact reviewed privacy-manifest semantics;
 - rejects a developer workspace path in the app;
 - rejects customer binaries containing external Codex execution, workspace override, or preview/capture hooks;
 - verifies the timestamped Developer ID signature and hardened runtime for every required architecture;
-- verifies the tracked source entitlements and each architecture's effective production entitlements, including Sign in with Apple, Calendar, and user-selected read-only file access;
+- verifies the tracked source entitlements and each architecture's effective production entitlements, including Sign in with Apple, Calendar, user-selected read-only file access, and outbound HTTPS;
+- rejects CloudKit and APNs entitlement or runtime configuration from the customer app so a legacy migration source cannot become a competing writer;
 - submits a ZIP to Apple and requires an `Accepted` result;
 - staples and validates the ticket;
 - requires a passing Gatekeeper assessment;
@@ -128,7 +124,6 @@ Scripts/verify-macos-release.sh \
   --metadata /path/to/downloaded/release.json \
   --expected-team-id TEAM_ID \
   --expected-bundle-id FINAL_ORGANIZATION_BUNDLE_ID \
-  --expected-icloud-container iCloud.FINAL_ORGANIZATION_CONTAINER \
   --expected-update-feed-url https://DOWNLOAD_ORIGIN/channel/macos-beta-v1.json \
   --expected-update-channel beta \
   --expected-update-public-key REVIEWED_ED25519_PUBLIC_KEY \
@@ -153,7 +148,7 @@ Set `FOUNDER_OFFICE_APPROVED_DOWNLOAD_ORIGIN` to that same bare HTTPS origin in 
 
 After the public artifact and evidence pass this verification, create the signed staged feed with `FounderOfficeUpdateSigner` and the process in [Signed Mac update channel](MAC_SIGNED_UPDATE_CHANNEL.md). Publishing an unsigned, hand-edited, redirected, or cross-origin feed does not open a download in the app.
 
-Publish the final Team ID, bundle ID, iCloud container, and supported architectures on the release page. Pass them to the verifier independently; do not trust identity values read only from the downloaded metadata.
+Publish the final Team ID, bundle ID, Supabase sync authority, and supported architectures on the release page. Pass the identity values to the verifier independently; do not trust values read only from the downloaded metadata.
 
 ## Clean-Mac acceptance
 

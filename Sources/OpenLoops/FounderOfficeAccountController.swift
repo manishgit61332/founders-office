@@ -65,6 +65,7 @@ final class FounderOfficeAccountController: ObservableObject, AccountSyncStatusS
     @Published private(set) var operationMessage: String?
     @Published private(set) var isSavingReviewedName = false
     @Published private(set) var syncStatus: WorkspaceSyncStatus = .localOnly
+    @Published private(set) var cloudStateFailureMessage: String?
 
     private let service: (any ProductAuthServing)?
     private let cloudSync: (any FounderOfficeCloudSyncServing)?
@@ -86,6 +87,7 @@ final class FounderOfficeAccountController: ObservableObject, AccountSyncStatusS
     private var pendingReviewedDisplayName: ReviewedDisplayName?
     private var claimContextAtSignIn: FounderOfficeLocalAccountContext?
     private var runtimeBoundAccountID: UUID?
+    private var cloudStateVerified: Bool
 
     init(
         availability: FounderOfficeAccountAvailability,
@@ -104,6 +106,7 @@ final class FounderOfficeAccountController: ObservableObject, AccountSyncStatusS
         self.localContext = localContext
         self.workspaceName = workspaceName
         self.applyReviewedDisplayName = applyReviewedDisplayName
+        self.cloudStateVerified = cloudSync == nil
         self.interactions = interactions ?? FounderOfficeAccountInteractionHooks(
             begin: { _, _ in UUID() },
             end: { _ in }
@@ -238,6 +241,7 @@ final class FounderOfficeAccountController: ObservableObject, AccountSyncStatusS
         case let .signingIn(provider):
             return "Opening \(provider.title)"
         case let .signedIn(session):
+            if cloudStateFailureMessage != nil { return "Device sync needs attention" }
             if setupStage != .none { return "Finish account setup" }
             if selectedWorkspaceChoice == .keepLocalOnly {
                 return "Signed in · sync off"
@@ -261,6 +265,7 @@ final class FounderOfficeAccountController: ObservableObject, AccountSyncStatusS
         case .signingIn:
             return "Your local workspace will not be uploaded or replaced."
         case .signedIn:
+            if let cloudStateFailureMessage { return cloudStateFailureMessage }
             if setupStage == .reviewDisplayName {
                 return "Review your name before it is saved to the account."
             }
@@ -297,6 +302,13 @@ final class FounderOfficeAccountController: ObservableObject, AccountSyncStatusS
                 component: .sync,
                 condition: .off,
                 detail: "Stored on this Mac"
+            )
+        }
+        if cloudStateFailureMessage != nil {
+            return HealthComponentStatus(
+                component: .sync,
+                condition: .attention,
+                detail: "Device sync state is unavailable"
             )
         }
         switch authState {
@@ -369,10 +381,24 @@ final class FounderOfficeAccountController: ObservableObject, AccountSyncStatusS
             }
         }
         restoreTask = Task { [weak self, service, cloudSync] in
-            if let cloudSync,
-               let binding = try? await cloudSync.currentBinding() {
-                self?.runtimeBoundAccountID = binding.accountID.rawValue
-                self?.syncStatus = (try? await cloudSync.currentStatus()) ?? .localOnly
+            if let cloudSync {
+                do {
+                    let binding = try await cloudSync.currentBinding()
+                    guard !Task.isCancelled, let self else { return }
+                    runtimeBoundAccountID = binding?.accountID.rawValue
+                    syncStatus = (try? await cloudSync.currentStatus()) ?? .localOnly
+                    cloudStateVerified = true
+                    cloudStateFailureMessage = nil
+                } catch {
+                    guard !Task.isCancelled, let self else { return }
+                    // Never treat an unreadable durable binding as "unbound".
+                    // That could offer a claim/attach action which assigns local
+                    // data to the wrong account. Local use remains available.
+                    runtimeBoundAccountID = nil
+                    syncStatus = .localOnly
+                    cloudStateVerified = false
+                    cloudStateFailureMessage = "Device sync state couldn’t be verified. Your workspace remains on this Mac."
+                }
             }
             await service.restoreSession()
             guard !Task.isCancelled else { return }
@@ -567,7 +593,8 @@ final class FounderOfficeAccountController: ObservableObject, AccountSyncStatusS
 
     func isWorkspaceChoiceEnabled(_ choice: LocalWorkspaceAccountChoice) -> Bool {
         guard choice != .keepLocalOnly else { return true }
-        guard cloudSync != nil,
+        guard cloudStateVerified,
+              cloudSync != nil,
               let context = claimContextAtSignIn else { return false }
         switch choice {
         case .keepLocalOnly:
@@ -660,7 +687,7 @@ final class FounderOfficeAccountController: ObservableObject, AccountSyncStatusS
             claimContextAtSignIn = context
             selectedWorkspaceChoice = nil
             workspacePlan = nil
-            operationMessage = nil
+            operationMessage = cloudStateFailureMessage
             displayNameError = nil
             if let reviewed = session.reviewedDisplayName {
                 reviewedAccountID = session.accountID
@@ -687,6 +714,13 @@ final class FounderOfficeAccountController: ObservableObject, AccountSyncStatusS
     }
 
     private func applyWorkspacePlan(for accountID: UUID) {
+        guard cloudStateVerified else {
+            workspacePlan = .requiresCustomerChoice([.keepLocalOnly])
+            setupStage = .chooseWorkspace
+            operationMessage = cloudStateFailureMessage
+            ensureSetupInteraction()
+            return
+        }
         let context = claimContextAtSignIn ?? localContext()
         let plan = WorkspaceClaimPlanner.plan(
             for: WorkspaceClaimContext(
@@ -740,7 +774,10 @@ final class FounderOfficeAccountController: ObservableObject, AccountSyncStatusS
     }
 
     private func resumeCloudSync(for session: ProductAccountSession?) {
-        guard let cloudSync, let session, operationTask == nil else {
+        guard cloudStateVerified,
+              let cloudSync,
+              let session,
+              operationTask == nil else {
             operationMessage = "Device sync is unavailable. Local data was not changed."
             return
         }

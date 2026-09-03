@@ -892,7 +892,7 @@ final class FoundersOfficeAppDelegate: NSObject, NSApplicationDelegate {
         let alert = NSAlert()
         alert.messageText = "Your workspace needs recovery"
         alert.informativeText = "Founder’s Office found missing or unreadable \(components). "
-            + "\(preservation) Setup stopped before iCloud sync, and no replacement workspace was written. "
+            + "\(preservation) Setup stopped before device sync, and no replacement workspace was written. "
             + "Reveal the data folder to inspect the workspace and any Recovery copies."
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Reveal Data Folder")

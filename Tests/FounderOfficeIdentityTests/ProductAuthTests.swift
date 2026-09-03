@@ -18,7 +18,14 @@ struct ProductAuthTests {
                 ProductAuthConfiguration.endpointInfoKey: "$(FOUNDER_OFFICE_SUPABASE_URL)",
                 ProductAuthConfiguration.publishableKeyInfoKey: "$(FOUNDER_OFFICE_SUPABASE_PUBLISHABLE_KEY)",
                 ProductAuthConfiguration.callbackURLInfoKey: "$(FOUNDER_OFFICE_AUTH_CALLBACK_SCHEME)://auth/callback"
-            ]) == .failure(.malformedConfiguration)
+            ]) == .failure(.missingConfiguration)
+        )
+        #expect(
+            ProductAuthConfiguration.load(infoDictionary: [
+                ProductAuthConfiguration.endpointInfoKey: " ",
+                ProductAuthConfiguration.publishableKeyInfoKey: "",
+                ProductAuthConfiguration.callbackURLInfoKey: "\n"
+            ]) == .failure(.missingConfiguration)
         )
     }
 

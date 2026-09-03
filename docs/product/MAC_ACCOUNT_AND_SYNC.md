@@ -51,6 +51,12 @@ uploads, replaces, or claims local data implicitly. Signing out stops the
 coordinator but preserves the local binding, pending outbox, and canonical data
 so the same account can resume safely.
 
+If the durable binding cannot be read, the controller does not reinterpret the
+workspace as unbound. It leaves the workspace local, disables claim, attach, and
+resume, and reports that device sync needs attention. This prevents damaged
+local sync metadata from assigning existing data to an arbitrary signed-in
+account.
+
 Native authentication owns a transient-presentation token, suspends the notch,
 and restores it after the final provider outcome. In-notch review choices hold
 a non-suspending token so pointer exit cannot dismiss an unfinished decision.
@@ -64,6 +70,10 @@ The direct-release script requires an exact credential-free Supabase HTTPS
 origin, a publishable/anonymous public key, and the reviewed production callback
 scheme. It refuses service-role material and verifies all three values in the
 exported app. OAuth client secrets remain only in Supabase provider settings.
+The Mac customer target has no CloudKit or APNs capability and does not link the
+legacy CloudKit module. A customer with remote-only legacy CloudKit data needs a
+separate, explicit migration build or utility that verifies the source before
+Supabase becomes authoritative; the normal customer app never runs both writers.
 
 The customer runtime is wired, but public beta still requires the production
 Supabase project to have the reviewed migrations and RLS/RPC tests, exact Google

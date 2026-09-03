@@ -29,3 +29,4 @@ Each ADR records status, date, context, decision, consequences, privacy/security
 - [0024 — Executable UI and database CI gates](0024-executable-ui-and-database-ci-gates.md)
 - [0025 — Bounded derived-state repair and workspace-blind safe mode](0025-bounded-derived-state-repair-and-workspace-blind-safe-mode.md)
 - [0026 — Configuration-gated customer cloud-sync runtime](0026-configured-customer-cloud-sync-runtime.md)
+- [0027 — Mac customer builds use Supabase as the sole cloud authority](0027-mac-supabase-only-customer-authority.md)
