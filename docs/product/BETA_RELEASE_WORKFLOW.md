@@ -12,6 +12,20 @@ Founder’s Office has one visible app per audience. Old artifacts remain immuta
 
 The Development bundle must never be shared. It is ad-hoc signed, embeds the local repository path, and may include development-only capabilities. Beta and Stable are customer Release builds.
 
+### Source-built Development preview
+
+Before the first signed Beta exists, a technical tester may clone an explicitly
+approved commit and run `Scripts/install-source-preview.sh`. The tester builds
+and ad-hoc signs the Development app on their own Mac; nobody distributes the
+resulting `.app` bundle. This is not a fourth release channel and must not be
+called a Beta, uploaded to the website, or used as signed-distribution evidence.
+
+The preview is tied to its checkout and has no automatic updater. After
+reviewing the source change, the tester runs `git pull --ff-only` and reruns the
+installer. The script refuses a dirty checkout, validates the repository privacy
+boundary, verifies the resulting ad-hoc signature and Development metadata, and
+never changes Gatekeeper settings.
+
 ## Version rule
 
 - The customer-visible version uses `major.minor.patch`.

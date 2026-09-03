@@ -30,6 +30,33 @@ assert_refused() {
     }
 }
 
+source_preview_help="$("$script_dir/install-source-preview.sh" --help)"
+[[ "$source_preview_help" == *"not a signed or notarized Beta"* ]] || {
+    print -u2 "Source-preview help must clearly state its distribution boundary."
+    exit 1
+}
+assert_refused \
+    "Unknown option" \
+    "$script_dir/install-source-preview.sh" --make-it-a-beta
+assert_refused \
+    "full 40-character Git commit SHA" \
+    "$script_dir/install-source-preview.sh" --expected-commit main
+assert_refused \
+    "absolute directory below the filesystem root" \
+    "$script_dir/install-source-preview.sh" --install-root /
+assert_refused \
+    "Unknown option" \
+    "$script_dir/build-app.sh" --make-it-a-beta
+assert_refused \
+    "absolute directory below the filesystem root" \
+    env FOUNDER_OFFICE_INSTALL_ROOT=/ "$script_dir/build-app.sh" --install
+
+if grep -Eiq 'xattr[[:space:]].*-d[[:space:]]+com\.apple\.quarantine|spctl[[:space:]].*(--master-disable|--add)' \
+    "$script_dir/install-source-preview.sh"; then
+    print -u2 "Source preview must not contain a Gatekeeper bypass."
+    exit 1
+fi
+
 assert_refused \
     "exactly three numeric components" \
     "$script_dir/release-macos.sh" --version 1.2.3-beta.1 --build 1

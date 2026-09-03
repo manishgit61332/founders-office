@@ -21,7 +21,12 @@ bash -n \
     Scripts/ci-checks.sh \
     Scripts/verify-customer-binary-policy.sh \
     Scripts/verify-macos-ci-release.sh
-zsh -n Scripts/build-app.sh Scripts/release-macos.sh Scripts/verify-macos-release.sh Scripts/test-release-safety.sh
+zsh -n \
+    Scripts/build-app.sh \
+    Scripts/install-source-preview.sh \
+    Scripts/release-macos.sh \
+    Scripts/verify-macos-release.sh \
+    Scripts/test-release-safety.sh
 Scripts/test-release-safety.sh
 Scripts/verify-privacy-manifest.py Apps/macOS/PrivacyInfo.xcprivacy
 swift test --enable-code-coverage --skip WorkspaceRepositoryPerformanceTests
