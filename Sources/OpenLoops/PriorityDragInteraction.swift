@@ -131,6 +131,10 @@ final class PriorityDragAutoScroller: ObservableObject {
     private(set) var pointerY: CGFloat?
     private(set) var draggedMoveID: UUID?
     var isAutoScrolling: Bool { timer != nil }
+    var releaseGestureHost: NSView? { viewportPanRecognizer?.view }
+    var releaseGestureRecognizerIdentity: ObjectIdentifier? {
+        viewportPanRecognizer.map(ObjectIdentifier.init)
+    }
 
     init(
         policy: DragEdgeScrollPolicy = DragEdgeScrollPolicy(),
@@ -162,9 +166,11 @@ final class PriorityDragAutoScroller: ObservableObject {
            self.scrollView?.window != nil {
             return
         }
-        guard self.scrollView !== scrollView else { return }
+        if self.scrollView === scrollView {
+            attachViewportPanRecognizer(to: scrollView)
+            return
+        }
         let existingPointerY = pointerY
-        detachViewportPanRecognizer()
         stop()
         self.scrollView = scrollView
         attachViewportPanRecognizer(to: scrollView)
@@ -395,25 +401,35 @@ final class PriorityDragAutoScroller: ObservableObject {
     }
 
     private func attachViewportPanRecognizer(to scrollView: NSScrollView?) {
-        guard let scrollView else { return }
-        let observer = PriorityViewportPanObserver { [weak self, weak scrollView] recognizer in
-            guard let self, let scrollView, let window = scrollView.window else { return }
-            let pointInScrollView = recognizer.location(in: scrollView)
-            let pointInWindow = scrollView.convert(pointInScrollView, to: nil)
+        guard let scrollView else {
+            detachViewportPanRecognizer()
+            return
+        }
+        let hostView = scrollView.window?.contentView ?? scrollView
+        guard viewportPanRecognizer?.view !== hostView else { return }
+
+        detachViewportPanRecognizer()
+        let observer = PriorityViewportPanObserver { [weak self] recognizer in
+            guard let self,
+                  let hostView = recognizer.view,
+                  let window = hostView.window
+            else { return }
+            let pointInHost = recognizer.location(in: hostView)
+            let pointInWindow = hostView.convert(pointInHost, to: nil)
             guard window === self.scrollView?.window else { return }
             self.handleViewportPan(
                 state: recognizer.state,
                 pointerInWindow: pointInWindow
             )
         }
-        let recognizer = NSPanGestureRecognizer(
+        let recognizer = PriorityReleasePanGestureRecognizer(
             target: observer,
             action: #selector(PriorityViewportPanObserver.handle(_:))
         )
         recognizer.buttonMask = 0x1
         recognizer.delaysPrimaryMouseButtonEvents = false
         recognizer.delegate = observer
-        scrollView.addGestureRecognizer(recognizer)
+        hostView.addGestureRecognizer(recognizer)
         viewportPanObserver = observer
         viewportPanRecognizer = recognizer
     }
@@ -508,6 +524,16 @@ private final class PriorityViewportPanObserver: NSObject, NSGestureRecognizerDe
         shouldRecognizeSimultaneouslyWith otherGestureRecognizer: NSGestureRecognizer
     ) -> Bool {
         true
+    }
+}
+
+private final class PriorityReleasePanGestureRecognizer: NSPanGestureRecognizer {
+    override func canPrevent(_ preventedGestureRecognizer: NSGestureRecognizer) -> Bool {
+        false
+    }
+
+    override func canBePrevented(by preventingGestureRecognizer: NSGestureRecognizer) -> Bool {
+        false
     }
 }
 

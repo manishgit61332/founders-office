@@ -403,6 +403,61 @@ struct PriorityDragAutoScrollerTests {
     }
 
     @Test
+    func firstDragReleaseRecognizerSurvivesScrollHostReplacement() {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 300, height: 180),
+            styleMask: .borderless,
+            backing: .buffered,
+            defer: false
+        )
+        let windowRoot = NSView(frame: window.contentView!.bounds)
+        window.contentView = windowRoot
+
+        let firstScrollView = NSScrollView(frame: windowRoot.bounds)
+        firstScrollView.documentView = FlippedDocumentView(
+            frame: NSRect(x: 0, y: 0, width: 300, height: 1_200)
+        )
+        windowRoot.addSubview(firstScrollView)
+
+        let replacementScrollView = NSScrollView(frame: windowRoot.bounds)
+        replacementScrollView.documentView = FlippedDocumentView(
+            frame: NSRect(x: 0, y: 0, width: 300, height: 1_200)
+        )
+        windowRoot.addSubview(replacementScrollView)
+
+        let scroller = PriorityDragAutoScroller(releaseGraceInterval: 0)
+        let moveID = UUID()
+        var releasedID: UUID?
+        var completionCount = 0
+        scroller.attach(firstScrollView)
+        let recognizerIdentity = scroller.releaseGestureRecognizerIdentity
+        #expect(scroller.releaseGestureHost === windowRoot)
+
+        scroller.beginSession(
+            moveID: moveID,
+            onRelease: { id, _ in releasedID = id },
+            onEnd: { completionCount += 1 }
+        )
+        scroller.update(pointerY: 179)
+
+        // SwiftUI may replace the scroll host while realizing lazy lanes. The
+        // first drag's release recognizer must remain installed on the stable
+        // window root rather than being recreated mid-gesture.
+        scroller.attach(replacementScrollView)
+
+        #expect(scroller.releaseGestureHost === windowRoot)
+        #expect(scroller.releaseGestureRecognizerIdentity == recognizerIdentity)
+        scroller.handleViewportPan(
+            state: .ended,
+            pointerInWindow: NSPoint(x: 150, y: 2)
+        )
+
+        #expect(releasedID == moveID)
+        #expect(completionCount == 1)
+        #expect(scroller.draggedMoveID == nil)
+    }
+
+    @Test
     func locationlessMouseUpUsesTheLastValidatedGestureCoordinate() {
         let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 300, height: 180))
         scrollView.documentView = FlippedDocumentView(
