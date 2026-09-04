@@ -2,6 +2,7 @@ import AppKit
 import Foundation
 import FounderOfficeCore
 
+#if !FOUNDER_OFFICE_DISTRIBUTION
 enum CodexTaskAction {
     case execute
     case prepare
@@ -33,6 +34,7 @@ enum CodexRunState {
 @MainActor
 final class CodexRunner: ObservableObject {
     @Published private(set) var state: CodexRunState = .idle
+    @Published private(set) var lastSuccessfulRunAt: Date?
 
     let founderOfficeURL: URL
     private var process: Process?
@@ -44,6 +46,10 @@ final class CodexRunner: ObservableObject {
     var isRunning: Bool {
         if case .running = state { return true }
         return false
+    }
+
+    var isAvailable: Bool {
+        true
     }
 
     func action(for item: OpenLoop) -> CodexTaskAction {
@@ -62,7 +68,6 @@ final class CodexRunner: ObservableObject {
         let timestamp = Self.folderDateFormatter.string(from: Date())
         let runName = "\(item.id.uuidString.lowercased().prefix(8))-\(timestamp)"
         let runURL = founderOfficeURL
-            .appendingPathComponent("OpenLoops", isDirectory: true)
             .appendingPathComponent("Codex Runs", isDirectory: true)
             .appendingPathComponent(runName, isDirectory: true)
         let summaryURL = runURL.appendingPathComponent("summary.md")
@@ -107,6 +112,7 @@ final class CodexRunner: ObservableObject {
 
                     if completedProcess.terminationStatus == 0,
                        FileManager.default.fileExists(atPath: summaryURL.path) {
+                        self.lastSuccessfulRunAt = Date()
                         self.state = .finished(title: item.title, summaryURL: summaryURL)
                         NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
                     } else {
@@ -127,6 +133,12 @@ final class CodexRunner: ObservableObject {
         }
     }
 
+    func prepareForTermination() {
+        guard let process, process.isRunning else { return }
+        process.terminate()
+        self.process = nil
+    }
+
     private func prompt(for item: OpenLoop, action: CodexTaskAction, runURL: URL) -> String {
         """
         Work on this Founder's Office move:
@@ -139,13 +151,13 @@ final class CodexRunner: ObservableObject {
         \(action.instruction)
 
         Rules:
-        - Read AGENTS.md and OpenLoops/OPEN_LOOPS_CONTEXT.md before acting.
+        - Read AGENTS.md and OPEN_LOOPS_CONTEXT.md before acting when those files exist.
         - Take concrete action in the Founder Office workspace; do not only propose a plan.
         - Save the durable result inside this run folder: \(runURL.path)
         - You may read existing workspace material and create or update task-specific deliverables.
         - Do not send messages, publish content, schedule calls, make purchases, use private credentials, or make other irreversible external changes.
         - Do not delete existing files.
-        - Do not edit OpenLoops/openloops.json or OpenLoops/OPEN_LOOPS_CONTEXT.md and do not mark the task done. The user will review the result first.
+        - Do not edit founders-office.sqlite3, generated workspace projections, or mark the task done. The user will review the result first.
         - Finish with a concise summary of what you completed and the exact files to review.
         """
     }
@@ -175,3 +187,4 @@ final class CodexRunner: ObservableObject {
         return formatter
     }()
 }
+#endif

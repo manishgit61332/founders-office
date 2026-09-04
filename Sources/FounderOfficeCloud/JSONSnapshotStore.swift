@@ -5,6 +5,10 @@ public extension Notification.Name {
     static let founderOfficeSnapshotDidChange = Notification.Name("FounderOfficeSnapshotDidChange")
 }
 
+public enum JSONSnapshotStoreError: Error {
+    case invalidAssetFileName
+}
+
 /// A cross-platform, offline-first store used by both app targets. On the Mac,
 /// these files remain the Codex-facing mirror; on iPhone they live inside the
 /// app's Application Support directory.
@@ -61,7 +65,7 @@ public actor JSONSnapshotStore {
     }
 
     public func photoURL(named fileName: String?) -> URL? {
-        guard let fileName, !fileName.isEmpty else { return nil }
+        guard let fileName = fileName.flatMap(AssetFileName.validated) else { return nil }
         let url = rootURL
             .appendingPathComponent("Personalization", isDirectory: true)
             .appendingPathComponent(fileName)
@@ -69,6 +73,9 @@ public actor JSONSnapshotStore {
     }
 
     public func importPhoto(from sourceURL: URL, named fileName: String) throws {
+        guard let fileName = AssetFileName.validated(fileName) else {
+            throw JSONSnapshotStoreError.invalidAssetFileName
+        }
         let directory = rootURL.appendingPathComponent("Personalization", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let destination = directory.appendingPathComponent(fileName)
@@ -78,9 +85,13 @@ public actor JSONSnapshotStore {
 
     private func readOpenLoops() throws -> OpenLoopsDocument {
         guard FileManager.default.fileExists(atPath: openLoopsURL.path) else {
-            return OpenLoopsDocument(schemaVersion: 2, updatedAt: Date(), items: [])
+            return OpenLoopsDocument(schemaVersion: 3, updatedAt: Date(), items: [])
         }
-        return try decoder.decode(OpenLoopsDocument.self, from: Data(contentsOf: openLoopsURL))
+        let document = try decoder.decode(
+            OpenLoopsDocument.self,
+            from: Data(contentsOf: openLoopsURL)
+        )
+        return OpenLoopsMigration.upgradingPlanningSchema(document)
     }
 
     private func readPersonalization() throws -> PersonalizationDocument {
@@ -103,13 +114,22 @@ public actor JSONSnapshotStore {
     }
 
     private func writeContext(for document: OpenLoopsDocument) throws {
+        let markdown = Self.contextMarkdown(for: document, calendar: .current)
+        try markdown.write(to: contextURL, atomically: true, encoding: .utf8)
+    }
+
+    static func contextMarkdown(
+        for document: OpenLoopsDocument,
+        calendar: Calendar
+    ) -> String {
         let timestamp = DateFormatter()
         timestamp.locale = Locale(identifier: "en_GB")
-        timestamp.timeZone = .current
+        timestamp.timeZone = calendar.timeZone
         timestamp.dateFormat = "d MMMM yyyy, HH:mm zzz"
 
         let dueDate = DateFormatter()
         dueDate.locale = Locale(identifier: "en_GB")
+        dueDate.timeZone = calendar.timeZone
         dueDate.dateFormat = "d MMM yyyy"
 
         var markdown = "# Founder's Office Moves\n\n"
@@ -130,7 +150,11 @@ public actor JSONSnapshotStore {
             for item in items {
                 markdown += "- [\(status == .done ? "x" : " ")] **\(item.priority.rawValue)** — \(item.title)"
                 if let dueAt = item.dueAt {
-                    markdown += " · Due \(dueDate.string(from: dueAt))"
+                    let displayDate = PlanningDate.localDate(
+                        fromStored: dueAt,
+                        calendar: calendar
+                    )
+                    markdown += " · Due \(dueDate.string(from: displayDate))"
                 }
                 markdown += "\n"
                 if !item.details.isEmpty { markdown += "  - \(item.details)\n" }
@@ -139,6 +163,6 @@ public actor JSONSnapshotStore {
             markdown += "\n"
         }
 
-        try markdown.write(to: contextURL, atomically: true, encoding: .utf8)
+        return markdown
     }
 }

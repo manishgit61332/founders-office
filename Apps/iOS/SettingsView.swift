@@ -12,6 +12,7 @@ struct SettingsView: View {
     @State private var workspaceNameDraft = ""
 
     private var appearance: AppearancePreferences { model.personalization.resolvedAppearance }
+    private var isRecoveryRequired: Bool { model.recoveryMessage != nil }
 
     private var accentMode: Binding<AccentMode> {
         Binding(
@@ -157,10 +158,32 @@ struct SettingsView: View {
 
             Section("Cloud") {
                 LabeledContent("Private iCloud", value: cloudAccount.state.title)
-                LabeledContent("Workspace", value: model.cloudStatus.title)
+                LabeledContent(
+                    "Workspace",
+                    value: isRecoveryRequired ? "Recovery required" : model.cloudStatus.title
+                )
+
+                if isRecoveryRequired {
+                    Label(
+                        "Sync is paused until workspace recovery is complete.",
+                        systemImage: "pause.circle.fill"
+                    )
+                    .foregroundStyle(.orange)
+                    .accessibilityLabel(
+                        "iCloud sync is paused until workspace recovery is complete."
+                    )
+                }
+
                 Button("Sync now") {
                     model.syncCloudNow()
                 }
+                .disabled(isRecoveryRequired)
+                .accessibilityHint(
+                    isRecoveryRequired
+                        ? "Unavailable while workspace recovery is required."
+                        : "Syncs this workspace with iCloud."
+                )
+
                 Button("Check iCloud again") {
                     cloudAccount.refresh()
                 }
@@ -169,9 +192,12 @@ struct SettingsView: View {
                     Button("Keep this workspace and sync") {
                         model.resumeCloudAfterAccountReview(uploadLocalWorkspace: true)
                     }
+                    .disabled(isRecoveryRequired)
+
                     Button("Use the workspace from iCloud") {
                         model.resumeCloudAfterAccountReview(uploadLocalWorkspace: false)
                     }
+                    .disabled(isRecoveryRequired)
                 }
             }
         }
@@ -201,8 +227,9 @@ private struct PrimaryGoalEditor: View {
 
     @State private var title: String
     @State private var metric: String
-    @State private var currentValue: Double
-    @State private var targetValue: Double
+    @State private var currentValue: String
+    @State private var targetValue: String
+    @State private var validationMessage: String?
     @State private var unit: GoalValueUnit
     @State private var dueAt: Date
 
@@ -213,8 +240,8 @@ private struct PrimaryGoalEditor: View {
         createdAt = goal?.createdAt ?? .now
         _title = State(initialValue: goal?.title ?? "")
         _metric = State(initialValue: goal?.metric ?? "")
-        _currentValue = State(initialValue: goal?.currentValue ?? 0)
-        _targetValue = State(initialValue: goal?.targetValue ?? 0)
+        _currentValue = State(initialValue: goal?.currentValue?.canonicalString ?? "0")
+        _targetValue = State(initialValue: goal?.targetValue?.canonicalString ?? "")
         _unit = State(initialValue: goal?.unit ?? .usd)
         _dueAt = State(
             initialValue: goal?.dueAt
@@ -225,7 +252,7 @@ private struct PrimaryGoalEditor: View {
 
     private var canSave: Bool {
         !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && targetValue > 0
+            && !targetValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var body: some View {
@@ -242,10 +269,14 @@ private struct PrimaryGoalEditor: View {
                         Text(unit.title).tag(unit)
                     }
                 }
-                TextField("Current", value: $currentValue, format: .number)
+                TextField("Current", text: $currentValue)
                     .keyboardType(.decimalPad)
-                TextField("Target", value: $targetValue, format: .number)
+                TextField("Target", text: $targetValue)
                     .keyboardType(.decimalPad)
+                if let validationMessage {
+                    Text(validationMessage)
+                        .foregroundStyle(.red)
+                }
             }
 
             if model.activePrimaryGoal != nil {
@@ -263,13 +294,38 @@ private struct PrimaryGoalEditor: View {
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
                 Button {
+                    let parsedCurrent: GoalDecimal
+                    let parsedTarget: GoalDecimal
+                    do {
+                        parsedCurrent = try GoalDecimal(userInput: currentValue)
+                        parsedTarget = try GoalDecimal(userInput: targetValue)
+                        guard parsedTarget > .zero else {
+                            validationMessage = "Target must be greater than zero."
+                            return
+                        }
+                    } catch let error as GoalDecimal.ValidationError {
+                        switch error {
+                        case .tooManyFractionDigits:
+                            validationMessage = "Use no more than 8 decimal places."
+                        case .outOfRange:
+                            validationMessage = "That number is too large."
+                        case .negative:
+                            validationMessage = "Goal values cannot be negative."
+                        default:
+                            validationMessage = "Enter a valid number."
+                        }
+                        return
+                    } catch {
+                        validationMessage = "Enter a valid number."
+                        return
+                    }
                     model.setPrimaryGoal(
                         PrimaryGoal(
                             id: existingID,
                             title: title.trimmingCharacters(in: .whitespacesAndNewlines),
                             metric: metric.trimmingCharacters(in: .whitespacesAndNewlines),
-                            currentValue: currentValue,
-                            targetValue: targetValue,
+                            currentValue: parsedCurrent,
+                            targetValue: parsedTarget,
                             unit: unit,
                             dueAt: dueAt,
                             createdAt: createdAt,
@@ -280,7 +336,7 @@ private struct PrimaryGoalEditor: View {
                 } label: {
                     Image(systemName: "checkmark")
                 }
-                .buttonStyle(.borderedProminent)
+                .founderProminentButton(appearance)
                 .disabled(!canSave)
             }
         }

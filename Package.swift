@@ -11,8 +11,20 @@ let package = Package(
     products: [
         .library(name: "FounderOfficeCore", targets: ["FounderOfficeCore"]),
         .library(name: "FounderOfficeCloud", targets: ["FounderOfficeCloud"]),
+        .library(name: "FounderOfficeIdentity", targets: ["FounderOfficeIdentity"]),
         .executable(name: "FounderOfficeCoreChecks", targets: ["FounderOfficeCoreChecks"]),
+        .executable(name: "FounderOfficeUpdateSigner", targets: ["FounderOfficeUpdateSigner"]),
         .executable(name: "OpenLoops", targets: ["OpenLoops"])
+    ],
+    dependencies: [
+        .package(
+            url: "https://github.com/supabase/supabase-swift.git",
+            exact: "2.54.1"
+        ),
+        .package(
+            url: "https://github.com/swiftlang/swift-testing.git",
+            exact: "0.10.0"
+        )
     ],
     targets: [
         .target(
@@ -24,15 +36,63 @@ let package = Package(
             dependencies: ["FounderOfficeCore"],
             path: "Sources/FounderOfficeCloud"
         ),
+        .target(
+            name: "FounderOfficeIdentity",
+            dependencies: [
+                "FounderOfficeCore",
+                .product(name: "Supabase", package: "supabase-swift")
+            ],
+            path: "Sources/FounderOfficeIdentity"
+        ),
         .executableTarget(
             name: "OpenLoops",
-            dependencies: ["FounderOfficeCore", "FounderOfficeCloud"],
+            dependencies: ["FounderOfficeCore", "FounderOfficeIdentity"],
             path: "Sources/OpenLoops"
         ),
         .executableTarget(
             name: "FounderOfficeCoreChecks",
             dependencies: ["FounderOfficeCore", "FounderOfficeCloud"],
             path: "Checks/FounderOfficeCoreChecks"
+        ),
+        .executableTarget(
+            name: "FounderOfficeUpdateSigner",
+            dependencies: ["FounderOfficeCore"],
+            path: "Tools/FounderOfficeUpdateSigner"
+        ),
+        .testTarget(
+            name: "FounderOfficeCoreTests",
+            dependencies: [
+                "FounderOfficeCore",
+                .product(name: "Testing", package: "swift-testing")
+            ],
+            path: "Tests/FounderOfficeCoreTests"
+        ),
+        .testTarget(
+            name: "FounderOfficeCloudTests",
+            dependencies: [
+                "FounderOfficeCloud",
+                .product(name: "Testing", package: "swift-testing")
+            ],
+            path: "Tests/FounderOfficeCloudTests"
+        ),
+        .testTarget(
+            name: "OpenLoopsStorageTests",
+            dependencies: [
+                "OpenLoops",
+                "FounderOfficeCore",
+                .product(name: "Testing", package: "swift-testing")
+            ],
+            path: "Tests/OpenLoopsStorageTests"
+        ),
+        .testTarget(
+            name: "FounderOfficeIdentityTests",
+            dependencies: [
+                "FounderOfficeIdentity",
+                "FounderOfficeCore",
+                .product(name: "Supabase", package: "supabase-swift"),
+                .product(name: "Testing", package: "swift-testing")
+            ],
+            path: "Tests/FounderOfficeIdentityTests"
         )
     ]
 )

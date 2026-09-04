@@ -1,0 +1,539 @@
+import AppKit
+import FounderOfficeCore
+import Testing
+@testable import OpenLoops
+
+struct PriorityDragInteractionTests {
+    @Test
+    func edgeScrollIsIdleInTheCenterAndAtTheThreshold() {
+        let policy = DragEdgeScrollPolicy(
+            edgeExtent: 50,
+            minimumSpeed: 100,
+            maximumSpeed: 600
+        )
+
+        #expect(policy.velocity(pointerY: 50, viewportHeight: 300) == 0)
+        #expect(policy.velocity(pointerY: 150, viewportHeight: 300) == 0)
+        #expect(policy.velocity(pointerY: 250, viewportHeight: 300) == 0)
+    }
+
+    @Test
+    func edgeScrollAcceleratesSmoothlyTowardEitherEdgeAndCapsOutside() {
+        let policy = DragEdgeScrollPolicy(
+            edgeExtent: 50,
+            minimumSpeed: 100,
+            maximumSpeed: 600
+        )
+
+        let nearTop = policy.velocity(pointerY: 45, viewportHeight: 300)
+        let deepTop = policy.velocity(pointerY: 10, viewportHeight: 300)
+        let nearBottom = policy.velocity(pointerY: 255, viewportHeight: 300)
+        let deepBottom = policy.velocity(pointerY: 290, viewportHeight: 300)
+
+        #expect(nearTop < 0)
+        #expect(deepTop < nearTop)
+        #expect(nearBottom > 0)
+        #expect(deepBottom > nearBottom)
+        #expect(policy.velocity(pointerY: -80, viewportHeight: 300) == -600)
+        #expect(policy.velocity(pointerY: 380, viewportHeight: 300) == 600)
+    }
+
+    @Test
+    func edgeScrollHandlesShortAndInvalidViewportsWithoutUndefinedValues() {
+        let policy = DragEdgeScrollPolicy()
+
+        #expect(policy.velocity(pointerY: 5, viewportHeight: 20).isFinite)
+        #expect(policy.velocity(pointerY: 15, viewportHeight: 20).isFinite)
+        #expect(policy.velocity(pointerY: 0, viewportHeight: 0) == 0)
+    }
+
+    @Test
+    func directLaneContainmentWinsAndInputOrderDoesNotMatter() {
+        let lanes = [
+            PriorityDropLane(priority: .p2, minY: 220, maxY: 300),
+            PriorityDropLane(priority: .p0, minY: 10, maxY: 90),
+            PriorityDropLane(priority: .p1, minY: 110, maxY: 200)
+        ]
+
+        #expect(PriorityDropTargetPolicy.target(pointerY: 60, lanes: lanes, current: nil) == .p0)
+        #expect(PriorityDropTargetPolicy.target(pointerY: 150, lanes: lanes, current: .p0) == .p1)
+        #expect(PriorityDropTargetPolicy.target(pointerY: 260, lanes: lanes, current: .p1) == .p2)
+    }
+
+    @Test
+    func gutterRetainsTheCurrentMagneticTargetWithinHysteresis() {
+        let lanes = [
+            PriorityDropLane(priority: .p0, minY: 10, maxY: 90),
+            PriorityDropLane(priority: .p1, minY: 110, maxY: 200)
+        ]
+
+        #expect(
+            PriorityDropTargetPolicy.target(
+                pointerY: 98,
+                lanes: lanes,
+                current: .p0,
+                hysteresis: 12
+            ) == .p0
+        )
+        #expect(
+            PriorityDropTargetPolicy.target(
+                pointerY: 106,
+                lanes: lanes,
+                current: .p1,
+                hysteresis: 12
+            ) == .p1
+        )
+    }
+
+    @Test
+    func gutterAndViewportEdgesSnapToTheNearestLaneDeterministically() {
+        let lanes = [
+            PriorityDropLane(priority: .p0, minY: 10, maxY: 90),
+            PriorityDropLane(priority: .p1, minY: 110, maxY: 200)
+        ]
+
+        #expect(PriorityDropTargetPolicy.target(pointerY: -20, lanes: lanes, current: nil) == .p0)
+        #expect(PriorityDropTargetPolicy.target(pointerY: 100, lanes: lanes, current: nil) == .p0)
+        #expect(PriorityDropTargetPolicy.target(pointerY: 240, lanes: lanes, current: nil) == .p1)
+        #expect(PriorityDropTargetPolicy.target(pointerY: 40, lanes: [], current: .p0) == nil)
+    }
+
+    @Test
+    func viewportGestureResolvesItsSourceFromTheVisibleRowAtDragStart() {
+        let firstID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-000000000001")!
+        let secondID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-000000000002")!
+        let rows = [
+            firstID: CGRect(x: 10, y: 20, width: 280, height: 48),
+            secondID: CGRect(x: 10, y: 76, width: 280, height: 48)
+        ]
+
+        #expect(
+            PriorityDragSourcePolicy.source(
+                at: CGPoint(x: 150, y: 44),
+                rows: rows
+            ) == firstID
+        )
+        #expect(
+            PriorityDragSourcePolicy.source(
+                at: CGPoint(x: 150, y: 100),
+                rows: rows
+            ) == secondID
+        )
+        #expect(
+            PriorityDragSourcePolicy.source(
+                at: CGPoint(x: 150, y: 72),
+                rows: rows
+            ) == nil
+        )
+    }
+
+    @Test
+    func viewportGestureIgnoresInvalidOrOffscreenSourceFrames() {
+        let invalidID = UUID()
+        let offscreenID = UUID()
+
+        #expect(
+            PriorityDragSourcePolicy.source(
+                at: CGPoint(x: 30, y: 30),
+                rows: [
+                    invalidID: CGRect(x: 0, y: 0, width: 0, height: 40),
+                    offscreenID: CGRect(x: 0, y: 200, width: 100, height: 40)
+                ]
+            ) == nil
+        )
+    }
+}
+
+@MainActor
+struct PriorityDragAutoScrollerTests {
+    private final class FlippedDocumentView: NSView {
+        override var isFlipped: Bool { true }
+    }
+
+    private final class PixelAlignedClipView: NSClipView {
+        override func constrainBoundsRect(_ proposedBounds: NSRect) -> NSRect {
+            var constrained = super.constrainBoundsRect(proposedBounds)
+            constrained.origin.y = constrained.origin.y.rounded()
+            return super.constrainBoundsRect(constrained)
+        }
+    }
+
+    @Test
+    func stationaryPointerNearBottomContinuouslyScrollsUntilStopped() {
+        let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 300, height: 180))
+        scrollView.documentView = FlippedDocumentView(
+            frame: NSRect(x: 0, y: 0, width: 300, height: 1_200)
+        )
+        let scroller = PriorityDragAutoScroller(
+            policy: DragEdgeScrollPolicy(
+                edgeExtent: 50,
+                minimumSpeed: 120,
+                maximumSpeed: 700
+            )
+        )
+        scroller.attach(scrollView)
+        let startingOffset = scrollView.contentView.bounds.origin.y
+
+        scroller.update(pointerY: 179)
+        scroller.advance(elapsed: 0.12)
+        let scrolledOffset = scrollView.contentView.bounds.origin.y
+        scroller.stop()
+
+        #expect(scrolledOffset > startingOffset + 10)
+        #expect(!scroller.isAutoScrolling)
+        #expect(abs(scrollView.contentView.bounds.origin.y - scrolledOffset) < 0.5)
+    }
+
+    @Test
+    func backingPixelAlignmentDoesNotStopScrollingBeforeTheDocumentBoundary() {
+        let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 300, height: 180))
+        scrollView.contentView = PixelAlignedClipView(frame: scrollView.bounds)
+        scrollView.documentView = FlippedDocumentView(
+            frame: NSRect(x: 0, y: 0, width: 300, height: 1_200)
+        )
+        let scroller = PriorityDragAutoScroller(
+            policy: DragEdgeScrollPolicy(
+                edgeExtent: 50,
+                minimumSpeed: 120,
+                maximumSpeed: 700
+            )
+        )
+        scroller.attach(scrollView)
+        scroller.update(pointerY: 179)
+
+        scroller.advance(elapsed: 1 / 60)
+        let firstOffset = scrollView.contentView.bounds.origin.y
+        scroller.advance(elapsed: 1 / 60)
+
+        #expect(firstOffset > 1)
+        #expect(scrollView.contentView.bounds.origin.y > firstOffset)
+        #expect(scroller.isAutoScrolling)
+        scroller.stop()
+    }
+
+    @Test
+    func delayedHostedTickCatchesUpWithoutExceedingTheExistingSpeedLimit() {
+        let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 300, height: 180))
+        scrollView.documentView = FlippedDocumentView(
+            frame: NSRect(x: 0, y: 0, width: 300, height: 1_200)
+        )
+        var uptime: TimeInterval = 10
+        let maximumSpeed: CGFloat = 640
+        let scroller = PriorityDragAutoScroller(
+            policy: DragEdgeScrollPolicy(
+                edgeExtent: 50,
+                minimumSpeed: 120,
+                maximumSpeed: maximumSpeed
+            ),
+            uptime: { uptime },
+            mouseUpSequence: { 0 }
+        )
+        scroller.attach(scrollView)
+        scroller.beginSession(moveID: UUID(), onEnd: {})
+        scroller.update(pointerY: 180)
+
+        uptime += 0.25
+        scroller.tick()
+
+        let distance = scrollView.contentView.bounds.origin.y
+        #expect(distance > 100)
+        #expect(distance <= maximumSpeed * 0.25 + 0.5)
+        scroller.endSession()
+    }
+
+    @Test
+    func liveDragKeepsProbingAPendingLazyContentBoundary() {
+        let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 300, height: 180))
+        let documentView = FlippedDocumentView(
+            frame: NSRect(x: 0, y: 0, width: 300, height: 300)
+        )
+        scrollView.documentView = documentView
+        let scroller = PriorityDragAutoScroller(mouseUpSequence: { 0 })
+        scroller.attach(scrollView)
+        scroller.beginSession(moveID: UUID(), onEnd: {})
+        scroller.update(pointerY: 180)
+
+        scroller.advance(elapsed: 1)
+        let temporaryBoundary = scrollView.contentView.bounds.origin.y
+        scroller.advance(elapsed: 1 / 60)
+        #expect(scroller.isAutoScrolling)
+
+        documentView.frame.size.height = 1_200
+        scroller.advance(elapsed: 0.25)
+
+        #expect(scrollView.contentView.bounds.origin.y > temporaryBoundary)
+        scroller.endSession()
+    }
+
+    @Test
+    func flippedViewportScrollsBothDirectionsAndClampsAtItsBounds() {
+        let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 300, height: 180))
+        scrollView.documentView = FlippedDocumentView(
+            frame: NSRect(x: 0, y: 0, width: 300, height: 1_200)
+        )
+        let scroller = PriorityDragAutoScroller(
+            policy: DragEdgeScrollPolicy(
+                edgeExtent: 50,
+                minimumSpeed: 120,
+                maximumSpeed: 700
+            )
+        )
+        scroller.attach(scrollView)
+        scrollView.contentView.scroll(to: NSPoint(x: 0, y: 500))
+
+        scroller.update(pointerY: 1)
+        scroller.advance(elapsed: 0.25)
+        #expect(scrollView.contentView.bounds.origin.y < 500)
+
+        let upwardOffset = scrollView.contentView.bounds.origin.y
+        scroller.update(pointerY: 179)
+        scroller.advance(elapsed: 0.25)
+        #expect(scrollView.contentView.bounds.origin.y > upwardOffset)
+
+        scroller.advance(elapsed: 10)
+        let maximumOffset = scrollView.documentView!.bounds.height
+            - scrollView.contentView.bounds.height
+        #expect(abs(scrollView.contentView.bounds.origin.y - maximumOffset) < 0.5)
+        scroller.advance(elapsed: 1 / 60)
+        #expect(!scroller.isAutoScrolling)
+    }
+
+    @Test
+    func sessionCompletionIsBalancedAndIdempotent() {
+        let scroller = PriorityDragAutoScroller()
+        var completionCount = 0
+        let moveID = UUID()
+
+        scroller.beginSession(moveID: moveID) { completionCount += 1 }
+        #expect(scroller.draggedMoveID == moveID)
+        scroller.endSession()
+        scroller.endSession()
+
+        #expect(completionCount == 1)
+        #expect(scroller.pointerY == nil)
+        #expect(scroller.draggedMoveID == nil)
+    }
+
+    @Test
+    func mouseUpFallbackCommitsBeforeEndingWhenSwiftUIDoesNotPerformTheDrop() {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 300, height: 180),
+            styleMask: .borderless,
+            backing: .buffered,
+            defer: false
+        )
+        let scrollView = NSScrollView(frame: window.contentView!.bounds)
+        scrollView.documentView = FlippedDocumentView(
+            frame: NSRect(x: 0, y: 0, width: 300, height: 1_200)
+        )
+        window.contentView = scrollView
+        let scroller = PriorityDragAutoScroller(releaseGraceInterval: 0)
+        let moveID = UUID()
+        var releasedIDs: [UUID] = []
+        var releasedPointerY: CGFloat?
+        var completionCount = 0
+        scroller.attach(scrollView)
+        scroller.beginSession(
+            moveID: moveID,
+            onRelease: { releasedID, pointerY in
+                releasedIDs.append(releasedID)
+                releasedPointerY = pointerY
+            },
+            onEnd: { completionCount += 1 }
+        )
+        _ = scroller.update(pointerInWindow: NSPoint(x: 150, y: 2))
+
+        scroller.scheduleRelease(pointerInWindow: NSPoint(x: 150, y: 2))
+
+        #expect(releasedIDs == [moveID])
+        #expect(releasedPointerY != nil)
+        if let releasedPointerY {
+            #expect(releasedPointerY > 170)
+        }
+        #expect(completionCount == 1)
+        #expect(scroller.draggedMoveID == nil)
+    }
+
+    @Test
+    func stableViewportReleaseCommitsAfterTheLazySourceRowDisappears() {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 300, height: 180),
+            styleMask: .borderless,
+            backing: .buffered,
+            defer: false
+        )
+        let scrollView = NSScrollView(frame: window.contentView!.bounds)
+        scrollView.documentView = FlippedDocumentView(
+            frame: NSRect(x: 0, y: 0, width: 300, height: 1_200)
+        )
+        window.contentView = scrollView
+        let scroller = PriorityDragAutoScroller(releaseGraceInterval: 0)
+        let moveID = UUID()
+        var releasedID: UUID?
+        var releasedPointerY: CGFloat?
+        var completionCount = 0
+        scroller.attach(scrollView)
+        scroller.beginSession(
+            moveID: moveID,
+            onRelease: { id, pointerY in
+                releasedID = id
+                releasedPointerY = pointerY
+            },
+            onEnd: { completionCount += 1 }
+        )
+
+        scroller.handleViewportPan(
+            state: .changed,
+            pointerInWindow: NSPoint(x: 150, y: 2)
+        )
+        // This end belongs to the scroll viewport, not the row that initiated
+        // the drag and may no longer exist after auto-scroll.
+        scroller.handleViewportPan(
+            state: .ended,
+            pointerInWindow: NSPoint(x: 150, y: 2)
+        )
+
+        #expect(releasedID == moveID)
+        #expect(releasedPointerY != nil)
+        if let releasedPointerY {
+            #expect(releasedPointerY > 170)
+        }
+        #expect(completionCount == 1)
+        #expect(scroller.draggedMoveID == nil)
+    }
+
+    @Test
+    func locationlessMouseUpUsesTheLastValidatedGestureCoordinate() {
+        let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 300, height: 180))
+        scrollView.documentView = FlippedDocumentView(
+            frame: NSRect(x: 0, y: 0, width: 300, height: 1_200)
+        )
+        let scroller = PriorityDragAutoScroller(releaseGraceInterval: 0)
+        let moveID = UUID()
+        var releasedPointerY: CGFloat?
+        scroller.attach(scrollView)
+        scroller.beginSession(
+            moveID: moveID,
+            onRelease: { _, pointerY in releasedPointerY = pointerY },
+            onEnd: {}
+        )
+        scroller.update(pointerY: 179)
+        scroller.advance(elapsed: 0.5)
+
+        scroller.scheduleRelease()
+
+        #expect(releasedPointerY == 179)
+        #expect(scroller.draggedMoveID == nil)
+        #expect(!scroller.isAutoScrolling)
+    }
+
+    @Test
+    func mouseUpSequenceCompletesADragWhenTheLazyGestureViewDisappears() {
+        let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 300, height: 180))
+        scrollView.documentView = FlippedDocumentView(
+            frame: NSRect(x: 0, y: 0, width: 300, height: 1_200)
+        )
+        var mouseUpSequence: UInt32 = 41
+        let moveID = UUID()
+        var releasedID: UUID?
+        var releasedPointerY: CGFloat?
+        var completionCount = 0
+        let scroller = PriorityDragAutoScroller(
+            releaseGraceInterval: 0,
+            mouseUpSequence: { mouseUpSequence }
+        )
+        scroller.attach(scrollView)
+        scroller.beginSession(
+            moveID: moveID,
+            onRelease: { id, pointerY in
+                releasedID = id
+                releasedPointerY = pointerY
+            },
+            onEnd: { completionCount += 1 }
+        )
+        scroller.update(pointerY: 179)
+
+        scroller.pollMouseUpSequence()
+        #expect(releasedID == nil)
+        mouseUpSequence &+= 1
+        scroller.pollMouseUpSequence()
+
+        #expect(releasedID == moveID)
+        #expect(releasedPointerY == 179)
+        #expect(completionCount == 1)
+        #expect(scroller.draggedMoveID == nil)
+    }
+
+    @Test
+    func pointerCanLeavePastTheVisibleEdgeAndStillDriveMaximumAutoScroll() {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 300, height: 180),
+            styleMask: .borderless,
+            backing: .buffered,
+            defer: false
+        )
+        let scrollView = NSScrollView(frame: window.contentView!.bounds)
+        scrollView.documentView = FlippedDocumentView(
+            frame: NSRect(x: 0, y: 0, width: 300, height: 1_200)
+        )
+        window.contentView = scrollView
+        let scroller = PriorityDragAutoScroller(pointerExitMargin: 96)
+        scroller.attach(scrollView)
+        let startingOffset = scrollView.contentView.bounds.origin.y
+
+        #expect(scroller.update(pointerInWindow: NSPoint(x: 150, y: -60)))
+        scroller.advance(elapsed: 0.25)
+
+        #expect(scrollView.contentView.bounds.origin.y > startingOffset + 100)
+        scroller.stop()
+    }
+
+    @Test
+    func beginningANewDragInvalidatesThePreviousMoveBeforeItCanCommit() {
+        let scroller = PriorityDragAutoScroller()
+        let firstID = UUID()
+        let secondID = UUID()
+        var endedIDs: [UUID] = []
+
+        scroller.beginSession(moveID: firstID) { endedIDs.append(firstID) }
+        scroller.beginSession(moveID: secondID) { endedIDs.append(secondID) }
+
+        #expect(endedIDs == [firstID])
+        #expect(scroller.draggedMoveID == secondID)
+
+        scroller.endSession()
+        #expect(endedIDs == [firstID, secondID])
+        #expect(scroller.draggedMoveID == nil)
+    }
+
+    @Test
+    func windowPointerTrackingStaysViewportRelativeWhileTheDocumentScrolls() {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 300, height: 180),
+            styleMask: .borderless,
+            backing: .buffered,
+            defer: false
+        )
+        let scrollView = NSScrollView(frame: window.contentView!.bounds)
+        scrollView.documentView = FlippedDocumentView(
+            frame: NSRect(x: 0, y: 0, width: 300, height: 1_200)
+        )
+        window.contentView = scrollView
+        let scroller = PriorityDragAutoScroller()
+        scroller.attach(scrollView)
+
+        #expect(scroller.update(pointerInWindow: NSPoint(x: 150, y: 2)))
+        let firstPointerY = try? #require(scroller.pointerY)
+        scrollView.contentView.scroll(to: NSPoint(x: 0, y: 420))
+        #expect(scroller.update(pointerInWindow: NSPoint(x: 150, y: 2)))
+        let secondPointerY = try? #require(scroller.pointerY)
+
+        #expect(firstPointerY != nil)
+        #expect(secondPointerY != nil)
+        if let firstPointerY, let secondPointerY {
+            #expect(abs(firstPointerY - secondPointerY) < 0.5)
+            #expect(secondPointerY > 170)
+        }
+        scroller.stop()
+    }
+}

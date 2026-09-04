@@ -8,6 +8,7 @@ DerivedData/
 *.xcodeproj/
 *.xcresult/
 *.xcuserstate
+*.profraw
 xcuserdata/
 *.dSYM/
 
@@ -18,12 +19,18 @@ OPEN_LOOPS_CONTEXT.md
 Personalization/
 Codex Runs/
 cloud-sync-state.json
+workspace-identity.json
 support-bundles/
 exports/
+Recovery/
+Generated/
+RuntimeHealth/
 *.log
 *.jsonl
 *.sqlite
 *.sqlite-*
+*.sqlite3
+*.sqlite3-*
 *.bak
 *.trace
 *.crash
@@ -32,6 +39,7 @@ exports/
 qa/
 audits/
 design-qa.md
+GeneratedAssets/
 
 # Credentials and signing material
 .env
@@ -39,6 +47,7 @@ design-qa.md
 !.env.example
 .secrets/
 Secrets.xcconfig
+Configuration/ProductAuth.local.json
 *.p8
 *.p12
 *.cer
@@ -56,5 +65,7 @@ __pycache__/
 .idea/
 .vscode/
 .fleet/
+.vercel/
+supabase/.temp/
 
 .DS_Store

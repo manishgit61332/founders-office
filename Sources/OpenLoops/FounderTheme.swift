@@ -29,6 +29,12 @@ struct FounderTheme {
 
     var primaryAccent: Color { appearance.accent.primaryColor.swiftUIColor }
     var secondaryAccent: Color { appearance.accent.secondaryColor.swiftUIColor }
+    var primaryAccentText: Color { appearance.accent.primaryFillTextColor.swiftUIColor }
+    var readableAccentOnPanel: Color {
+        appearance.accent.primaryColor
+            .readableForeground(on: RGB24Color(red: 14, green: 15, blue: 18))
+            .swiftUIColor
+    }
 
     var accentGradient: LinearGradient {
         let stops = appearance.accent.normalizedStops.map {
@@ -91,12 +97,24 @@ struct FounderTheme {
         }
     }
 
-    func displayFont(size: CGFloat, weight: Font.Weight = .regular) -> Font {
-        font(for: appearance.displayFontID, size: size, weight: weight)
+    func displayFont(_ role: FounderTextRole, weight: Font.Weight = .regular) -> Font {
+        font(for: appearance.displayFontID, role: role, weight: weight)
     }
 
-    func interfaceFont(size: CGFloat, weight: Font.Weight = .regular) -> Font {
+    func interfaceFont(_ role: FounderTextRole, weight: Font.Weight = .regular) -> Font {
+        font(for: appearance.interfaceFontID, role: role, weight: weight)
+    }
+
+    func symbolFont(size: CGFloat, weight: Font.Weight = .regular) -> Font {
         font(for: appearance.interfaceFontID, size: size, weight: weight)
+    }
+
+    private func font(for choice: FontChoiceID, role: FounderTextRole, weight: Font.Weight) -> Font {
+        font(
+            for: choice,
+            size: CGFloat(FounderTypeScale.points(for: role)),
+            weight: weight
+        )
     }
 
     private func font(for choice: FontChoiceID, size: CGFloat, weight: Font.Weight) -> Font {

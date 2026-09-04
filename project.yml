@@ -17,19 +17,22 @@ targets:
     deploymentTarget: "14.0"
     sources:
       - path: Sources/OpenLoops
+      - path: Apps/macOS/Assets.xcassets
       - path: Resources/Fonts
         type: folder
         buildPhase: resources
-      - path: Resources/ClayIcons
-        type: folder
-        buildPhase: resources
       - path: Apps/macOS/PrivacyInfo.xcprivacy
+        buildPhase: resources
+      - path: THIRD_PARTY_NOTICES.txt
+        buildPhase: resources
+      - path: Resources/Licenses
+        type: folder
         buildPhase: resources
     dependencies:
       - package: FounderOfficePackage
         product: FounderOfficeCore
       - package: FounderOfficePackage
-        product: FounderOfficeCloud
+        product: FounderOfficeIdentity
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.manish.openloops
@@ -39,8 +42,36 @@ targets:
         CODE_SIGN_STYLE: Automatic
         SWIFT_VERSION: "5.10"
         ENABLE_HARDENED_RUNTIME: YES
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        FOUNDER_OFFICE_AUTH_CALLBACK_SCHEME: founders-office-dev
+        FOUNDER_OFFICE_SUPABASE_URL: ""
+        FOUNDER_OFFICE_SUPABASE_PUBLISHABLE_KEY: ""
+        FOUNDER_OFFICE_UPDATE_FEED_URL: ""
+        FOUNDER_OFFICE_UPDATE_CHANNEL: ""
+        FOUNDER_OFFICE_UPDATE_PUBLIC_KEY: ""
+      configs:
+        Release:
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) FOUNDER_OFFICE_DISTRIBUTION"
     scheme:
       gatherCoverageData: true
+      testTargets:
+        - FoundersOfficeMacUITests
+
+  FoundersOfficeMacUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: Apps/macOSUITests
+    dependencies:
+      - target: FoundersOfficeMac
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.manish.openloops.uitests
+        PRODUCT_NAME: "Founder's Office UI Tests"
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: "5.10"
+        TEST_TARGET_NAME: FoundersOfficeMac
 
   FoundersOfficeiOS:
     type: application
@@ -54,11 +85,16 @@ targets:
           - Resources/FoundersOfficeiOS.entitlements
       - path: Resources/Fonts/InstrumentSerif-Regular.ttf
         buildPhase: resources
+      - path: Resources/Licenses
+        type: folder
+        buildPhase: resources
     dependencies:
       - package: FounderOfficePackage
         product: FounderOfficeCore
       - package: FounderOfficePackage
         product: FounderOfficeCloud
+      - package: FounderOfficePackage
+        product: FounderOfficeIdentity
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.manish.foundersoffice.ios
@@ -73,5 +109,8 @@ targets:
         # nonexistent AppIcon catalog.
         ASSETCATALOG_COMPILER_APPICON_NAME: ""
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        FOUNDER_OFFICE_AUTH_CALLBACK_SCHEME: founders-office-dev
+        FOUNDER_OFFICE_SUPABASE_URL: ""
+        FOUNDER_OFFICE_SUPABASE_PUBLISHABLE_KEY: ""
     scheme:
       gatherCoverageData: true

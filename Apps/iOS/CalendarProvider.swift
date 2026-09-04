@@ -113,13 +113,13 @@ final class CalendarProvider: ObservableObject {
     }
 
     private func requestFullAccess() {
-        Task {
-            do {
-                _ = try await eventStore.requestFullAccessToEvents()
+        // Keep EKEventStore on MainActor; the async EventKit overlay in the
+        // supported Xcode 16.4 SDK is not concurrency-safe under Swift 6.
+        eventStore.requestFullAccessToEvents { [weak self] _, _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
                 authorizationStatus = EKEventStore.authorizationStatus(for: .event)
                 refreshIfAuthorized()
-            } catch {
-                authorizationStatus = EKEventStore.authorizationStatus(for: .event)
             }
         }
     }

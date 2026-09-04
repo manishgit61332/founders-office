@@ -14,6 +14,44 @@ extension AccentPalette {
     }
 }
 
+extension LoopPriority {
+    /// Product-facing priority labels. P2 remains the compatible persisted
+    /// value while the interface uses the clearer "Medium" label.
+    var customerTitle: String {
+        switch self {
+        case .p0: return "Critical"
+        case .p1: return "High"
+        case .p2: return "Medium"
+        case .p3: return "Low"
+        }
+    }
+
+    /// Fixed semantic colors keep priority legible even when the user changes
+    /// the workspace accent. Text labels always accompany these colors.
+    var laneColor: Color {
+        switch self {
+        case .p0: return Color(uiColor: .systemRed)
+        case .p1: return Color(uiColor: .systemOrange)
+        case .p2: return Color(uiColor: .systemBlue)
+        case .p3: return Color(uiColor: .systemGray)
+        }
+    }
+
+    var previousPriority: LoopPriority? {
+        guard let index = Self.allCases.firstIndex(of: self), index > Self.allCases.startIndex else {
+            return nil
+        }
+        return Self.allCases[Self.allCases.index(before: index)]
+    }
+
+    var nextPriority: LoopPriority? {
+        guard let index = Self.allCases.firstIndex(of: self) else { return nil }
+        let nextIndex = Self.allCases.index(after: index)
+        guard nextIndex < Self.allCases.endIndex else { return nil }
+        return Self.allCases[nextIndex]
+    }
+}
+
 extension RGB24Color {
     var swiftUIColor: Color {
         Color(
@@ -40,6 +78,7 @@ extension RGB24Color {
 extension AppearancePreferences {
     var primaryAccentColor: Color { accent.primaryColor.swiftUIColor }
     var secondaryAccentColor: Color { accent.secondaryColor.swiftUIColor }
+    var primaryAccentTextColor: Color { accent.primaryFillTextColor.swiftUIColor }
 
     var accentGradient: LinearGradient {
         let stops = accent.normalizedStops.map {
@@ -89,11 +128,23 @@ extension AppearancePreferences {
         }
     }
 
-    func displayFont(size: CGFloat, weight: Font.Weight = .regular) -> Font {
-        resolvedFont(displayFontID, size: size, weight: weight)
+    func displayFont(_ role: FounderTextRole, weight: Font.Weight = .regular) -> Font {
+        resolvedFont(
+            displayFontID,
+            size: CGFloat(FounderTypeScale.points(for: role)),
+            weight: weight
+        )
     }
 
-    func interfaceFont(size: CGFloat, weight: Font.Weight = .regular) -> Font {
+    func interfaceFont(_ role: FounderTextRole, weight: Font.Weight = .regular) -> Font {
+        resolvedFont(
+            interfaceFontID,
+            size: CGFloat(FounderTypeScale.points(for: role)),
+            weight: weight
+        )
+    }
+
+    func symbolFont(size: CGFloat, weight: Font.Weight = .regular) -> Font {
         resolvedFont(interfaceFontID, size: size, weight: weight)
     }
 
@@ -143,7 +194,7 @@ private struct FounderSurfaceModifier: ViewModifier {
         content
             .scrollContentBackground(.hidden)
             .background(FounderSurfaceBackground(appearance: appearance).ignoresSafeArea())
-            .font(appearance.interfaceFont(size: 17))
+            .font(appearance.interfaceFont(.secondary))
     }
 }
 
@@ -151,10 +202,20 @@ extension View {
     func founderSurface(_ appearance: AppearancePreferences) -> some View {
         modifier(FounderSurfaceModifier(appearance: appearance))
     }
+
+    func founderProminentButton(_ appearance: AppearancePreferences) -> some View {
+        buttonStyle(.borderedProminent)
+            .tint(appearance.primaryAccentColor)
+            .foregroundStyle(appearance.primaryAccentTextColor)
+    }
 }
 
 extension Font {
     static var founderDisplay: Font {
-        .custom("Instrument Serif", size: 40, relativeTo: .largeTitle)
+        .custom(
+            "Instrument Serif",
+            size: CGFloat(FounderTypeScale.primaryTitle),
+            relativeTo: .largeTitle
+        )
     }
 }

@@ -26,6 +26,15 @@ public enum LoopPriority: String, Codable, CaseIterable, Identifiable, Sendable 
 
     public var id: String { rawValue }
 
+    public var title: String {
+        switch self {
+        case .p0: return "Critical"
+        case .p1: return "High"
+        case .p2: return "Medium"
+        case .p3: return "Low"
+        }
+    }
+
     public var rank: Int {
         switch self {
         case .p0: return 0
@@ -46,6 +55,10 @@ public struct OpenLoop: Codable, Identifiable, Hashable, Sendable {
     public var dueAt: Date?
     public var createdAt: Date
     public var updatedAt: Date
+    /// Field-level clocks let offline devices merge a priority edit and a
+    /// deadline edit without making either whole task overwrite the other.
+    public var priorityUpdatedAt: Date?
+    public var dueAtUpdatedAt: Date?
     public var completedAt: Date?
     public var deletedAt: Date?
     public var source: String
@@ -62,7 +75,9 @@ public struct OpenLoop: Codable, Identifiable, Hashable, Sendable {
         updatedAt: Date,
         completedAt: Date?,
         deletedAt: Date?,
-        source: String
+        source: String,
+        priorityUpdatedAt: Date? = nil,
+        dueAtUpdatedAt: Date? = nil
     ) {
         self.id = id
         self.title = title
@@ -73,6 +88,8 @@ public struct OpenLoop: Codable, Identifiable, Hashable, Sendable {
         self.dueAt = dueAt
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+        self.priorityUpdatedAt = priorityUpdatedAt
+        self.dueAtUpdatedAt = dueAtUpdatedAt
         self.completedAt = completedAt
         self.deletedAt = deletedAt
         self.source = source
@@ -167,12 +184,8 @@ public enum GoalValueUnit: String, Codable, CaseIterable, Identifiable, Sendable
         }
     }
 
-    public func format(_ value: Double) -> String {
-        let formatter = NumberFormatter()
-        formatter.numberStyle = .decimal
-        formatter.usesGroupingSeparator = true
-        formatter.maximumFractionDigits = value.rounded() == value ? 0 : 1
-        let number = formatter.string(from: NSNumber(value: value)) ?? String(format: "%.0f", value)
+    public func format(_ value: GoalDecimal, locale: Locale = .current) -> String {
+        let number = value.formatted(locale: locale)
 
         switch self {
         case .usd: return "$\(number)"
@@ -187,8 +200,8 @@ public struct PrimaryGoal: Codable, Identifiable, Hashable, Sendable {
     public var id: UUID
     public var title: String
     public var metric: String
-    public var currentValue: Double?
-    public var targetValue: Double?
+    public var currentValue: GoalDecimal?
+    public var targetValue: GoalDecimal?
     public var unit: GoalValueUnit
     public var dueAt: Date
     public var createdAt: Date
@@ -199,8 +212,8 @@ public struct PrimaryGoal: Codable, Identifiable, Hashable, Sendable {
         id: UUID,
         title: String,
         metric: String,
-        currentValue: Double?,
-        targetValue: Double?,
+        currentValue: GoalDecimal?,
+        targetValue: GoalDecimal?,
         unit: GoalValueUnit,
         dueAt: Date,
         createdAt: Date,
@@ -234,6 +247,9 @@ public struct PersonalizationDocument: Codable, Sendable {
     public var milestones: [Milestone]
     public var updatedAt: Date?
     public var appearance: AppearancePreferences?
+    /// Bounded image metadata. `photoFileName` remains a display-variant
+    /// compatibility field for older clients.
+    public var visionImageAsset: PersonalizationImageAsset?
 
     public init(
         schemaVersion: Int,
@@ -246,7 +262,8 @@ public struct PersonalizationDocument: Codable, Sendable {
         updatedAt: Date? = nil,
         preferredName: String? = nil,
         workspaceName: String? = nil,
-        appearance: AppearancePreferences? = nil
+        appearance: AppearancePreferences? = nil,
+        visionImageAsset: PersonalizationImageAsset? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.displayName = displayName
@@ -259,6 +276,7 @@ public struct PersonalizationDocument: Codable, Sendable {
         self.milestones = milestones
         self.updatedAt = updatedAt
         self.appearance = appearance
+        self.visionImageAsset = visionImageAsset
     }
 
     public var resolvedPreferredName: String? {
@@ -279,6 +297,20 @@ public struct PersonalizationDocument: Codable, Sendable {
 
     public var resolvedAppearance: AppearancePreferences {
         appearance ?? .manish(accent: accent.rgb24)
+    }
+
+    public var resolvedPhotoFileName: String? {
+        if let visionImageAsset {
+            return AssetFileName.validated(visionImageAsset.displayFileName)
+        }
+        return photoFileName.flatMap(AssetFileName.validated)
+    }
+
+    public var resolvedSyncPhotoFileName: String? {
+        if let visionImageAsset {
+            return AssetFileName.validated(visionImageAsset.syncFileName)
+        }
+        return photoFileName.flatMap(AssetFileName.validated)
     }
 
     private static func clean(_ value: String?) -> String? {

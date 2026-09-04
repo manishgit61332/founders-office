@@ -2,14 +2,28 @@ import CloudKit
 import Foundation
 import FounderOfficeCore
 import os
+#if os(macOS)
+import Security
+#endif
+
+public enum FounderOfficeCloudConfigurationError: Error, Equatable, Sendable {
+    case cloudDisabled
+    case missingContainerIdentifier
+    case malformedContainerIdentifier
+    case missingContainerEntitlement
+    case containerEntitlementMismatch
+}
 
 public struct FounderOfficeCloudConfiguration: Sendable {
+    public static let infoPlistContainerKey = "FounderOfficeCloudContainerIdentifier"
+    public static let cloudEnabledInfoPlistKey = "FounderOfficeCloudEnabled"
+
     public var containerIdentifier: String
     public var zoneName: String
     public var recordName: String
 
     public init(
-        containerIdentifier: String = "iCloud.com.manish.foundersoffice",
+        containerIdentifier: String,
         zoneName: String = "FounderOffice",
         recordName: String = "workspace-default"
     ) {
@@ -17,6 +31,99 @@ public struct FounderOfficeCloudConfiguration: Sendable {
         self.zoneName = zoneName
         self.recordName = recordName
     }
+
+    /// Resolves the CloudKit container from product configuration instead of
+    /// source defaults. A missing or malformed declaration is a hard failure;
+    /// macOS also verifies that it exactly matches the process entitlement.
+    /// iOS provisioning and CKContainer enforce that platform's entitlement.
+    public static func bundled(in bundle: Bundle = .main) throws -> Self {
+        let cloudEnabled = bundle.object(
+            forInfoDictionaryKey: cloudEnabledInfoPlistKey
+        ) as? Bool == true
+        let configuredContainer = bundle.object(
+            forInfoDictionaryKey: infoPlistContainerKey
+        ) as? String
+
+        let declaredConfiguration = try validatedDeclaredConfiguration(
+            cloudEnabled: cloudEnabled,
+            configuredContainer: configuredContainer
+        )
+
+        #if os(macOS)
+        return try validatedBundledConfiguration(
+            cloudEnabled: true,
+            configuredContainer: declaredConfiguration.containerIdentifier,
+            entitledContainers: try signedContainerIdentifiers()
+        )
+        #else
+        // SecTask entitlement inspection is not public on iOS. The signed
+        // provisioning profile and CKContainer enforce the entitlement there;
+        // runtime configuration still fails closed on a missing or malformed
+        // single declared container identifier.
+        return declaredConfiguration
+        #endif
+    }
+
+    static func validatedDeclaredConfiguration(
+        cloudEnabled: Bool,
+        configuredContainer: String?
+    ) throws -> Self {
+        guard cloudEnabled else {
+            throw FounderOfficeCloudConfigurationError.cloudDisabled
+        }
+        guard let configuredContainer, !configuredContainer.isEmpty else {
+            throw FounderOfficeCloudConfigurationError.missingContainerIdentifier
+        }
+        guard configuredContainer.hasPrefix("iCloud."),
+              configuredContainer.unicodeScalars.allSatisfy({
+                  CharacterSet.alphanumerics
+                      .union(CharacterSet(charactersIn: ".-"))
+                      .contains($0)
+              }) else {
+            throw FounderOfficeCloudConfigurationError.malformedContainerIdentifier
+        }
+        return Self(containerIdentifier: configuredContainer)
+    }
+
+    static func validatedBundledConfiguration(
+        cloudEnabled: Bool,
+        configuredContainer: String?,
+        entitledContainers: [String]
+    ) throws -> Self {
+        let declaredConfiguration = try validatedDeclaredConfiguration(
+            cloudEnabled: cloudEnabled,
+            configuredContainer: configuredContainer
+        )
+        guard !entitledContainers.isEmpty else {
+            throw FounderOfficeCloudConfigurationError.missingContainerEntitlement
+        }
+        guard entitledContainers.count == 1,
+              entitledContainers[0] == declaredConfiguration.containerIdentifier else {
+            throw FounderOfficeCloudConfigurationError.containerEntitlementMismatch
+        }
+        return declaredConfiguration
+    }
+
+    #if os(macOS)
+    private static func signedContainerIdentifiers() throws -> [String] {
+        guard let task = SecTaskCreateFromSelf(nil) else {
+            throw FounderOfficeCloudConfigurationError.missingContainerEntitlement
+        }
+        var copyError: Unmanaged<CFError>?
+        guard let rawValue = SecTaskCopyValueForEntitlement(
+            task,
+            "com.apple.developer.icloud-container-identifiers" as CFString,
+            &copyError
+        ) else {
+            _ = copyError?.takeRetainedValue()
+            throw FounderOfficeCloudConfigurationError.missingContainerEntitlement
+        }
+        guard let identifiers = rawValue as? [String] else {
+            throw FounderOfficeCloudConfigurationError.missingContainerEntitlement
+        }
+        return identifiers
+    }
+    #endif
 }
 
 public enum FounderOfficeCloudStatus: String, Codable, Sendable {
@@ -61,7 +168,7 @@ public final actor FounderOfficeCloudSync: CKSyncEngineDelegate {
     public init(
         snapshotStore: JSONSnapshotStore,
         sidecarURL: URL,
-        configuration: FounderOfficeCloudConfiguration = .init(),
+        configuration: FounderOfficeCloudConfiguration,
         automaticallySync: Bool = true
     ) {
         self.snapshotStore = snapshotStore

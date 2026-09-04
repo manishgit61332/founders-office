@@ -92,7 +92,7 @@ func calendarDate(
 }
 
 func document(items: [OpenLoop], updatedAt: Date) -> OpenLoopsDocument {
-    OpenLoopsDocument(schemaVersion: 2, updatedAt: updatedAt, items: items)
+    OpenLoopsDocument(schemaVersion: 3, updatedAt: updatedAt, items: items)
 }
 
 func runChecks() async throws {
@@ -157,7 +157,6 @@ func runChecks() async throws {
         minute: 59,
         calendar: presentationCalendar
     )
-    let startOfToday = try calendarDate(2026, 3, 9, calendar: presentationCalendar)
     let todayMorning = try calendarDate(
         2026,
         3,
@@ -179,6 +178,18 @@ func runChecks() async throws {
         7,
         hour: 23,
         minute: 59,
+        calendar: presentationCalendar
+    )
+    let overdueDeadline = PlanningDate.storedDate(
+        fromLocal: justBeforeToday,
+        calendar: presentationCalendar
+    )
+    let todayDeadline = PlanningDate.storedDate(
+        fromLocal: todayMorning,
+        calendar: presentationCalendar
+    )
+    let tomorrowDeadline = PlanningDate.storedDate(
+        fromLocal: startOfTomorrow,
         calendar: presentationCalendar
     )
 
@@ -212,7 +223,7 @@ func runChecks() async throws {
             id: todayZuluID,
             title: "Zulu",
             status: .doing,
-            dueAt: todayMorning,
+            dueAt: todayDeadline,
             updatedAt: presentationNow
         ),
         makePresentationLoop(
@@ -227,7 +238,7 @@ func runChecks() async throws {
             id: upcomingID,
             title: "Tomorrow",
             status: .next,
-            dueAt: startOfTomorrow,
+            dueAt: tomorrowDeadline,
             updatedAt: presentationNow
         ),
         makePresentationLoop(
@@ -242,7 +253,7 @@ func runChecks() async throws {
             title: "Critical later today",
             status: .next,
             priority: .p0,
-            dueAt: todayEvening,
+            dueAt: todayDeadline,
             updatedAt: presentationNow
         ),
         makePresentationLoop(
@@ -250,14 +261,14 @@ func runChecks() async throws {
             title: "Blocked today",
             status: .waiting,
             priority: .p2,
-            dueAt: startOfToday,
+            dueAt: todayDeadline,
             updatedAt: presentationNow
         ),
         makePresentationLoop(
             id: overdueID,
             title: "Overdue",
             status: .doing,
-            dueAt: justBeforeToday,
+            dueAt: overdueDeadline,
             updatedAt: presentationNow
         ),
         makePresentationLoop(
@@ -278,7 +289,7 @@ func runChecks() async throws {
             id: deletedActiveID,
             title: "Deleted active",
             status: .doing,
-            dueAt: todayMorning,
+            dueAt: todayDeadline,
             deletedAt: presentationNow,
             updatedAt: presentationNow
         ),
@@ -286,7 +297,7 @@ func runChecks() async throws {
             id: todayAlphaID,
             title: "Alpha",
             status: .doing,
-            dueAt: todayMorning,
+            dueAt: todayDeadline,
             updatedAt: presentationNow
         ),
         makePresentationLoop(
@@ -300,7 +311,7 @@ func runChecks() async throws {
             id: todayLaterP1ID,
             title: "A title that sorts first",
             status: .next,
-            dueAt: todayEvening,
+            dueAt: todayDeadline,
             updatedAt: presentationNow
         ),
         makePresentationLoop(
@@ -335,13 +346,26 @@ func runChecks() async throws {
         "Active deadline groups were not emitted in urgency order"
     )
     try expect(
+        movePresentation.priorityGroups.map(\.priority) == [.p0, .p1, .p2],
+        "Active priority groups were not emitted in P0-to-P3 rank order"
+    )
+    try expect(
+        movePresentation.items(in: .p0).map(\.id) == [todayP0ID],
+        "Priority lookup included a Done or soft-deleted Move"
+    )
+    try expect(
         movePresentation.items(in: .overdue).map(\.id) == [overdueID],
         "Pre-midnight deadline was not classified as overdue"
     )
     try expect(
         movePresentation.items(in: .today).map(\.id)
-            == [waitingID, todayAlphaID, todayZuluID, todayP0ID, todayLaterP1ID],
+            == [todayP0ID, todayLaterP1ID, todayAlphaID, todayZuluID, waitingID],
         "Today Moves were not sorted by deadline, priority, and title"
+    )
+    try expect(
+        movePresentation.activeItems(dueOn: todayMorning, calendar: presentationCalendar).map(\.id)
+            == [todayP0ID, todayLaterP1ID, todayAlphaID, todayZuluID, waitingID],
+        "Selected-day lookup did not match the stored planning day"
     )
     try expect(
         movePresentation.items(in: .upcoming).map(\.id) == [upcomingID],
@@ -389,7 +413,9 @@ func runChecks() async throws {
         calendar: presentationCalendar
     )
     try expect(emptyPresentation.activeGroups.isEmpty, "Empty store emitted empty presentation sections")
+    try expect(emptyPresentation.priorityGroups.isEmpty, "Empty store emitted empty priority sections")
     try expect(emptyPresentation.items(in: .today).isEmpty, "Missing bucket did not return an empty collection")
+    try expect(emptyPresentation.items(in: .p3).isEmpty, "Missing priority did not return an empty collection")
 
     struct LegacyPersonalization: Encodable {
         var schemaVersion = 3
@@ -418,6 +444,61 @@ func runChecks() async throws {
     try expect(RGB24Color(hex: "FFFFFF")?.hex == "#FFFFFF", "White RGB24 colour did not round-trip")
     try expect(RGB24Color(hex: "#0a84ff")?.hex == "#0A84FF", "Mixed-case RGB24 colour did not normalize")
     try expect(RGB24Color(hex: "#12345") == nil, "Invalid short RGB24 colour was accepted")
+
+    try expect(
+        AssetFileName.validated("vision-00000000-0000-0000-0000-000000000000.jpg") != nil,
+        "Generated vision asset name was rejected"
+    )
+    try expect(AssetFileName.validated("../../Library/secret.jpg") == nil, "Parent traversal asset name was accepted")
+    try expect(AssetFileName.validated("folder/vision.jpg") == nil, "Nested asset path was accepted")
+    try expect(AssetFileName.validated("folder\\vision.jpg") == nil, "Windows-style asset path was accepted")
+    try expect(AssetFileName.validated("vision.exe") == nil, "Unsupported asset extension was accepted")
+
+    let taskRecovery = WorkspaceRecoveryState(affectedComponents: [.openLoops])
+    let personalizationRecovery = WorkspaceRecoveryState(affectedComponents: [.personalization])
+    let combinedRecovery = taskRecovery.merging(personalizationRecovery)
+    try expect(taskRecovery.requiresRecovery, "Task corruption did not require recovery")
+    try expect(taskRecovery.message.hasPrefix("Tasks need recovery"), "Task recovery message was unclear")
+    try expect(
+        personalizationRecovery.message.hasPrefix("Personalization needs recovery"),
+        "Personalization recovery message was ungrammatical"
+    )
+    try expect(
+        combinedRecovery.affectedComponents == [.openLoops, .personalization],
+        "Multiple damaged stores were not combined deterministically"
+    )
+
+    let quarantineRoot = FileManager.default.temporaryDirectory
+        .appendingPathComponent("founder-office-recovery-check-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: quarantineRoot) }
+    try FileManager.default.createDirectory(at: quarantineRoot, withIntermediateDirectories: true)
+    let corruptURL = quarantineRoot.appendingPathComponent("openloops.json")
+    let corruptData = Data("{not-json".utf8)
+    try corruptData.write(to: corruptURL)
+    let preservedURL = try CorruptFileQuarantine.preserve(corruptURL)
+    try expect(
+        FileManager.default.fileExists(atPath: corruptURL.path),
+        "Quarantine removed the canonical fail-safe file"
+    )
+    let preservedData = try Data(contentsOf: preservedURL)
+    try expect(
+        preservedData == corruptData,
+        "Quarantine did not preserve the damaged bytes exactly"
+    )
+    let secondPreservedURL = try CorruptFileQuarantine.preserve(corruptURL)
+    try expect(secondPreservedURL != preservedURL, "Quarantine reused and replaced an existing backup")
+    let corruptSnapshotStore = JSONSnapshotStore(rootURL: quarantineRoot)
+    do {
+        _ = try await corruptSnapshotStore.readSnapshot()
+        throw CheckFailure.failed("Cloud snapshot accepted corrupt canonical tasks")
+    } catch is DecodingError {
+        // Expected: cloud transport must fail closed instead of seeding defaults.
+    }
+    let canonicalAfterCloudRead = try Data(contentsOf: corruptURL)
+    try expect(
+        canonicalAfterCloudRead == corruptData,
+        "Cloud snapshot read replaced corrupt canonical tasks"
+    )
 
     let normalizedAccent = AccentStyle(
         mode: .gradient,

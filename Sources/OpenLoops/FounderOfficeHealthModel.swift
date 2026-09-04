@@ -1,0 +1,283 @@
+import AppKit
+import Combine
+import FounderOfficeCore
+import Foundation
+import ServiceManagement
+
+@MainActor
+final class FounderOfficeHealthModel: ObservableObject {
+    private let store: OpenLoopStore
+    private let personalization: PersonalizationStore
+    private let calendar: CalendarProvider
+    #if !FOUNDER_OFFICE_DISTRIBUTION
+    private let assistant: CodexRunner
+    #endif
+    private let accountSync: any AccountSyncStatusSignaling
+    private var cancellables = Set<AnyCancellable>()
+
+    #if FOUNDER_OFFICE_DISTRIBUTION
+    init(
+        store: OpenLoopStore,
+        personalization: PersonalizationStore,
+        calendar: CalendarProvider,
+        accountSync: any AccountSyncStatusSignaling
+    ) {
+        self.store = store
+        self.personalization = personalization
+        self.calendar = calendar
+        self.accountSync = accountSync
+
+        observe(store.objectWillChange)
+        observe(store.session.objectWillChange)
+        observe(personalization.objectWillChange)
+        observe(calendar.objectWillChange)
+        observe(accountSync.objectWillChange)
+    }
+    #else
+    init(
+        store: OpenLoopStore,
+        personalization: PersonalizationStore,
+        calendar: CalendarProvider,
+        assistant: CodexRunner,
+        accountSync: any AccountSyncStatusSignaling
+    ) {
+        self.store = store
+        self.personalization = personalization
+        self.calendar = calendar
+        self.assistant = assistant
+        self.accountSync = accountSync
+
+        observe(store.objectWillChange)
+        observe(personalization.objectWillChange)
+        observe(calendar.objectWillChange)
+        observe(assistant.objectWillChange)
+        observe(accountSync.objectWillChange)
+    }
+    #endif
+
+    var snapshot: HealthSnapshot {
+        HealthSnapshot(
+            capturedAt: Date(),
+            components: [
+                localDataStatus,
+                syncStatus,
+                calendarStatus,
+                startupStatus,
+                assistantStatus
+            ]
+        )
+    }
+
+    func supportReport() -> RedactedSupportReport {
+        let version = ProcessInfo.processInfo.operatingSystemVersion
+        return RedactedSupportReport(
+            snapshot: snapshot,
+            metadata: SupportReportMetadata(
+                appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+                    ?? "development",
+                buildNumber: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
+                    ?? "development",
+                operatingSystemMajor: version.majorVersion,
+                operatingSystemMinor: version.minorVersion,
+                operatingSystemPatch: version.patchVersion,
+                architecture: Self.architecture
+            )
+        )
+    }
+
+    func perform(_ remediation: HealthRemediation) {
+        switch remediation {
+        case .none:
+            break
+        case .reloadLocalData:
+            store.reload()
+            personalization.reload()
+        case .retryGeneratedProjection:
+            Task { [weak store] in
+                _ = await store?.session.refreshProjectionNow()
+            }
+        case .retrySync:
+            // Cross-device sync is deliberately unavailable until the
+            // Supabase operation transport passes its release gate. Health
+            // must not revive the retired CloudKit JSON writer.
+            break
+        case .refreshCalendar:
+            calendar.refresh()
+        case .openCalendarSettings:
+            calendar.openPrivacySettings()
+        case .openLoginItemsSettings:
+            guard let url = URL(
+                string: "x-apple.systempreferences:com.apple.LoginItems-Settings.extension"
+            ) else { return }
+            NSWorkspace.shared.open(url)
+        case .recheckAssistant:
+            objectWillChange.send()
+        }
+    }
+
+    private var localDataStatus: HealthComponentStatus {
+        let recovery = store.recoveryState.merging(personalization.recoveryState)
+        if recovery.requiresRecovery {
+            return HealthComponentStatus(
+                component: .localData,
+                condition: .attention,
+                detail: "Preserved data needs review"
+            )
+        }
+
+        switch store.session.projectionRepairState {
+        case .ready:
+            break
+        case let .retryAvailable(attemptsUsed):
+            return HealthComponentStatus(
+                component: .localData,
+                condition: .attention,
+                detail: "Generated files need a safe retry (\(attemptsUsed)/3)",
+                remediation: .retryGeneratedProjection
+            )
+        case let .needsUser(attemptsUsed):
+            return HealthComponentStatus(
+                component: .localData,
+                condition: .needsYou,
+                detail: attemptsUsed >= BoundedRepairCoordinator.maximumAttempts
+                    ? "Needs You · stopped after three safe tries"
+                    : "Needs You · repair safety record unavailable"
+            )
+        }
+
+        let latest = [store.lastSavedAt, personalization.document.updatedAt]
+            .compactMap { $0 }
+            .max()
+        return HealthComponentStatus(
+            component: .localData,
+            condition: .ready,
+            detail: "Workspace is readable",
+            lastSuccessAt: latest,
+            remediation: .reloadLocalData
+        )
+    }
+
+    private var syncStatus: HealthComponentStatus {
+        accountSync.accountSyncHealthStatus
+    }
+
+    private var calendarStatus: HealthComponentStatus {
+        if calendar.isAuthorized {
+            return HealthComponentStatus(
+                component: .calendar,
+                condition: .ready,
+                detail: "System calendars are live",
+                lastSuccessAt: calendar.lastSyncedAt,
+                remediation: .refreshCalendar
+            )
+        }
+        return HealthComponentStatus(
+            component: .calendar,
+            condition: calendar.isDenied ? .attention : .off,
+            detail: calendar.isDenied ? "Access is turned off" : "Not connected",
+            remediation: .openCalendarSettings
+        )
+    }
+
+    private var startupStatus: HealthComponentStatus {
+        guard #available(macOS 13.0, *) else {
+            return HealthComponentStatus(
+                component: .startup,
+                condition: .off,
+                detail: "Unavailable on this macOS"
+            )
+        }
+
+        if SMAppService.mainApp.status == .enabled {
+            return HealthComponentStatus(
+                component: .startup,
+                condition: .ready,
+                detail: "Opens when you log in",
+                remediation: .openLoginItemsSettings
+            )
+        }
+        if SMAppService.mainApp.status == .requiresApproval {
+            return HealthComponentStatus(
+                component: .startup,
+                condition: .attention,
+                detail: "Approval is waiting in Settings",
+                remediation: .openLoginItemsSettings
+            )
+        }
+        return HealthComponentStatus(
+            component: .startup,
+            condition: .off,
+            detail: "Launch at login is off",
+            remediation: .openLoginItemsSettings
+        )
+    }
+
+    private var assistantStatus: HealthComponentStatus {
+        #if FOUNDER_OFFICE_DISTRIBUTION
+        return HealthComponentStatus(
+            component: .assistant,
+            condition: .off,
+            detail: "Not included in this build"
+        )
+        #else
+        guard assistant.isAvailable else {
+            return HealthComponentStatus(
+                component: .assistant,
+                condition: .off,
+                detail: "Not included in this build"
+            )
+        }
+
+        switch assistant.state {
+        case .idle:
+            return HealthComponentStatus(
+                component: .assistant,
+                condition: .ready,
+                detail: "Ready for approved work",
+                lastSuccessAt: assistant.lastSuccessfulRunAt,
+                remediation: .recheckAssistant
+            )
+        case .running:
+            return HealthComponentStatus(
+                component: .assistant,
+                condition: .working,
+                detail: "Preparing a local result",
+                lastSuccessAt: assistant.lastSuccessfulRunAt
+            )
+        case .finished:
+            return HealthComponentStatus(
+                component: .assistant,
+                condition: .ready,
+                detail: "Latest local run finished",
+                lastSuccessAt: assistant.lastSuccessfulRunAt,
+                remediation: .recheckAssistant
+            )
+        case .failed:
+            return HealthComponentStatus(
+                component: .assistant,
+                condition: .attention,
+                detail: "Latest local run stopped",
+                lastSuccessAt: assistant.lastSuccessfulRunAt,
+                remediation: .recheckAssistant
+            )
+        }
+        #endif
+    }
+
+    private func observe(_ publisher: ObservableObjectPublisher) {
+        publisher
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
+    }
+
+    private static var architecture: SupportArchitecture {
+        #if arch(arm64)
+        .arm64
+        #elseif arch(x86_64)
+        .x86_64
+        #else
+        .unknown
+        #endif
+    }
+}
