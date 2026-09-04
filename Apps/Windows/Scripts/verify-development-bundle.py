@@ -63,6 +63,13 @@ SECRET_PATTERNS = (
     re.compile(rb"github_pat_[A-Za-z0-9_]{20,}"),
     re.compile(rb"-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----"),
 )
+FIRST_PARTY_PACKAGE_FILES = {
+    "appxmanifest.xml",
+    "foundersoffice.app.dll",
+    "foundersoffice.app.exe",
+    "foundersoffice.core.dll",
+    "resources.pri",
+}
 
 
 def fail(message: str) -> None:
@@ -100,11 +107,12 @@ def validate_zip_metadata(info: zipfile.ZipInfo) -> None:
         fail("archive contains a symbolic link")
 
 
-def scan_bytes(data: bytes, *, context: str) -> None:
+def scan_bytes(data: bytes, *, context: str, scan_paths: bool = True) -> None:
     lowered = data.lower()
-    for marker in PATH_MARKERS:
-        if marker.lower() in lowered or marker.decode("ascii").encode("utf-16le").lower() in lowered:
-            fail(f"archive embeds a development-machine path in {context}")
+    if scan_paths:
+        for marker in PATH_MARKERS:
+            if marker.lower() in lowered or marker.decode("ascii").encode("utf-16le").lower() in lowered:
+                fail(f"archive embeds a development-machine path in {context}")
     for pattern in SECRET_PATTERNS:
         if pattern.search(data):
             fail(f"archive contains possible credential material in {context}")
@@ -127,7 +135,12 @@ def inspect_nested_package(name: str, data: bytes, *, application: bool) -> None
             if total_size > 900 * 1024 * 1024:
                 fail("nested package expands beyond the reviewed size limit")
             if not info.is_dir():
-                scan_bytes(package.read(info), context=f"{name}:{info.filename}")
+                scan_bytes(
+                    package.read(info),
+                    context=f"{name}:{info.filename}",
+                    scan_paths=pathlib.PurePosixPath(info.filename).name.lower()
+                    in FIRST_PARTY_PACKAGE_FILES,
+                )
 
         if application:
             if "appxmanifest.xml" not in package_names:

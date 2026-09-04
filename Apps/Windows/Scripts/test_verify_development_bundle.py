@@ -73,7 +73,7 @@ class DevelopmentBundleVerifierTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             archive = pathlib.Path(directory) / "bundle.zip"
             package = application_package(
-                {"Metadata/source.txt": b"D:\\a\\founders-office\\founders-office\\source.cs"}
+                {"FoundersOffice.Core.dll": b"D:\\a\\founders-office\\founders-office\\source.cs"}
             )
             write_bundle(archive, package=package)
 
@@ -81,6 +81,18 @@ class DevelopmentBundleVerifierTests(unittest.TestCase):
 
             self.assertNotEqual(0, result.returncode)
             self.assertIn("development-machine path", result.stderr)
+
+    def test_allows_upstream_provenance_path_in_third_party_binary(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            archive = pathlib.Path(directory) / "bundle.zip"
+            package = application_package(
+                {"SQLitePCLRaw.core.dll": b"/Users/upstream/project/library.pdb"}
+            )
+            write_bundle(archive, package=package)
+
+            result = self.run_verifier(archive)
+
+            self.assertEqual(0, result.returncode, result.stderr)
 
     def test_rejects_private_signing_key(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

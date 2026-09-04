@@ -64,6 +64,8 @@ try {
         "-p:AppxPackageSigningEnabled=true",
         "-p:PackageCertificateThumbprint=$($certificate.Thumbprint)",
         "-p:AppxPackageVersion=$PackageVersion",
+        "-p:DebugType=None",
+        "-p:DebugSymbols=false",
         "-p:AppxPackageDir=$packageOutput\"
     )
     & dotnet @buildArguments

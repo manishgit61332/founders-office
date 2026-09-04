@@ -141,6 +141,8 @@ if "KeyUsage DigitalSignature" not in bundle_script:
     fail("development signing certificate must be restricted to digital signatures")
 if '"2.5.29.19={text}"' not in bundle_script:
     fail("development signing certificate must be an end-entity certificate")
+if '"-p:DebugType=None"' not in bundle_script or '"-p:DebugSymbols=false"' not in bundle_script:
+    fail("development package must omit debug paths and symbols")
 if r'Remove-Item -LiteralPath "Cert:\CurrentUser\My\$($certificate.Thumbprint)"' not in bundle_script:
     fail("development signing certificate must be removed from the build runner")
 
