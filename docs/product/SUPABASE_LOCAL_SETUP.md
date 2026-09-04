@@ -68,6 +68,30 @@ If a local adapter needs environment variables, copy `.env.example` to the
 gitignored `.env.local`. Leave the publishable key empty until the local CLI emits
 one. Never put a service-role key or OAuth secret in a client environment file.
 
+## Configured local Mac app
+
+`Scripts/build-app.sh` optionally reads the ignored
+`Configuration/ProductAuth.local.json` and embeds its reviewed public values in
+the ad-hoc signed Development app. The file has this exact shape:
+
+```json
+{
+  "supabaseURL": "https://PROJECT_REF.supabase.co",
+  "publishableKey": "PUBLIC_ANON_OR_PUBLISHABLE_KEY",
+  "callbackURL": "founders-office://auth/callback",
+  "appleSignInEnabled": false
+}
+```
+
+Use the exact hosted project origin and callback registered with Supabase. The
+file may contain only a public anonymous/publishable key; never add the Supabase
+service-role key, management token, Google client secret, Apple private key, or
+another provider credential. The build fails closed on missing, duplicate, or
+unknown fields and on unsafe keys or URLs. The file is ignored by Git and is
+applied again on each local rebuild. Apple sign-in remains hidden unless the
+boolean is deliberately enabled; the signed release path separately requires
+that choice together with its production entitlement.
+
 ## Production configuration blockers
 
 The contracts compile without these values, but live sign-in and remote sync stay

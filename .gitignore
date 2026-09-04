@@ -47,6 +47,7 @@ GeneratedAssets/
 !.env.example
 .secrets/
 Secrets.xcconfig
+Configuration/ProductAuth.local.json
 *.p8
 *.p12
 *.cer

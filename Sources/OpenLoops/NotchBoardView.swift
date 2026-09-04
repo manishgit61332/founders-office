@@ -2340,13 +2340,15 @@ struct NotchBoardView: View {
                         .disabled(account.isBusy)
                         .accessibilityIdentifier("account.signIn.google")
 
-                        Button(action: account.signInWithApple) {
-                            Label("Sign in with Apple", systemImage: "apple.logo")
-                                .frame(maxWidth: .infinity)
+                        if account.isAppleSignInAvailable {
+                            Button(action: account.signInWithApple) {
+                                Label("Sign in with Apple", systemImage: "apple.logo")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(HeaderActionButtonStyle())
+                            .disabled(account.isBusy)
+                            .accessibilityIdentifier("account.signIn.apple")
                         }
-                        .buttonStyle(HeaderActionButtonStyle())
-                        .disabled(account.isBusy)
-                        .accessibilityIdentifier("account.signIn.apple")
                     }
 
                     Text("Your account identifies you. Calendar, Gmail, Notion, and other connections stay separate and are added only when you ask.")

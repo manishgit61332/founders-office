@@ -26,6 +26,21 @@ struct FounderOfficeAccountControllerTests {
     }
 
     @Test
+    func appleSignInAvailabilityRequiresAConfiguredAuthorizer() {
+        let service = TestProductAuthService(initialState: .localOnly)
+        let unavailable = makeController(service: service)
+        let available = makeController(
+            service: service,
+            authorizer: TestAppleAuthorizer(
+                result: .failure(AppleIdentityAuthorizationError.cancelled)
+            )
+        )
+
+        #expect(!unavailable.isAppleSignInAvailable)
+        #expect(available.isAppleSignInAvailable)
+    }
+
+    @Test
     func secureSessionRestoreRunsExactlyOnce() async {
         let service = TestProductAuthService(initialState: .localOnly)
         let controller = makeController(service: service)

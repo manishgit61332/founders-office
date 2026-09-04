@@ -6,6 +6,8 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Added
 
+- Local Mac builds retain reviewed Google/Supabase public configuration across
+  reinstalls. Account & Sync shows only configured sign-in providers.
 - A fail-closed source-preview installer and documented workflow for technical
   Mac testers to build Development locally without weakening the signed and
   notarized Beta download gate.

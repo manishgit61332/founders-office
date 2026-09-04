@@ -21,7 +21,7 @@
     <key>CFBundleShortVersionString</key>
     <string>0.11.2</string>
     <key>CFBundleVersion</key>
-    <string>19</string>
+    <string>20</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
     <key>LSUIElement</key>
@@ -33,6 +33,8 @@
     <key>NSCalendarsFullAccessUsageDescription</key>
     <string>Founder's Office shows upcoming events and lets you add events to the calendars already enabled on this Mac.</string>
 	<key>FounderOfficeCloudEnabled</key>
+	<false/>
+	<key>FounderOfficeAppleSignInEnabled</key>
 	<false/>
 	<key>FounderOfficeUpdateFeedURL</key>
 	<string></string>

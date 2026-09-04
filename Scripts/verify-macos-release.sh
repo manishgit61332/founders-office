@@ -428,6 +428,7 @@ notarization_claim="$(plutil -extract FounderOfficeNotarized raw -o - "$info_pli
 runtime_update_feed="$(plutil -extract FounderOfficeUpdateFeedURL raw -o - "$info_plist")"
 runtime_update_channel="$(plutil -extract FounderOfficeUpdateChannel raw -o - "$info_plist")"
 runtime_update_public_key="$(plutil -extract FounderOfficeUpdatePublicKey raw -o - "$info_plist")"
+runtime_apple_sign_in_enabled="$(plutil -extract FounderOfficeAppleSignInEnabled raw -o - "$info_plist")"
 [[ "$distribution_channel" == "direct" ]] || fail "app is not marked for direct distribution"
 [[ "$notarization_claim" == "true" ]] || fail "app is missing the notarization release marker"
 if plutil -extract FounderOfficeCloudEnabled raw -o - "$info_plist" >/dev/null 2>&1 \
@@ -440,6 +441,8 @@ fi
     || fail "runtime update channel does not match independent release policy"
 [[ "$runtime_update_public_key" == "$expected_update_public_key" ]] \
     || fail "runtime update public key does not match independent release policy"
+[[ "$runtime_apple_sign_in_enabled" == "true" ]] \
+    || fail "signed release does not enable its entitled Apple identity provider"
 privacy_manifest="${app_path}/Contents/Resources/PrivacyInfo.xcprivacy"
 [[ -f "$privacy_manifest" ]] || fail "privacy manifest is missing"
 "${script_dir}/verify-privacy-manifest.py" "$privacy_manifest"

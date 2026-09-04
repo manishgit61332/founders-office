@@ -152,9 +152,10 @@ final class FounderOfficeAccountController: ObservableObject, AccountSyncStatusS
                     presentation: presentation
                 )
             }
-            let authorizer = AppleIdentityAuthorizer { [weak hostWindow] in
-                hostWindow ?? NSApp.keyWindow
-            }
+            let authorizer: (any AppleIdentityAuthorizing)? =
+                infoDictionary["FounderOfficeAppleSignInEnabled"] as? Bool == true
+                ? AppleIdentityAuthorizer { [weak hostWindow] in hostWindow ?? NSApp.keyWindow }
+                : nil
             return FounderOfficeAccountController(
                 availability: .available,
                 service: service,
@@ -214,6 +215,10 @@ final class FounderOfficeAccountController: ObservableObject, AccountSyncStatusS
 
     var isAuthenticationAvailable: Bool {
         availability == .available && service != nil
+    }
+
+    var isAppleSignInAvailable: Bool {
+        isAuthenticationAvailable && appleAuthorizer != nil
     }
 
     var isBusy: Bool {

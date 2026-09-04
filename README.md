@@ -46,6 +46,15 @@ open "$HOME/Applications/Founder's Office.app"
 
 This command creates an ad-hoc signed development app in `dist/development/`. It embeds the current checkout path and is not notarized. Do not distribute it or connect it to the website download.
 
+To exercise reviewed hosted sign-in in this same local app, create the ignored
+`Configuration/ProductAuth.local.json` with only the public Supabase project
+origin, publishable client key, and exact callback URL. `Scripts/build-app.sh`
+validates and embeds those values before signing. It rejects service-role keys,
+OAuth client secrets, unknown fields, and unsupported callbacks. Omit
+`appleSignInEnabled`, or set it to `false`, until the signed app has the reviewed
+Apple capability and provider configuration. See
+[the Supabase setup guide](docs/product/SUPABASE_LOCAL_SETUP.md).
+
 ### Source preview for a technical friend
 
 A technical tester can clone an explicitly approved commit and build the app on

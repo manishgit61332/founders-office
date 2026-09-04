@@ -21,6 +21,7 @@ usage() {
     print -u2 "  FOUNDER_OFFICE_SUPABASE_URL"
     print -u2 "  FOUNDER_OFFICE_SUPABASE_PUBLISHABLE_KEY"
     print -u2 "  FOUNDER_OFFICE_AUTH_CALLBACK_SCHEME"
+    print -u2 "  FOUNDER_OFFICE_APPLE_SIGN_IN_ENABLED=true"
     print -u2 ""
     print -u2 "Release entitlements must be tracked at Config/Release/FoundersOfficeMac.entitlements."
 }
@@ -77,6 +78,7 @@ required_environment=(
     FOUNDER_OFFICE_SUPABASE_URL
     FOUNDER_OFFICE_SUPABASE_PUBLISHABLE_KEY
     FOUNDER_OFFICE_AUTH_CALLBACK_SCHEME
+    FOUNDER_OFFICE_APPLE_SIGN_IN_ENABLED
 )
 
 for variable_name in "${required_environment[@]}"; do
@@ -94,6 +96,7 @@ update_public_key="$FOUNDER_OFFICE_UPDATE_PUBLIC_KEY"
 supabase_url="$FOUNDER_OFFICE_SUPABASE_URL"
 supabase_publishable_key="$FOUNDER_OFFICE_SUPABASE_PUBLISHABLE_KEY"
 auth_callback_scheme="$FOUNDER_OFFICE_AUTH_CALLBACK_SCHEME"
+apple_sign_in_enabled="$FOUNDER_OFFICE_APPLE_SIGN_IN_ENABLED"
 required_archs="${FOUNDER_OFFICE_REQUIRED_ARCHS:-arm64 x86_64}"
 release_entitlements_relative="Config/Release/FoundersOfficeMac.entitlements"
 release_entitlements="${project_dir}/${release_entitlements_relative}"
@@ -115,6 +118,8 @@ done
     || fail "the signing identity must be a Developer ID Application identity"
 [[ "$bundle_id" != "com.manish.openloops" ]] \
     || fail "the known provisional macOS bundle identifier cannot be released"
+[[ "$apple_sign_in_enabled" == "true" ]] \
+    || fail "FOUNDER_OFFICE_APPLE_SIGN_IN_ENABLED must be explicitly set to true"
 
 python3 - "$update_feed_url" "$update_channel" "$update_public_key" <<'PY'
 import base64
@@ -341,6 +346,7 @@ plutil -replace FounderOfficeSupabaseURL -string "$supabase_url" "$release_info_
 plutil -replace FounderOfficeSupabasePublishableKey -string "$supabase_publishable_key" "$release_info_plist"
 plutil -replace FounderOfficeAuthCallbackURL -string "${auth_callback_scheme}://auth/callback" "$release_info_plist"
 plutil -replace CFBundleURLTypes.0.CFBundleURLSchemes.0 -string "$auth_callback_scheme" "$release_info_plist"
+plutil -replace FounderOfficeAppleSignInEnabled -bool true "$release_info_plist"
 plutil -lint "$release_info_plist" >/dev/null
 
 xcodegen generate \
@@ -423,6 +429,7 @@ runtime_supabase_url="$(plutil -extract FounderOfficeSupabaseURL raw -o - "$info
 runtime_supabase_publishable_key="$(plutil -extract FounderOfficeSupabasePublishableKey raw -o - "$info_plist")"
 runtime_auth_callback_url="$(plutil -extract FounderOfficeAuthCallbackURL raw -o - "$info_plist")"
 runtime_auth_callback_scheme="$(plutil -extract CFBundleURLTypes.0.CFBundleURLSchemes.0 raw -o - "$info_plist")"
+runtime_apple_sign_in_enabled="$(plutil -extract FounderOfficeAppleSignInEnabled raw -o - "$info_plist")"
 [[ "$runtime_update_feed" == "$update_feed_url" ]] \
     || fail "runtime update feed does not match the reviewed release setting"
 [[ "$runtime_update_channel" == "$update_channel" ]] \
@@ -437,6 +444,8 @@ runtime_auth_callback_scheme="$(plutil -extract CFBundleURLTypes.0.CFBundleURLSc
     || fail "runtime product-auth callback does not match the reviewed release setting"
 [[ "$runtime_auth_callback_scheme" == "$auth_callback_scheme" ]] \
     || fail "registered product-auth URL scheme does not match the reviewed release setting"
+[[ "$runtime_apple_sign_in_enabled" == "true" ]] \
+    || fail "signed release did not enable its entitled Apple identity provider"
 distribution_channel="$(plutil -extract FounderOfficeDistributionChannel raw -o - "$info_plist")"
 notarization_claim="$(plutil -extract FounderOfficeNotarized raw -o - "$info_plist")"
 [[ "$distribution_channel" == "direct" ]] || fail "exported app is not marked for direct distribution"

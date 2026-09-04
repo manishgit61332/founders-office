@@ -72,6 +72,7 @@ release_environment=(
     FOUNDER_OFFICE_SUPABASE_URL=https://example-project.supabase.co
     FOUNDER_OFFICE_SUPABASE_PUBLISHABLE_KEY=sb_publishable_12345678901234567890
     FOUNDER_OFFICE_AUTH_CALLBACK_SCHEME=founders-office
+    FOUNDER_OFFICE_APPLE_SIGN_IN_ENABLED=true
 )
 assert_refused \
     "exact credential-free HTTPS URL" \
@@ -99,6 +100,12 @@ assert_refused \
     "reviewed founders-office callback scheme" \
     env "${release_environment[@]}" \
         FOUNDER_OFFICE_AUTH_CALLBACK_SCHEME=founders-office-dev \
+        FOUNDER_OFFICE_UPDATE_FEED_URL=https://downloads.example.com/channel/beta.json \
+        "$script_dir/release-macos.sh" --version 1.2.3 --build 4
+assert_refused \
+    "must be explicitly set to true" \
+    env "${release_environment[@]}" \
+        FOUNDER_OFFICE_APPLE_SIGN_IN_ENABLED=false \
         FOUNDER_OFFICE_UPDATE_FEED_URL=https://downloads.example.com/channel/beta.json \
         "$script_dir/release-macos.sh" --version 1.2.3 --build 4
 

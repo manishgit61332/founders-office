@@ -5,7 +5,9 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 python3 -m py_compile \
+    Scripts/configure-product-auth.py \
     Scripts/openloops.py \
+    Scripts/test-configure-product-auth.py \
     Scripts/test-openloops-cli.py \
     Scripts/release_evidence_policy.py \
     Scripts/record-macos-clean-acceptance.py \
@@ -14,6 +16,7 @@ python3 -m py_compile \
     Scripts/validate-sync-contracts.py \
     Scripts/verify-app-version.py \
     Scripts/verify-privacy-manifest.py
+python3 Scripts/test-configure-product-auth.py
 python3 Scripts/test-openloops-cli.py
 python3 Scripts/verify-app-version.py
 python3 Scripts/validate-mac-sync-authority.py

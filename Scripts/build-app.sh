@@ -17,6 +17,7 @@ bundle_dir="${project_dir}/dist/development/${bundle_name}.app"
 binary_path="${project_dir}/.build/release/OpenLoops"
 executable_name="FoundersOffice"
 install_requested=0
+auth_config="${project_dir}/Configuration/ProductAuth.local.json"
 
 usage() {
     cat <<'EOF'
@@ -62,6 +63,9 @@ if (( install_requested == 1 )) && [[ -n "${FOUNDER_OFFICE_INSTALL_ROOT:-}" ]]; 
 fi
 
 cd "${project_dir}"
+if [[ -f "${auth_config}" ]]; then
+    python3 Scripts/configure-product-auth.py "${auth_config}"
+fi
 swift build -c release
 
 if [[ -d "${bundle_dir}" ]]; then
@@ -73,6 +77,9 @@ mkdir -p "${bundle_dir}/Contents/Resources"
 mkdir -p "${bundle_dir}/Contents/Resources/Fonts"
 cp "${binary_path}" "${bundle_dir}/Contents/MacOS/${executable_name}"
 cp "${project_dir}/Resources/Info.plist" "${bundle_dir}/Contents/Info.plist"
+if [[ -f "${auth_config}" ]]; then
+    python3 Scripts/configure-product-auth.py "${auth_config}" --plist "${bundle_dir}/Contents/Info.plist"
+fi
 plutil -replace OpenLoopsWorkspace -string "${project_dir}" "${bundle_dir}/Contents/Info.plist" 2>/dev/null \
     || plutil -insert OpenLoopsWorkspace -string "${project_dir}" "${bundle_dir}/Contents/Info.plist"
 plutil -replace FounderOfficeDistributionChannel -string "development" "${bundle_dir}/Contents/Info.plist" 2>/dev/null \

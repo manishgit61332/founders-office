@@ -71,9 +71,17 @@ export FOUNDER_OFFICE_NOTARY_PROFILE="founders-office-notary"
 export FOUNDER_OFFICE_UPDATE_FEED_URL="https://DOWNLOAD_ORIGIN/channel/macos-beta-v1.json"
 export FOUNDER_OFFICE_UPDATE_CHANNEL="beta"
 export FOUNDER_OFFICE_UPDATE_PUBLIC_KEY="REVIEWED_ED25519_PUBLIC_KEY"
+export FOUNDER_OFFICE_SUPABASE_URL="https://PROJECT_REF.supabase.co"
+export FOUNDER_OFFICE_SUPABASE_PUBLISHABLE_KEY="REVIEWED_PUBLIC_CLIENT_KEY"
+export FOUNDER_OFFICE_AUTH_CALLBACK_SCHEME="founders-office"
+export FOUNDER_OFFICE_APPLE_SIGN_IN_ENABLED="true"
 ```
 
-Do not copy the example values. The script validates the installed certificate, provisioning choice, bundle, signature, and effective entitlements.
+Do not copy the example values. The script validates the installed certificate,
+provisioning choice, bundle, signature, effective entitlements, public Supabase
+configuration, and the explicit Apple-provider choice. OAuth client secrets,
+service-role keys, management tokens, and Apple private keys never enter the app
+bundle.
 
 The default product is universal for Apple silicon and Intel. If the product decision explicitly drops Intel support, record that decision and set `FOUNDER_OFFICE_REQUIRED_ARCHS=arm64` for the release. Do not change architecture support silently.
 

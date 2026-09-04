@@ -32,13 +32,15 @@
     <key>CFBundleShortVersionString</key>
     <string>0.11.2</string>
     <key>CFBundleVersion</key>
-    <string>19</string>
+    <string>20</string>
     <key>FounderOfficeSupabaseURL</key>
     <string>$(FOUNDER_OFFICE_SUPABASE_URL)</string>
     <key>FounderOfficeSupabasePublishableKey</key>
     <string>$(FOUNDER_OFFICE_SUPABASE_PUBLISHABLE_KEY)</string>
     <key>FounderOfficeAuthCallbackURL</key>
     <string>$(FOUNDER_OFFICE_AUTH_CALLBACK_SCHEME)://auth/callback</string>
+    <key>FounderOfficeAppleSignInEnabled</key>
+    <false/>
     <key>FounderOfficeUpdateFeedURL</key>
     <string>$(FOUNDER_OFFICE_UPDATE_FEED_URL)</string>
     <key>FounderOfficeUpdateChannel</key>
