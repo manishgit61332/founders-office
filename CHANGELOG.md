@@ -7,6 +7,7 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 ### Added
 
 - A first native Windows 11 development shell using C# and WinUI 3, with a Windows-native top-edge surface, notification-area entry point, transactional offline SQLite repository, v1 sync-contract adapter, and a dedicated Windows build/test gate. This is a developer milestone, not a signed friend-beta installer.
+- The Windows development build now supports creating and editing Moves with priority and deadline, completion history with reopen, confirmed deletion, a native notification-area menu, and a downloadable x64 development-signed MSIX bundle with archive privacy checks.
 - New Moves now accept an optional user-written description, and the full Move editor can read or change the title and description alongside priority and deadline in one save.
 - A Vercel-compatible Next.js production build and project configuration for the Founder’s Office website while retaining the existing Sites/Cloudflare build path.
 - A CI version-consistency gate that prevents the locally installed development app and the macOS Xcode target from presenting different version/build numbers.

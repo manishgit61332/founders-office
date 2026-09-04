@@ -10,7 +10,17 @@ public interface IWorkspaceRepository : IAsyncDisposable
 
     Task UpsertMoveAsync(Move move, CancellationToken cancellationToken = default);
 
+    Task UpdateMoveAsync(
+        Guid moveId,
+        string title,
+        string details,
+        MovePriority priority,
+        DateOnly? dueOn,
+        CancellationToken cancellationToken = default);
+
     Task CompleteMoveAsync(Guid moveId, CancellationToken cancellationToken = default);
+
+    Task ReopenMoveAsync(Guid moveId, CancellationToken cancellationToken = default);
 
     Task SoftDeleteMoveAsync(Guid moveId, CancellationToken cancellationToken = default);
 

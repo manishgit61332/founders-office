@@ -4,7 +4,94 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     Title="Founder's Office">
 
-    <Grid x:Name="RootGrid" RequestedTheme="Dark" Background="Transparent">
+    <Grid x:Name="RootGrid" Background="Transparent" RequestedTheme="Dark">
+        <Grid.Resources>
+            <DataTemplate x:Key="MoveCardTemplate">
+                <Border
+                    Margin="0,0,0,10"
+                    Padding="16"
+                    Background="{ThemeResource SurfaceCardBrush}"
+                    BorderBrush="{ThemeResource SurfaceBorderBrush}"
+                    BorderThickness="1"
+                    CornerRadius="18">
+                    <Grid ColumnSpacing="12" RowSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <TextBlock
+                                Foreground="{ThemeResource AccentBrush}"
+                                FontSize="13"
+                                FontWeight="SemiBold"
+                                Text="{Binding PriorityLabel}" />
+                            <TextBlock FontSize="13" Opacity="0.66" Text="{Binding StatusLabel}" />
+                        </StackPanel>
+
+                        <StackPanel
+                            Grid.Column="1"
+                            Grid.RowSpan="3"
+                            HorizontalAlignment="Right"
+                            Orientation="Horizontal"
+                            Spacing="6">
+                            <Button
+                                Click="EditMoveButton_Click"
+                                Tag="{Binding Id}"
+                                ToolTipService.ToolTip="Edit this Move"
+                                Visibility="{Binding EditVisibility}">
+                                Edit
+                            </Button>
+                            <Button
+                                Click="CompleteMoveButton_Click"
+                                Tag="{Binding Id}"
+                                ToolTipService.ToolTip="Mark this Move done"
+                                Visibility="{Binding CompleteVisibility}">
+                                Done
+                            </Button>
+                            <Button
+                                Click="ReopenMoveButton_Click"
+                                Tag="{Binding Id}"
+                                ToolTipService.ToolTip="Return this Move to the active list"
+                                Visibility="{Binding ReopenVisibility}">
+                                Reopen
+                            </Button>
+                            <Button
+                                Click="DeleteMoveButton_Click"
+                                Tag="{Binding Id}"
+                                ToolTipService.ToolTip="Delete this Move">
+                                <FontIcon Glyph="&#xE74D;" />
+                            </Button>
+                        </StackPanel>
+
+                        <TextBlock
+                            Grid.Row="1"
+                            Margin="0,0,8,0"
+                            FontFamily="Segoe UI Variable Display"
+                            FontSize="18"
+                            FontWeight="SemiBold"
+                            Text="{Binding Title}"
+                            TextWrapping="Wrap" />
+
+                        <StackPanel Grid.Row="2" Margin="0,0,8,0" Spacing="6">
+                            <TextBlock
+                                FontSize="14"
+                                Opacity="0.82"
+                                Text="{Binding Details}"
+                                TextWrapping="Wrap"
+                                Visibility="{Binding DetailsVisibility}" />
+                            <TextBlock FontSize="13" Opacity="0.66" Text="{Binding TimelineLabel}" />
+                        </StackPanel>
+                    </Grid>
+                </Border>
+            </DataTemplate>
+        </Grid.Resources>
+
         <Grid.RowDefinitions>
             <RowDefinition Height="44" />
             <RowDefinition Height="*" />
@@ -20,25 +107,19 @@
                 FontFamily="Segoe UI Variable Display"
                 FontSize="14"
                 FontWeight="SemiBold"
-                Text="FOUNDER'S OFFICE · WINDOWS PREVIEW" />
+                Text="FOUNDER'S OFFICE · WINDOWS DEVELOPMENT" />
             <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6">
-                <Button Click="HideButton_Click" ToolTipService.ToolTip="Hide to system tray">
+                <Button Click="HideButton_Click" ToolTipService.ToolTip="Hide to notification area">
                     <FontIcon Glyph="&#xE921;" />
                 </Button>
-                <Button Click="ExitButton_Click" ToolTipService.ToolTip="Exit">
+                <Button Click="ExitButton_Click" ToolTipService.ToolTip="Exit Founder's Office">
                     <FontIcon Glyph="&#xE8BB;" />
                 </Button>
             </StackPanel>
         </Grid>
 
-        <ScrollViewer Grid.Row="1" Padding="24,12,24,24">
-            <Grid MaxWidth="760">
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto" />
-                    <RowDefinition Height="Auto" />
-                    <RowDefinition Height="Auto" />
-                </Grid.RowDefinitions>
-
+        <ScrollViewer Grid.Row="1" Padding="24,12,24,28">
+            <StackPanel MaxWidth="820" Spacing="16">
                 <StackPanel Spacing="4">
                     <TextBlock
                         FontFamily="Segoe UI Variable Display"
@@ -53,14 +134,13 @@
                 </StackPanel>
 
                 <Border
-                    Grid.Row="1"
-                    Margin="0,24,0,0"
+                    Margin="0,8,0,0"
                     Padding="20"
                     Background="{ThemeResource SurfaceCardBrush}"
                     BorderBrush="{ThemeResource SurfaceBorderBrush}"
                     BorderThickness="1"
                     CornerRadius="22">
-                    <StackPanel Spacing="12">
+                    <StackPanel Spacing="9">
                         <TextBlock
                             Foreground="{ThemeResource AccentBrush}"
                             FontSize="14"
@@ -71,26 +151,31 @@
                             FontFamily="Segoe UI Variable Display"
                             FontSize="24"
                             FontWeight="SemiBold"
-                            Text="Nothing queued yet" />
+                            Text="Nothing queued yet"
+                            TextWrapping="Wrap" />
                         <TextBlock
                             x:Name="NextMoveDetailsText"
                             FontSize="16"
                             Opacity="0.88"
                             Text="Add one clear Move below."
                             TextWrapping="Wrap" />
+                        <TextBlock
+                            x:Name="NextMoveMetaText"
+                            FontSize="13"
+                            Opacity="0.66"
+                            Text="No deadline" />
                     </StackPanel>
                 </Border>
 
                 <Border
-                    Grid.Row="2"
-                    Margin="0,16,0,0"
+                    x:Name="EditorCard"
                     Padding="18"
                     Background="{ThemeResource SurfaceCardBrush}"
                     BorderBrush="{ThemeResource SurfaceBorderBrush}"
                     BorderThickness="1"
                     CornerRadius="22">
-                    <StackPanel Spacing="10">
-                        <TextBlock FontSize="18" FontWeight="SemiBold" Text="Quick add" />
+                    <StackPanel Spacing="12">
+                        <TextBlock x:Name="EditorHeadingText" FontSize="18" FontWeight="SemiBold" Text="Add a Move" />
                         <TextBox
                             x:Name="MoveTitleInput"
                             AutomationProperties.Name="Move title"
@@ -106,12 +191,43 @@
                             MinHeight="74"
                             PlaceholderText="Optional context"
                             TextWrapping="Wrap" />
+                        <Grid ColumnSpacing="12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <ComboBox
+                                x:Name="MovePriorityInput"
+                                AutomationProperties.Name="Move priority"
+                                Header="Priority"
+                                HorizontalAlignment="Stretch"
+                                SelectedIndex="1">
+                                <ComboBoxItem Content="Critical (P0)" Tag="P0" />
+                                <ComboBoxItem Content="High (P1)" Tag="P1" />
+                                <ComboBoxItem Content="Medium (P2)" Tag="P2" />
+                                <ComboBoxItem Content="Low (P3)" Tag="P3" />
+                            </ComboBox>
+                            <CalendarDatePicker
+                                x:Name="MoveDeadlineInput"
+                                Grid.Column="1"
+                                AutomationProperties.Name="Move deadline"
+                                DateFormat="{}{day.integer} {month.abbreviated} {year.full}"
+                                Header="Deadline"
+                                HorizontalAlignment="Stretch"
+                                PlaceholderText="No deadline" />
+                        </Grid>
                         <StackPanel Orientation="Horizontal" Spacing="10">
                             <Button
-                                x:Name="AddMoveButton"
-                                Click="AddMoveButton_Click"
+                                x:Name="SaveMoveButton"
+                                Click="SaveMoveButton_Click"
                                 Style="{StaticResource AccentButtonStyle}">
                                 Add Move
+                            </Button>
+                            <Button
+                                x:Name="CancelEditButton"
+                                Click="CancelEditButton_Click"
+                                Visibility="Collapsed">
+                                Cancel edit
                             </Button>
                             <ProgressRing x:Name="BusyIndicator" Width="22" Height="22" IsActive="False" />
                         </StackPanel>
@@ -119,12 +235,65 @@
                             x:Name="OperationInfoBar"
                             IsClosable="True"
                             IsOpen="False"
+                            Message="Your existing workspace was not changed. Please try again."
                             Severity="Error"
-                            Title="Couldn’t save this Move"
-                            Message="Your existing workspace was not changed. Please try again." />
+                            Title="Couldn’t save this Move" />
                     </StackPanel>
                 </Border>
-            </Grid>
+
+                <Grid Margin="0,8,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock FontSize="22" FontWeight="SemiBold" Text="Active Moves" />
+                    <TextBlock
+                        x:Name="ActiveMoveCountText"
+                        Grid.Column="1"
+                        VerticalAlignment="Center"
+                        FontSize="14"
+                        Opacity="0.66"
+                        Text="0" />
+                </Grid>
+                <TextBlock
+                    x:Name="ActiveEmptyText"
+                    Margin="0,2,0,8"
+                    FontSize="15"
+                    Opacity="0.66"
+                    Text="No active Moves yet." />
+                <ItemsControl x:Name="ActiveMovesItems" ItemTemplate="{StaticResource MoveCardTemplate}" />
+
+                <Grid Margin="0,10,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock FontSize="22" FontWeight="SemiBold" Text="Completed history" />
+                    <TextBlock
+                        x:Name="CompletedMoveCountText"
+                        Grid.Column="1"
+                        VerticalAlignment="Center"
+                        FontSize="14"
+                        Opacity="0.66"
+                        Text="0" />
+                </Grid>
+                <TextBlock
+                    x:Name="HistoryEmptyText"
+                    Margin="0,2,0,8"
+                    FontSize="15"
+                    Opacity="0.66"
+                    Text="Completed Moves will stay here until you delete them." />
+                <ItemsControl x:Name="CompletedMovesItems" ItemTemplate="{StaticResource MoveCardTemplate}" />
+
+                <TextBlock
+                    Margin="0,6,0,0"
+                    HorizontalAlignment="Center"
+                    FontSize="12"
+                    Opacity="0.56"
+                    Text="Development build · Sync is not connected yet, so changes stay on this device."
+                    TextAlignment="Center"
+                    TextWrapping="Wrap" />
+            </StackPanel>
         </ScrollViewer>
     </Grid>
 </Window>

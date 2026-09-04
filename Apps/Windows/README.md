@@ -1,23 +1,28 @@
 # Founder’s Office for Windows
 
-This directory contains the first **developer milestone**, not a distributable
+This directory contains a testable **development build**, not a production or
 friend beta. It proves the native Windows shell and local data boundaries while
 the integration branch freezes production identity and sync.
 
 ## What runs today
 
 - C# + WinUI 3 Windows 11 shell with Mica and a compact top-edge surface;
-- notification-area icon that shows or hides the surface;
-- user-entered Move title and optional description;
+- notification-area icon with left-click show/hide, a native Open/Hide + Exit
+  menu, and recovery after Explorer restarts;
+- local Move creation and editing with title, description, priority, and an
+  optional deadline;
+- active Moves, completion history, reopen, and confirmed soft deletion;
 - local SQLite workspace under the signed-in Windows user’s local app-data;
 - atomic Move + outbox transactions for offline-first sync preparation;
 - strict hand-mapped readers for the existing `contracts/v1` fixtures;
-- MSIX project/manifest structure with startup disabled by default;
+- a CI-produced x64 MSIX bundle signed with an ephemeral development certificate,
+  with startup disabled by default and explicit non-production labeling;
 - platform-neutral tests for repository, outbox, contract, and placement rules.
 
 It does **not** yet provide live Google/Apple product sign-in, Supabase transport,
-Calendar connectors, signed MSIX installation, automatic updates, or a public
-package identity. The interface labels local state honestly.
+Calendar connectors, production-trusted signing, automatic updates, recovery
+for deleted Moves, or a public package identity. The interface and downloadable
+bundle label this state honestly.
 
 ## Architecture
 
@@ -54,11 +59,25 @@ Use a Windows 11 machine, build 22621 or later.
    ```
 
 4. Run `FoundersOffice.App` from Visual Studio. Use the notification-area icon
-   to hide/show it. Closing the surface hides it; **Exit** stops the process.
+   to hide/show it. Right-click for the native menu. Closing the surface hides
+   it; **Exit** stops the process.
 
 NuGet is restricted to `nuget.org`, versions are centrally pinned, and lock
 files are committed. Do not place OAuth files, signing certificates, tokens, or
 real workspace databases inside the repository.
+
+## Downloadable development bundle
+
+Every successful run of `.github/workflows/windows.yml` publishes
+`FoundersOffice-Windows-x64-DEVELOPMENT` for 30 days. The artifact contains a
+hash-verified ZIP with the MSIX, its public development certificate, dependency
+packages when required, install script, build provenance, and test instructions.
+
+The workflow creates a non-exportable signing key only inside the Windows runner,
+removes it after packaging, verifies the archive allow-list and nested MSIX, and
+rejects credentials, runtime data, caches, debug symbols, or development-machine
+paths. The certificate is self-signed and short-lived. This is development
+transport integrity, not production release signing.
 
 ## Windows-only verification still required
 
@@ -69,9 +88,10 @@ Before calling this a Windows alpha:
   taskbar edge changes, sleep/wake, and high-contrast mode;
 - prove tray show/hide and explicit Exit across repeated launches;
 - prove startup remains off until the user opts in;
-- create, relaunch, complete, and delete Moves without data loss;
-- build an unsigned internal MSIX, then freeze the public package identity and
-  repeat with a trusted certificate on a clean second laptop;
+- install the development-signed MSIX on both test laptops, then create, edit,
+  relaunch, complete, reopen, and delete Moves without data loss;
+- freeze the public package identity and repeat packaging with a production
+  certificate on a clean second laptop;
 - connect the approved Supabase transport only after account isolation, revoked
   sessions, offline convergence, export, and erase pass the shared release gate.
 

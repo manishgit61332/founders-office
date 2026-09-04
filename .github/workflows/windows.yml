@@ -57,7 +57,9 @@ jobs:
 
       - name: Validate Windows structure and release boundaries
         working-directory: .
-        run: python Scripts/validate-windows-scaffold.py
+        run: |
+          python Scripts/validate-windows-scaffold.py
+          python -m unittest Apps.Windows.Scripts.test_verify_development_bundle
 
       - name: Restore locked dependencies
         run: dotnet restore .\FoundersOffice.Windows.slnx --locked-mode
@@ -81,3 +83,33 @@ jobs:
 
       - name: Report vulnerable dependencies
         run: dotnet list .\FoundersOffice.Windows.slnx package --vulnerable --include-transitive
+
+      - name: Build labeled development MSIX bundle
+        shell: pwsh
+        run: |
+          $buildNumber = [int]$env:GITHUB_RUN_NUMBER
+          if ($buildNumber -lt 1 -or $buildNumber -gt 65535) {
+            throw "The workflow run number cannot fit in an MSIX version component."
+          }
+          $packageVersion = "0.1.$buildNumber.0"
+          $runUrl = "https://github.com/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+          .\Scripts\New-DevelopmentBundle.ps1 `
+            -OutputDirectory (Join-Path $PWD "BundleArtifacts") `
+            -PackageVersion $packageVersion `
+            -CommitSha $env:GITHUB_SHA `
+            -RunUrl $runUrl
+
+      - name: Verify development bundle archive
+        run: >-
+          python
+          .\Scripts\verify-development-bundle.py
+          .\BundleArtifacts\FoundersOffice-Windows-x64-DEVELOPMENT.zip
+
+      - name: Publish Windows x64 DEVELOPMENT bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: FoundersOffice-Windows-x64-DEVELOPMENT
+          path: Apps/Windows/BundleArtifacts/FoundersOffice-Windows-x64-DEVELOPMENT.zip
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30

@@ -54,6 +54,70 @@ public sealed class SqliteWorkspaceRepositoryTests
     }
 
     [Fact]
+    public async Task EditChangesOnlySelectedFieldsAndPreservesMoveState()
+    {
+        await using var fixture = await RepositoryFixture.CreateAsync();
+        var move = Move.Create("Draft title", "Draft details");
+        await fixture.Repository.UpsertMoveAsync(move);
+
+        await fixture.Repository.UpdateMoveAsync(
+            move.Id,
+            "Final title",
+            "Final details",
+            MovePriority.P0,
+            new DateOnly(2026, 9, 12));
+
+        var updated = Assert.Single((await fixture.Repository.SnapshotAsync()).Moves);
+        Assert.Equal("Final title", updated.Title);
+        Assert.Equal("Final details", updated.Details);
+        Assert.Equal(MovePriority.P0, updated.Priority);
+        Assert.Equal(new DateOnly(2026, 9, 12), updated.DueOn);
+        Assert.Equal(MoveStatus.Doing, updated.Status);
+
+        var operations = await fixture.Repository.PendingOperationsAsync();
+        Assert.Equal(2, operations.Count);
+        Assert.Equal(
+            "[\"title\",\"details\",\"priority\",\"dueOn\"]",
+            operations[^1].ChangedFieldsJson);
+        Assert.DoesNotContain("\"status\"", operations[^1].PayloadJson, StringComparison.Ordinal);
+        Assert.Contains("\"dueOn\":\"2026-09-12\"", operations[^1].PayloadJson, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task EditingWithoutChangesDoesNotCreateAnotherOperation()
+    {
+        await using var fixture = await RepositoryFixture.CreateAsync();
+        var move = Move.Create("No changes", "Same details", MovePriority.P2);
+        await fixture.Repository.UpsertMoveAsync(move);
+
+        await fixture.Repository.UpdateMoveAsync(
+            move.Id,
+            " No changes ",
+            " Same details ",
+            MovePriority.P2,
+            null);
+
+        Assert.Single(await fixture.Repository.PendingOperationsAsync());
+    }
+
+    [Fact]
+    public async Task CompletedMoveCanReturnFromHistory()
+    {
+        await using var fixture = await RepositoryFixture.CreateAsync();
+        var move = Move.Create("Reopen this", priority: MovePriority.P3);
+        await fixture.Repository.UpsertMoveAsync(move);
+        await fixture.Repository.CompleteMoveAsync(move.Id);
+
+        await fixture.Repository.ReopenMoveAsync(move.Id);
+
+        var reopened = Assert.Single((await fixture.Repository.SnapshotAsync()).Moves);
+        Assert.Equal(MoveStatus.Doing, reopened.Status);
+        Assert.Null(reopened.PreviousStatus);
+        Assert.Null(reopened.CompletedAt);
+        Assert.Equal(3, (await fixture.Repository.PendingOperationsAsync()).Count);
+    }
+
+    [Fact]
     public async Task ApplyingRemoteMoveDoesNotCreateAnOutboundEcho()
     {
         await using var fixture = await RepositoryFixture.CreateAsync();

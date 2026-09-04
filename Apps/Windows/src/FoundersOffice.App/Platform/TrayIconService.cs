@@ -6,25 +6,39 @@ using WinRT.Interop;
 namespace FoundersOffice.App.Platform;
 
 /// <summary>
-/// Minimal Win32 notification-area owner for the first beta shell. The callback
-/// is attached with SetWindowSubclass so the WinUI window procedure remains
-/// intact. No task or calendar content enters the tooltip or native messages.
+/// Owns the notification-area icon and its content-free native menu. The icon
+/// is restored after Explorer restarts, and all callbacks return to the WinUI
+/// dispatcher before changing window lifetime.
 /// </summary>
 public sealed class TrayIconService : IDisposable
 {
     private const uint CallbackMessage = 0x8000 + 44;
     private const uint LeftButtonUp = 0x0202;
     private const uint RightButtonUp = 0x0205;
+    private const uint ContextMenu = 0x007B;
+    private const uint NotifyIconSelect = 0x0400;
+    private const uint NotifyIconKeySelect = 0x0401;
     private const uint NotifyIconAdd = 0x00000000;
     private const uint NotifyIconDelete = 0x00000002;
+    private const uint NotifyIconSetVersion = 0x00000004;
+    private const uint NotifyIconVersion4 = 4;
     private const uint NotifyMessage = 0x00000001;
     private const uint NotifyIcon = 0x00000002;
     private const uint NotifyTip = 0x00000004;
+    private const uint MenuString = 0x00000000;
+    private const uint MenuSeparator = 0x00000800;
+    private const uint TrackRightButton = 0x00000002;
+    private const uint TrackReturnCommand = 0x00000100;
+    private const uint TrackNoNotify = 0x00000080;
+    private const uint WindowNull = 0x0000;
+    private const nuint ToggleCommand = 1;
+    private const nuint ExitCommand = 2;
     private static readonly UIntPtr SubclassId = new(0x464F);
 
     private readonly IntPtr _windowHandle;
     private readonly DispatcherQueue _dispatcherQueue;
     private readonly SubclassProc _subclassProc;
+    private readonly uint _taskbarCreatedMessage;
     private NotifyIconData _data;
     private bool _started;
 
@@ -33,9 +47,12 @@ public sealed class TrayIconService : IDisposable
         _windowHandle = WindowNative.GetWindowHandle(window);
         _dispatcherQueue = window.DispatcherQueue;
         _subclassProc = WindowSubclassProc;
+        _taskbarCreatedMessage = RegisterWindowMessage("TaskbarCreated");
     }
 
-    public event EventHandler? Activated;
+    public event EventHandler? ToggleRequested;
+
+    public event EventHandler? ExitRequested;
 
     public void Start()
     {
@@ -62,7 +79,7 @@ public sealed class TrayIconService : IDisposable
             InfoTitle = string.Empty,
         };
 
-        if (!ShellNotifyIcon(NotifyIconAdd, ref _data))
+        if (!TryAddIcon())
         {
             RemoveWindowSubclass(_windowHandle, _subclassProc, SubclassId);
             throw new InvalidOperationException("tray_icon_add_failed");
@@ -83,6 +100,23 @@ public sealed class TrayIconService : IDisposable
         _started = false;
     }
 
+    private bool TryAddIcon()
+    {
+        if (!ShellNotifyIcon(NotifyIconAdd, ref _data))
+        {
+            return false;
+        }
+
+        _data.TimeoutOrVersion = NotifyIconVersion4;
+        if (ShellNotifyIcon(NotifyIconSetVersion, ref _data))
+        {
+            return true;
+        }
+
+        ShellNotifyIcon(NotifyIconDelete, ref _data);
+        return false;
+    }
+
     private IntPtr WindowSubclassProc(
         IntPtr windowHandle,
         uint message,
@@ -91,17 +125,80 @@ public sealed class TrayIconService : IDisposable
         UIntPtr subclassId,
         UIntPtr referenceData)
     {
+        if (_started && _taskbarCreatedMessage != 0 && message == _taskbarCreatedMessage)
+        {
+            _dispatcherQueue.TryEnqueue(() => TryAddIcon());
+            return IntPtr.Zero;
+        }
+
         if (message == CallbackMessage)
         {
-            var mouseMessage = unchecked((uint)longParameter.ToInt64());
-            if (mouseMessage is LeftButtonUp or RightButtonUp)
+            var notification = unchecked((uint)(longParameter.ToInt64() & 0xFFFF));
+            if (notification is LeftButtonUp or NotifyIconSelect or NotifyIconKeySelect)
             {
-                _dispatcherQueue.TryEnqueue(() => Activated?.Invoke(this, EventArgs.Empty));
+                _dispatcherQueue.TryEnqueue(() => ToggleRequested?.Invoke(this, EventArgs.Empty));
+                return IntPtr.Zero;
+            }
+
+            if (notification is RightButtonUp or ContextMenu)
+            {
+                _dispatcherQueue.TryEnqueue(ShowContextMenu);
                 return IntPtr.Zero;
             }
         }
 
         return DefSubclassProc(windowHandle, message, wordParameter, longParameter);
+    }
+
+    private void ShowContextMenu()
+    {
+        var menu = CreatePopupMenu();
+        if (menu == IntPtr.Zero)
+        {
+            return;
+        }
+
+        try
+        {
+            var toggleLabel = IsWindowVisible(_windowHandle)
+                ? "Hide Founder's Office"
+                : "Open Founder's Office";
+            if (!AppendMenu(menu, MenuString, ToggleCommand, toggleLabel)
+                || !AppendMenu(menu, MenuSeparator, 0, null)
+                || !AppendMenu(menu, MenuString, ExitCommand, "Exit"))
+            {
+                return;
+            }
+
+            if (!GetCursorPos(out var point))
+            {
+                return;
+            }
+
+            SetForegroundWindow(_windowHandle);
+            var selected = TrackPopupMenu(
+                menu,
+                TrackRightButton | TrackReturnCommand | TrackNoNotify,
+                point.X,
+                point.Y,
+                0,
+                _windowHandle,
+                IntPtr.Zero);
+            PostMessage(_windowHandle, WindowNull, UIntPtr.Zero, IntPtr.Zero);
+
+            if (selected == ToggleCommand)
+            {
+                ToggleRequested?.Invoke(this, EventArgs.Empty);
+            }
+            else if (selected == ExitCommand)
+            {
+                ExitRequested?.Invoke(this, EventArgs.Empty);
+            }
+        }
+        finally
+        {
+            DestroyMenu(menu);
+        }
     }
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
@@ -131,6 +228,13 @@ public sealed class TrayIconService : IDisposable
         public uint InfoFlags;
         public Guid ItemGuid;
         public IntPtr BalloonIconHandle;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct Point
+    {
+        public int X;
+        public int Y;
     }
 
     private delegate IntPtr SubclassProc(
@@ -174,4 +278,57 @@ public sealed class TrayIconService : IDisposable
     [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "LoadIconW")]
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     private static extern IntPtr LoadIcon(IntPtr instanceHandle, IntPtr iconName);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "RegisterWindowMessageW")]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    private static extern uint RegisterWindowMessage(string message);
+
+    [DllImport("user32.dll")]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsWindowVisible(IntPtr windowHandle);
+
+    [DllImport("user32.dll")]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetForegroundWindow(IntPtr windowHandle);
+
+    [DllImport("user32.dll")]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetCursorPos(out Point point);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    private static extern IntPtr CreatePopupMenu();
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "AppendMenuW", SetLastError = true)]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool AppendMenu(IntPtr menu, uint flags, nuint menuItemIdentifier, string? text);
+
+    [DllImport("user32.dll", EntryPoint = "TrackPopupMenu", SetLastError = true)]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    private static extern nuint TrackPopupMenu(
+        IntPtr menu,
+        uint flags,
+        int x,
+        int y,
+        int reserved,
+        IntPtr windowHandle,
+        IntPtr excludedRectangle);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool DestroyMenu(IntPtr menu);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "PostMessageW")]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool PostMessage(
+        IntPtr windowHandle,
+        uint message,
+        UIntPtr wordParameter,
+        IntPtr longParameter);
 }

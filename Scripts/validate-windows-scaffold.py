@@ -24,6 +24,11 @@ required_files = [
     WINDOWS / "Directory.Packages.props",
     WINDOWS / "FoundersOffice.Windows.slnx",
     WINDOWS / "README.md",
+    WINDOWS / "Distribution" / "Install-Development.ps1",
+    WINDOWS / "Distribution" / "README-DEVELOPMENT.md",
+    WINDOWS / "Scripts" / "New-DevelopmentBundle.ps1",
+    WINDOWS / "Scripts" / "test_verify_development_bundle.py",
+    WINDOWS / "Scripts" / "verify-development-bundle.py",
     WINDOWS / "src" / "FoundersOffice.Core" / "FoundersOffice.Core.csproj",
     WINDOWS / "src" / "FoundersOffice.Core" / "packages.lock.json",
     WINDOWS / "src" / "FoundersOffice.App" / "FoundersOffice.App.csproj",
@@ -112,6 +117,25 @@ if "MainWindow : Window, IDisposable" not in main_window_source:
     fail("MainWindow must own its native resources through IDisposable")
 if "readonly SqliteWorkspaceRepository _repository" not in main_window_source:
     fail("MainWindow must keep its concrete local repository ownership explicit")
+if "WINDOWS DEVELOPMENT" not in (WINDOWS / "src" / "FoundersOffice.App" / "MainWindow.xaml").read_text(encoding="utf-8"):
+    fail("the unfinished Windows package must remain visibly labeled as development")
+
+bundle_readme = " ".join(
+    (WINDOWS / "Distribution" / "README-DEVELOPMENT.md").read_text(encoding="utf-8").split()
+)
+for required_boundary in (
+    "not a production beta",
+    "self-signed development certificate",
+    "Sync",
+):
+    if required_boundary not in bundle_readme:
+        fail(f"development bundle disclosure is missing: {required_boundary}")
+
+bundle_script = (WINDOWS / "Scripts" / "New-DevelopmentBundle.ps1").read_text(encoding="utf-8")
+if "KeyExportPolicy NonExportable" not in bundle_script:
+    fail("development signing private key must remain non-exportable")
+if r'Remove-Item -LiteralPath "Cert:\CurrentUser\My\$($certificate.Thumbprint)"' not in bundle_script:
+    fail("development signing certificate must be removed from the build runner")
 
 app_source = (
     WINDOWS / "src" / "FoundersOffice.App" / "App.xaml.cs"

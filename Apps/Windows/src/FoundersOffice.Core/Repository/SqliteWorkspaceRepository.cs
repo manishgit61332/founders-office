@@ -184,10 +184,80 @@ public sealed class SqliteWorkspaceRepository : IWorkspaceRepository, IDisposabl
         return PersistLocalMutationAsync(localMove, "upsert", changedFields, BuildMovePayload(localMove), cancellationToken);
     }
 
+    public async Task UpdateMoveAsync(
+        Guid moveId,
+        string title,
+        string details,
+        MovePriority priority,
+        DateOnly? dueOn,
+        CancellationToken cancellationToken = default)
+    {
+        var existing = await FindMoveAsync(moveId, cancellationToken).ConfigureAwait(false)
+            ?? throw new WorkspaceRepositoryException("move_not_found");
+        EnsureMutable(existing);
+
+        var updated = existing with
+        {
+            Title = title.Trim(),
+            Details = details.Trim(),
+            Priority = priority,
+            DueOn = dueOn,
+        };
+        updated.Validate();
+
+        var changedFields = new List<string>(4);
+        if (!string.Equals(existing.Title, updated.Title, StringComparison.Ordinal))
+        {
+            changedFields.Add("title");
+        }
+
+        if (!string.Equals(existing.Details, updated.Details, StringComparison.Ordinal))
+        {
+            changedFields.Add("details");
+        }
+
+        if (existing.Priority != updated.Priority)
+        {
+            changedFields.Add("priority");
+        }
+
+        if (existing.DueOn != updated.DueOn)
+        {
+            changedFields.Add("dueOn");
+        }
+
+        if (changedFields.Count == 0)
+        {
+            return;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        var clocks = new Dictionary<string, DateTimeOffset>(existing.FieldClocks);
+        foreach (var field in changedFields)
+        {
+            clocks[field] = now;
+        }
+
+        updated = updated with { UpdatedAt = now, FieldClocks = clocks };
+        await PersistLocalMutationAsync(
+                updated,
+                "upsert",
+                changedFields,
+                BuildMovePayload(updated, changedFields),
+                cancellationToken)
+            .ConfigureAwait(false);
+    }
+
     public async Task CompleteMoveAsync(Guid moveId, CancellationToken cancellationToken = default)
     {
         var existing = await FindMoveAsync(moveId, cancellationToken).ConfigureAwait(false)
             ?? throw new WorkspaceRepositoryException("move_not_found");
+        EnsureMutable(existing);
+        if (existing.Status == MoveStatus.Done)
+        {
+            return;
+        }
+
         var now = DateTimeOffset.UtcNow;
         var clocks = new Dictionary<string, DateTimeOffset>(existing.FieldClocks)
         {
@@ -208,10 +278,47 @@ public sealed class SqliteWorkspaceRepository : IWorkspaceRepository, IDisposabl
             .ConfigureAwait(false);
     }
 
+    public async Task ReopenMoveAsync(Guid moveId, CancellationToken cancellationToken = default)
+    {
+        var existing = await FindMoveAsync(moveId, cancellationToken).ConfigureAwait(false)
+            ?? throw new WorkspaceRepositoryException("move_not_found");
+        EnsureMutable(existing);
+        if (existing.Status != MoveStatus.Done)
+        {
+            return;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        var clocks = new Dictionary<string, DateTimeOffset>(existing.FieldClocks)
+        {
+            ["status"] = now,
+            ["previousStatus"] = now,
+            ["completedAt"] = now,
+        };
+        var reopened = existing with
+        {
+            Status = existing.PreviousStatus is MoveStatus.Doing or MoveStatus.Next or MoveStatus.Blocked
+                ? existing.PreviousStatus.Value
+                : MoveStatus.Doing,
+            PreviousStatus = null,
+            CompletedAt = null,
+            UpdatedAt = now,
+            FieldClocks = clocks,
+        };
+        var fields = new[] { "status", "previousStatus", "completedAt" };
+        await PersistLocalMutationAsync(reopened, "upsert", fields, BuildMovePayload(reopened, fields), cancellationToken)
+            .ConfigureAwait(false);
+    }
+
     public async Task SoftDeleteMoveAsync(Guid moveId, CancellationToken cancellationToken = default)
     {
         var existing = await FindMoveAsync(moveId, cancellationToken).ConfigureAwait(false)
             ?? throw new WorkspaceRepositoryException("move_not_found");
+        if (existing.IsDeleted)
+        {
+            return;
+        }
+
         var now = DateTimeOffset.UtcNow;
         var clocks = new Dictionary<string, DateTimeOffset>(existing.FieldClocks)
         {
@@ -535,6 +642,14 @@ public sealed class SqliteWorkspaceRepository : IWorkspaceRepository, IDisposabl
 
     private static DateTimeOffset ParseTimestamp(string value) =>
         DateTimeOffset.Parse(value, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind);
+
+    private static void EnsureMutable(Move move)
+    {
+        if (move.IsDeleted)
+        {
+            throw new WorkspaceRepositoryException("move_deleted");
+        }
+    }
 
     private void EnsureInitialized()
     {
