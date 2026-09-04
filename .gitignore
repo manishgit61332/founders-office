@@ -56,8 +56,12 @@ Configuration/ProductAuth.local.json
 *.mobileprovision
 *.provisionprofile
 GoogleService-Info.plist
+google-services.json
 client_secret*.json
 service-account*.json
+local.properties
+*.jks
+*.keystore
 
 # Tool and editor state
 __pycache__/

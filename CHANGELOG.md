@@ -6,6 +6,11 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Added
 
+- An Android Development app scaffold with native Home, Moves, Calendar, and
+  Settings surfaces; local-first Room storage; an explicitly unconfigured
+  Google/Supabase account boundary; and a bounded, privacy-redactable Glance
+  widget projection. It remains a development-only implementation until its
+  independent account, sync, physical-device, signing, and beta gates pass.
 - Local Mac builds retain reviewed Google/Supabase public configuration across
   reinstalls. Account & Sync shows only configured sign-in providers.
 - A fail-closed source-preview installer and documented workflow for technical
