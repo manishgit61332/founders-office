@@ -151,11 +151,9 @@ jobs:
         working-directory: Website
         run: npm ci
 
-      - name: Audit production dependencies
+      - name: Audit complete dependency graph
         working-directory: Website
-        run: |
-          npm audit
-          npm audit --omit=dev
+        run: npm audit --audit-level=low
 
       - name: Format, lint, and build
         working-directory: Website
