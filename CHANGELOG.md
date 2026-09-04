@@ -8,6 +8,8 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 - A first native Windows 11 development shell using C# and WinUI 3, with a Windows-native top-edge surface, notification-area entry point, transactional offline SQLite repository, v1 sync-contract adapter, and a dedicated Windows build/test gate. This is a developer milestone, not a signed friend-beta installer.
 - The Windows development build now supports creating and editing Moves with priority and deadline, completion history with reopen, confirmed deletion, a native notification-area menu, and a downloadable x64 development-signed MSIX bundle with archive privacy checks.
+- The Windows development build now opens as a compact top-center Move view that can expand into the workspace or switch to a normal resizable window.
+- Windows now has a configuration-gated Google product-session and Supabase v1 sync adapter with durable Credential Locker sessions, explicit claim-versus-attach decisions, offline push/rebase/pull, and synthetic Mac-to-Windows coverage; live sync remains disabled until the reviewed public configuration and callback are registered.
 - New Moves now accept an optional user-written description, and the full Move editor can read or change the title and description alongside priority and deadline in one save.
 - A Vercel-compatible Next.js production build and project configuration for the Founder’s Office website while retaining the existing Sites/Cloudflare build path.
 - A CI version-consistency gate that prevents the locally installed development app and the macOS Xcode target from presenting different version/build numbers.
@@ -147,6 +149,7 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Security
 
+- Windows access tokens remain in memory, refresh sessions are isolated from the SQLite workspace in Credential Locker, unreviewed callback origins and secret/service-role keys fail closed, and signing in cannot silently attach a data-bearing local workspace.
 - Signing in cannot silently attach or replace a workspace: data-bearing replacement requires an immutable local export, failures leave the original canonical state untouched, and private image assets remain blocked.
 - Remote sync remains disabled in the customer runtime. Unsupported ordinary profile operations and asset transfers fail closed; tokens and response content never enter workspace storage or diagnostics.
 - Exact vision-image originals remain local and are never used by the notch or sync path; strict UUID-derived filenames, source/decompression/output bounds, private permissions, and path-safe cleanup prevent traversal and unbounded image handling.

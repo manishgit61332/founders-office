@@ -6,7 +6,8 @@ the integration branch freezes production identity and sync.
 
 ## What runs today
 
-- C# + WinUI 3 Windows 11 shell with Mica and a compact top-edge surface;
+- C# + WinUI 3 Windows 11 shell with Mica, a compact top-center view, an
+  expanded workspace, and a normal resizable-window fallback;
 - notification-area icon with left-click show/hide, a native Open/Hide + Exit
   menu, and recovery after Explorer restarts;
 - local Move creation and editing with title, description, priority, and an
@@ -14,29 +15,39 @@ the integration branch freezes production identity and sync.
 - active Moves, completion history, reopen, and confirmed soft deletion;
 - local SQLite workspace under the signed-in Windows user’s local app-data;
 - atomic Move + outbox transactions for offline-first sync preparation;
-- strict hand-mapped readers for the existing `contracts/v1` fixtures;
+- strict hand-mapped HTTPS adapters for the existing `contracts/v1` bootstrap,
+  push, and pull RPCs;
+- Google PKCE and durable-session boundaries that keep access tokens in memory,
+  reserve refresh-session persistence for Windows Credential Locker, and reject
+  secret/service-role configuration;
+- explicit claim-versus-attach provisioning, account isolation, push/rebase/pull,
+  conflict quarantine, and a synthetic Mac-to-Windows fixture;
 - a CI-produced x64 MSIX bundle signed with an ephemeral development certificate,
   with startup disabled by default and explicit non-production labeling;
-- platform-neutral tests for repository, outbox, contract, and placement rules.
+- platform-neutral tests for repository, outbox, identity, transport, contract,
+  cross-device fixtures, and placement rules.
 
-It does **not** yet provide live Google/Apple product sign-in, Supabase transport,
-Calendar connectors, production-trusted signing, automatic updates, recovery
-for deleted Moves, or a public package identity. The interface and downloadable
-bundle label this state honestly.
+It does **not** yet enable live Google/Apple product sign-in or remote sync. The
+public Supabase project values and a registered Windows callback are intentionally
+absent, and a data-bearing workspace cannot attach until the reviewed export-and-
+replace flow exists. It also does not provide Calendar connectors,
+production-trusted signing, automatic updates, recovery for deleted Moves, or a
+public package identity. The interface and downloadable bundle label this state
+honestly.
 
 ## Architecture
 
 ```text
-FoundersOffice.App (WinUI 3 / AppWindow / tray / future Credential Locker)
+FoundersOffice.App (WinUI 3 / AppWindow / tray / Credential Locker)
        │
        ▼
-FoundersOffice.Core (Moves / repository seam / v1 fixture adapter)
+FoundersOffice.Core (Moves / Google PKCE / session broker / v1 RPC adapter)
        │
        ▼
-SQLite workspace + operation outbox
+SQLite workspace + operation outbox (never credentials)
        │
-       ▼ later, after the shared contract gate
-Supabase HTTPS RPC contract v1
+       ▼ configuration-gated; disabled in this build
+Supabase Auth + HTTPS RPC contract v1
 ```
 
 Windows consumes `contracts/v1`; this worktree must not change those schemas or
@@ -59,8 +70,9 @@ Use a Windows 11 machine, build 22621 or later.
    ```
 
 4. Run `FoundersOffice.App` from Visual Studio. Use the notification-area icon
-   to hide/show it. Right-click for the native menu. Closing the surface hides
-   it; **Exit** stops the process.
+   to hide/show the compact view. Expand it for the full workspace, press Escape
+   to collapse it, or choose the normal resizable window. Right-click for the
+   native menu. Closing the surface hides it; **Exit** stops the process.
 
 NuGet is restricted to `nuget.org`, versions are centrally pinned, and lock
 files are committed. Do not place OAuth files, signing certificates, tokens, or
@@ -85,15 +97,17 @@ Before calling this a Windows alpha:
 
 - compile and launch on physical Windows 11 x64;
 - verify Mica, focus, keyboard, Narrator, 100–200% scaling, multiple displays,
-  taskbar edge changes, sleep/wake, and high-contrast mode;
+  taskbar edge changes, compact/expanded/normal transitions, sleep/wake, and
+  high-contrast mode;
 - prove tray show/hide and explicit Exit across repeated launches;
 - prove startup remains off until the user opts in;
 - install the development-signed MSIX on both test laptops, then create, edit,
   relaunch, complete, reopen, and delete Moves without data loss;
 - freeze the public package identity and repeat packaging with a production
   certificate on a clean second laptop;
-- connect the approved Supabase transport only after account isolation, revoked
-  sessions, offline convergence, export, and erase pass the shared release gate.
+- register the approved Windows callback and connect the public Supabase values
+  only after account isolation, revoked sessions, offline convergence, explicit
+  export-and-replace attachment, export, and erase pass the shared release gate.
 
 Remote Desktop is useful for coding but not final motion/window-placement QA.
 Run those checks while physically viewing the Windows display.

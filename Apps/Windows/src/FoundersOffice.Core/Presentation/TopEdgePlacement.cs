@@ -13,11 +13,14 @@ public static class TopEdgePlacement
             throw new ArgumentOutOfRangeException(nameof(workArea));
         }
 
-        var horizontalMargin = Math.Min(24, Math.Max(8, workArea.Width / 40));
-        var width = Math.Min(requestedSize.Width, workArea.Width - (horizontalMargin * 2));
-        var height = Math.Min(requestedSize.Height, workArea.Height - Math.Max(topInset, 0) - 16);
+        var horizontalMargin = Math.Min(
+            Math.Min(24, Math.Max(8, workArea.Width / 40)),
+            Math.Max(0, (workArea.Width - 1) / 2));
+        var inset = Math.Clamp(topInset, 0, Math.Max(0, workArea.Height - 1));
+        var width = Math.Min(requestedSize.Width, Math.Max(1, workArea.Width - (horizontalMargin * 2)));
+        var height = Math.Min(requestedSize.Height, Math.Max(1, workArea.Height - inset));
         var x = workArea.X + ((workArea.Width - width) / 2);
-        var y = workArea.Y + Math.Max(topInset, 0);
+        var y = workArea.Y + inset;
         return new PixelRect(x, y, width, height);
     }
 }

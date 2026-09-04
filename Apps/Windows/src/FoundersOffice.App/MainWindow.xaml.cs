@@ -4,7 +4,9 @@ using FoundersOffice.Core.Domain;
 using FoundersOffice.Core.Repository;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
+using Windows.System;
 
 namespace FoundersOffice.App;
 
@@ -32,12 +34,15 @@ public sealed partial class MainWindow : Window, IDisposable
             "FounderOffice",
             "founders-office.sqlite3");
         _repository = new SqliteWorkspaceRepository(databasePath);
-        _surfaceController = new TopEdgeSurfaceController(this);
+        _surfaceController = new TopEdgeSurfaceController(
+            this,
+            () => RootGrid.XamlRoot?.RasterizationScale ?? 1.0);
         _trayIcon = new TrayIconService(this);
         _trayIcon.ToggleRequested += TrayIcon_ToggleRequested;
         _trayIcon.ExitRequested += TrayIcon_ExitRequested;
 
         _surfaceController.Closing += SurfaceController_Closing;
+        _surfaceController.ModeChanged += SurfaceController_ModeChanged;
         Closed += MainWindow_Closed;
         RootGrid.Loaded += RootGrid_Loaded;
     }
@@ -49,8 +54,8 @@ public sealed partial class MainWindow : Window, IDisposable
         {
             await _repository.InitializeAsync();
             _trayIcon.Start();
-            _surfaceController.PlaceAtTopEdge();
             await RefreshAsync();
+            _surfaceController.ShowCompact();
         }
         catch (Exception)
         {
@@ -183,6 +188,21 @@ public sealed partial class MainWindow : Window, IDisposable
 
     private void HideButton_Click(object sender, RoutedEventArgs e) => _surfaceController.Hide();
 
+    private void CompactExpandButton_Click(object sender, RoutedEventArgs e) => _surfaceController.Expand();
+
+    private void CompactModeButton_Click(object sender, RoutedEventArgs e) => _surfaceController.ShowCompact();
+
+    private void NormalModeButton_Click(object sender, RoutedEventArgs e) => _surfaceController.ShowNormal();
+
+    private void RootGrid_KeyDown(object sender, KeyRoutedEventArgs e)
+    {
+        if (e.Key == VirtualKey.Escape && _surfaceController.Mode == SurfaceMode.Expanded)
+        {
+            _surfaceController.Collapse();
+            e.Handled = true;
+        }
+    }
+
     private void ExitButton_Click(object sender, RoutedEventArgs e) => RequestExit();
 
     private void TrayIcon_ToggleRequested(object? sender, EventArgs e) => _surfaceController.Toggle();
@@ -219,6 +239,7 @@ public sealed partial class MainWindow : Window, IDisposable
         _trayIcon.ToggleRequested -= TrayIcon_ToggleRequested;
         _trayIcon.ExitRequested -= TrayIcon_ExitRequested;
         _surfaceController.Closing -= SurfaceController_Closing;
+        _surfaceController.ModeChanged -= SurfaceController_ModeChanged;
         _trayIcon.Dispose();
         _repository.Dispose();
         GC.SuppressFinalize(this);
@@ -277,6 +298,7 @@ public sealed partial class MainWindow : Window, IDisposable
             NextMoveTitleText.Text = "Nothing queued yet";
             NextMoveDetailsText.Text = "Add one clear Move below.";
             NextMoveMetaText.Text = "No deadline";
+            CompactNextMoveText.Text = "Nothing queued yet";
             return;
         }
 
@@ -285,6 +307,21 @@ public sealed partial class MainWindow : Window, IDisposable
             ? "No description"
             : next.Details;
         NextMoveMetaText.Text = $"{MoveListItem.PriorityName(next.Priority)} · {MoveListItem.FormatDeadline(next.DueOn)}";
+        CompactNextMoveText.Text = next.Title;
+    }
+
+    private void SurfaceController_ModeChanged(object? sender, EventArgs e)
+    {
+        var compact = _surfaceController.Mode == SurfaceMode.Compact;
+        CompactSurface.Visibility = compact ? Visibility.Visible : Visibility.Collapsed;
+        ExpandedTitleBar.Visibility = compact ? Visibility.Collapsed : Visibility.Visible;
+        WorkspaceScrollViewer.Visibility = compact ? Visibility.Collapsed : Visibility.Visible;
+        if (_surfaceController.Mode == SurfaceMode.Normal)
+        {
+            return;
+        }
+
+        SetTitleBar(compact ? CompactDragRegion : TitleBarDragRegion);
     }
 
     private void ResetEditor()

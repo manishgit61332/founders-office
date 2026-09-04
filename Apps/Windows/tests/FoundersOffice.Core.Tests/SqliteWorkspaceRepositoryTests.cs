@@ -135,6 +135,141 @@ public sealed class SqliteWorkspaceRepositoryTests
     }
 
     [Fact]
+    public async Task SyncIdentityIsDurableAndFreshWorkspaceCanAttachRemotely()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"founder-office-sync-{Guid.NewGuid():N}.sqlite3");
+        var accountId = Guid.NewGuid();
+        var remoteWorkspaceId = Guid.NewGuid();
+        WorkspaceSyncState first;
+        try
+        {
+            await using (var repository = new SqliteWorkspaceRepository(path))
+            {
+                await repository.InitializeAsync();
+                first = await repository.SyncStateAsync();
+                Assert.False(first.HasLocalData);
+                Assert.Null(first.BootstrapWorkspaceId);
+                await repository.BindWorkspaceAsync(
+                    accountId,
+                    remoteWorkspaceId,
+                    first.DeviceId,
+                    "google");
+            }
+
+            await using var reopened = new SqliteWorkspaceRepository(path);
+            await reopened.InitializeAsync();
+            var restored = await reopened.SyncStateAsync();
+            Assert.Equal(first.LocalWorkspaceId, restored.LocalWorkspaceId);
+            Assert.Equal(first.DeviceId, restored.DeviceId);
+            Assert.Equal(accountId, restored.AccountId);
+            Assert.Equal(remoteWorkspaceId, restored.RemoteWorkspaceId);
+            Assert.Equal(remoteWorkspaceId, restored.BootstrapWorkspaceId);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public async Task LocalDataCannotSilentlyAttachToAnotherWorkspace()
+    {
+        await using var fixture = await RepositoryFixture.CreateAsync();
+        await fixture.Repository.UpsertMoveAsync(Move.Create("Keep this local Move"));
+        var state = await fixture.Repository.SyncStateAsync();
+
+        var error = await Assert.ThrowsAsync<WorkspaceRepositoryException>(() =>
+            fixture.Repository.BindWorkspaceAsync(
+                Guid.NewGuid(),
+                Guid.NewGuid(),
+                state.DeviceId,
+                "google"));
+
+        Assert.Equal("workspace_attachment_requires_review", error.Code);
+        Assert.Null((await fixture.Repository.SyncStateAsync()).AccountId);
+        Assert.Single((await fixture.Repository.SnapshotAsync()).Moves);
+    }
+
+    [Fact]
+    public async Task AcknowledgementRebasesTheNextOfflineEdit()
+    {
+        await using var fixture = await RepositoryFixture.CreateAsync();
+        var move = Move.Create("Ship the first edit");
+        await fixture.Repository.UpsertMoveAsync(move);
+        await fixture.Repository.CompleteMoveAsync(move.Id);
+        var operations = await fixture.Repository.PendingOperationsAsync();
+        Assert.Equal(2, operations.Count);
+        Assert.All(operations, operation => Assert.Equal(0, operation.BaseRevision));
+
+        await fixture.Repository.AcknowledgeOperationAsync(
+            operations[0].OperationId,
+            move.Id,
+            revision: 7);
+
+        var remaining = Assert.Single(await fixture.Repository.PendingOperationsAsync());
+        Assert.Equal(7, remaining.BaseRevision);
+        Assert.Equal(7, Assert.Single((await fixture.Repository.SnapshotAsync()).Moves).Revision);
+    }
+
+    [Fact]
+    public async Task PullPageRefusesToOverwriteAPendingLocalEditOrAdvanceCursor()
+    {
+        await using var fixture = await RepositoryFixture.CreateAsync();
+        var local = Move.Create("Local unsent edit");
+        await fixture.Repository.UpsertMoveAsync(local);
+        var state = await fixture.Repository.SyncStateAsync();
+        await fixture.Repository.BindWorkspaceAsync(
+            Guid.NewGuid(),
+            state.LocalWorkspaceId,
+            state.DeviceId,
+            "google");
+        var remote = local with
+        {
+            Title = "Remote edit",
+            Revision = 1,
+            FieldClocks = new Dictionary<string, DateTimeOffset>
+            {
+                ["title"] = DateTimeOffset.Parse("2026-09-04T10:00:00Z", CultureInfo.InvariantCulture),
+            },
+        };
+
+        var error = await Assert.ThrowsAsync<WorkspaceRepositoryException>(() =>
+            fixture.Repository.ApplyPullPageAsync(
+                state.LocalWorkspaceId,
+                0,
+                1,
+                [new RemoteWorkspaceChange(1, Guid.NewGuid(), "move", local.Id, remote)]));
+
+        Assert.Equal("pull_change_has_pending_local_edit", error.Code);
+        Assert.Equal(0, (await fixture.Repository.SyncStateAsync()).Cursor);
+        Assert.Equal("Local unsent edit", Assert.Single((await fixture.Repository.SnapshotAsync()).Moves).Title);
+    }
+
+    [Fact]
+    public async Task UnsupportedRemoteEntityCannotBeSkippedOrAdvanceCursor()
+    {
+        await using var fixture = await RepositoryFixture.CreateAsync();
+        var state = await fixture.Repository.SyncStateAsync();
+        var workspaceId = Guid.NewGuid();
+        await fixture.Repository.BindWorkspaceAsync(
+            Guid.NewGuid(),
+            workspaceId,
+            state.DeviceId,
+            "google");
+
+        var error = await Assert.ThrowsAsync<WorkspaceRepositoryException>(() =>
+            fixture.Repository.ApplyPullPageAsync(
+                workspaceId,
+                0,
+                1,
+                [new RemoteWorkspaceChange(1, Guid.NewGuid(), "appearance", Guid.NewGuid(), null)]));
+
+        Assert.Equal("pull_entity_unsupported", error.Code);
+        Assert.Equal(0, (await fixture.Repository.SyncStateAsync()).Cursor);
+    }
+
+    [Fact]
     public async Task NewerSchemaRefusesToOpenWithoutChangingIt()
     {
         var path = Path.Combine(Path.GetTempPath(), $"founder-office-newer-{Guid.NewGuid():N}.sqlite3");

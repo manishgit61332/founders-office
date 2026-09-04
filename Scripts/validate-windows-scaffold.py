@@ -30,9 +30,15 @@ required_files = [
     WINDOWS / "Scripts" / "test_verify_development_bundle.py",
     WINDOWS / "Scripts" / "verify-development-bundle.py",
     WINDOWS / "src" / "FoundersOffice.Core" / "FoundersOffice.Core.csproj",
+    WINDOWS / "src" / "FoundersOffice.Core" / "Auth" / "ProductAuthentication.cs",
+    WINDOWS / "src" / "FoundersOffice.Core" / "Auth" / "ProductSessionBroker.cs",
+    WINDOWS / "src" / "FoundersOffice.Core" / "Auth" / "SupabaseProductAuthClient.cs",
+    WINDOWS / "src" / "FoundersOffice.Core" / "Sync" / "SupabaseV1SyncTransport.cs",
+    WINDOWS / "src" / "FoundersOffice.Core" / "Sync" / "WorkspaceSyncCoordinator.cs",
     WINDOWS / "src" / "FoundersOffice.Core" / "packages.lock.json",
     WINDOWS / "src" / "FoundersOffice.App" / "FoundersOffice.App.csproj",
     WINDOWS / "src" / "FoundersOffice.App" / "Package.appxmanifest",
+    WINDOWS / "src" / "FoundersOffice.App" / "Platform" / "WindowsCredentialSessionStore.cs",
     WINDOWS / "src" / "FoundersOffice.App" / "packages.lock.json",
     WINDOWS / "tests" / "FoundersOffice.Core.Tests" / "FoundersOffice.Core.Tests.csproj",
     WINDOWS / "tests" / "FoundersOffice.Core.Tests" / "packages.lock.json",
@@ -105,7 +111,7 @@ source_text = "\n".join(
     path.read_text(encoding="utf-8")
     for path in sorted(WINDOWS.rglob("*.cs"))
 )
-for forbidden in ("Console.WriteLine", "Debug.WriteLine", "client_secret", "service_role"):
+for forbidden in ("Console.WriteLine", "Debug.WriteLine", "client_secret"):
     if forbidden.lower() in source_text.lower():
         fail(f"forbidden diagnostic or credential marker found: {forbidden}")
 
@@ -120,8 +126,35 @@ if "MainWindow : Window, IDisposable" not in main_window_source:
     fail("MainWindow must own its native resources through IDisposable")
 if "readonly SqliteWorkspaceRepository _repository" not in main_window_source:
     fail("MainWindow must keep its concrete local repository ownership explicit")
-if "WINDOWS DEVELOPMENT" not in (WINDOWS / "src" / "FoundersOffice.App" / "MainWindow.xaml").read_text(encoding="utf-8"):
+main_window_xaml = (WINDOWS / "src" / "FoundersOffice.App" / "MainWindow.xaml").read_text(encoding="utf-8")
+if "WINDOWS DEVELOPMENT" not in main_window_xaml:
     fail("the unfinished Windows package must remain visibly labeled as development")
+for compact_boundary in ("CompactSurface", "CompactExpandButton_Click", "NormalModeButton_Click"):
+    if compact_boundary not in main_window_xaml + main_window_source:
+        fail(f"Windows compact/normal surface boundary is missing: {compact_boundary}")
+
+repository_source = (
+    WINDOWS / "src" / "FoundersOffice.Core" / "Repository" / "SqliteWorkspaceRepository.cs"
+).read_text(encoding="utf-8")
+for credential_column in ("access_token", "refresh_token", "provider_token"):
+    if credential_column in repository_source.lower():
+        fail(f"SQLite repository must not contain credential material: {credential_column}")
+
+auth_source = (
+    WINDOWS / "src" / "FoundersOffice.Core" / "Auth" / "ProductAuthentication.cs"
+).read_text(encoding="utf-8")
+transport_source = (
+    WINDOWS / "src" / "FoundersOffice.Core" / "Sync" / "SupabaseV1SyncTransport.cs"
+).read_text(encoding="utf-8")
+credential_store_source = (
+    WINDOWS / "src" / "FoundersOffice.App" / "Platform" / "WindowsCredentialSessionStore.cs"
+).read_text(encoding="utf-8")
+if "founders-office" not in auth_source or "founders-office-dev" not in auth_source:
+    fail("product auth must keep the reviewed callback-scheme allowlist")
+if "sb_secret_" not in transport_source or "service_role" not in transport_source:
+    fail("public Supabase configuration must reject secret and service-role keys")
+if "PasswordVault" not in credential_store_source:
+    fail("durable Windows product sessions must use Credential Locker")
 
 bundle_readme = " ".join(
     (WINDOWS / "Distribution" / "README-DEVELOPMENT.md").read_text(encoding="utf-8").split()

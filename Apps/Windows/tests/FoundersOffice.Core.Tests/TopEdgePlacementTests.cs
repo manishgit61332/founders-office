@@ -26,4 +26,19 @@ public sealed class TopEdgePlacementTests
         Assert.True(placement.X + placement.Width <= 760);
         Assert.True(placement.Y + placement.Height <= 520);
     }
+
+    [Fact]
+    public void KeepsASurfaceInsideAMicroscopicWorkArea()
+    {
+        var placement = TopEdgePlacement.Calculate(
+            new PixelRect(-2, -3, 5, 4),
+            new PixelSize(380, 64));
+
+        Assert.True(placement.Width > 0);
+        Assert.True(placement.Height > 0);
+        Assert.True(placement.X >= -2);
+        Assert.True(placement.Y >= -3);
+        Assert.True(placement.X + placement.Width <= 3);
+        Assert.True(placement.Y + placement.Height <= 1);
+    }
 }

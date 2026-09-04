@@ -4,7 +4,11 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     Title="Founder's Office">
 
-    <Grid x:Name="RootGrid" Background="Transparent" RequestedTheme="Dark">
+    <Grid
+        x:Name="RootGrid"
+        Background="Transparent"
+        KeyDown="RootGrid_KeyDown"
+        RequestedTheme="Dark">
         <Grid.Resources>
             <DataTemplate x:Key="MoveCardTemplate">
                 <Border
@@ -97,18 +101,29 @@
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
-        <Grid x:Name="TitleBarDragRegion" Grid.Row="0" Padding="20,0,12,0">
+        <Grid
+            x:Name="ExpandedTitleBar"
+            Grid.Row="0"
+            Padding="20,0,12,0"
+            Visibility="Collapsed">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*" />
                 <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
             <TextBlock
+                x:Name="TitleBarDragRegion"
                 VerticalAlignment="Center"
                 FontFamily="Segoe UI Variable Display"
                 FontSize="14"
                 FontWeight="SemiBold"
                 Text="FOUNDER'S OFFICE · WINDOWS DEVELOPMENT" />
             <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6">
+                <Button Click="CompactModeButton_Click" ToolTipService.ToolTip="Use compact top-center view">
+                    <FontIcon Glyph="&#xE945;" />
+                </Button>
+                <Button Click="NormalModeButton_Click" ToolTipService.ToolTip="Use a normal resizable window">
+                    <FontIcon Glyph="&#xE737;" />
+                </Button>
                 <Button Click="HideButton_Click" ToolTipService.ToolTip="Hide to notification area">
                     <FontIcon Glyph="&#xE921;" />
                 </Button>
@@ -118,7 +133,11 @@
             </StackPanel>
         </Grid>
 
-        <ScrollViewer Grid.Row="1" Padding="24,12,24,28">
+        <ScrollViewer
+            x:Name="WorkspaceScrollViewer"
+            Grid.Row="1"
+            Padding="24,12,24,28"
+            Visibility="Collapsed">
             <StackPanel MaxWidth="820" Spacing="16">
                 <StackPanel Spacing="4">
                     <TextBlock
@@ -295,5 +314,45 @@
                     TextWrapping="Wrap" />
             </StackPanel>
         </ScrollViewer>
+
+        <Grid
+            x:Name="CompactSurface"
+            Grid.RowSpan="2"
+            Padding="16,8,10,8">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <StackPanel
+                x:Name="CompactDragRegion"
+                VerticalAlignment="Center"
+                Spacing="1">
+                <TextBlock
+                    Foreground="{ThemeResource AccentBrush}"
+                    FontSize="11"
+                    FontWeight="SemiBold"
+                    Text="NEXT MOVE" />
+                <TextBlock
+                    x:Name="CompactNextMoveText"
+                    FontFamily="Segoe UI Variable Display"
+                    FontSize="16"
+                    FontWeight="SemiBold"
+                    MaxLines="1"
+                    Text="Nothing queued yet"
+                    TextTrimming="CharacterEllipsis" />
+            </StackPanel>
+            <StackPanel
+                Grid.Column="1"
+                VerticalAlignment="Center"
+                Orientation="Horizontal"
+                Spacing="6">
+                <Button Click="CompactExpandButton_Click" ToolTipService.ToolTip="Open Moves">
+                    <FontIcon Glyph="&#xE70D;" />
+                </Button>
+                <Button Click="HideButton_Click" ToolTipService.ToolTip="Hide to notification area">
+                    <FontIcon Glyph="&#xE921;" />
+                </Button>
+            </StackPanel>
+        </Grid>
     </Grid>
 </Window>

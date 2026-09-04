@@ -24,5 +24,7 @@
     <None Include="../../../../contracts/v1/fixtures/*.json"
           Link="ContractFixtures/%(Filename)%(Extension)"
           CopyToOutputDirectory="PreserveNewest" />
+    <None Update="SyntheticFixtures/*.json"
+          CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

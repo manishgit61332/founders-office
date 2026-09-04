@@ -3,6 +3,83 @@ using System.Text.Json.Serialization;
 
 namespace FoundersOffice.Core.Sync;
 
+public sealed record BootstrapRequestDto
+{
+    [JsonPropertyName("p_device_id")]
+    public required Guid DeviceId { get; init; }
+
+    [JsonPropertyName("p_local_workspace_id")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public Guid? LocalWorkspaceId { get; init; }
+
+    [JsonPropertyName("p_workspace_name")]
+    public required string WorkspaceName { get; init; }
+
+    [JsonPropertyName("p_display_name")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ReviewedDisplayName { get; init; }
+}
+
+public sealed record PushRequestDto
+{
+    [JsonPropertyName("p_workspace_id")]
+    public required Guid WorkspaceId { get; init; }
+
+    [JsonPropertyName("p_device_id")]
+    public required Guid DeviceId { get; init; }
+
+    [JsonPropertyName("p_operations")]
+    public required IReadOnlyList<SyncOperationDto> Operations { get; init; }
+}
+
+public sealed record PullRequestDto
+{
+    [JsonPropertyName("p_workspace_id")]
+    public required Guid WorkspaceId { get; init; }
+
+    [JsonPropertyName("p_device_id")]
+    public required Guid DeviceId { get; init; }
+
+    [JsonPropertyName("p_cursor")]
+    public required long Cursor { get; init; }
+
+    [JsonPropertyName("p_limit")]
+    public required int Limit { get; init; }
+}
+
+public sealed record SyncOperationDto
+{
+    [JsonPropertyName("contractVersion")]
+    public int ContractVersion { get; init; } = 1;
+
+    [JsonPropertyName("operationId")]
+    public required Guid OperationId { get; init; }
+
+    [JsonPropertyName("entityType")]
+    public required string EntityType { get; init; }
+
+    [JsonPropertyName("entityId")]
+    public required Guid EntityId { get; init; }
+
+    [JsonPropertyName("action")]
+    public required string Action { get; init; }
+
+    [JsonPropertyName("baseRevision")]
+    public required long BaseRevision { get; init; }
+
+    [JsonPropertyName("changedFields")]
+    public required IReadOnlyList<string> ChangedFields { get; init; }
+
+    [JsonPropertyName("fieldClocks")]
+    public required IReadOnlyDictionary<string, string> FieldClocks { get; init; }
+
+    [JsonPropertyName("payload")]
+    public JsonElement? Payload { get; init; }
+
+    [JsonPropertyName("occurredAt")]
+    public required string OccurredAt { get; init; }
+}
+
 public sealed record AuthSessionIdsDto
 {
     [JsonPropertyName("accountId")]
@@ -96,6 +173,29 @@ public sealed record PullResponseDto
     public required IReadOnlyList<SyncChangeDto> Changes { get; init; }
 }
 
+public sealed record PushResponseDto(
+    int ContractVersion,
+    Guid WorkspaceId,
+    long LatestCursor,
+    IReadOnlyList<OperationResultDto> Results);
+
+public sealed record OperationResultDto(
+    Guid OperationId,
+    string Status,
+    long? Revision,
+    long? Cursor,
+    SyncConflictDto? Conflict);
+
+public sealed record SyncConflictDto(
+    Guid OperationId,
+    string EntityType,
+    Guid EntityId,
+    long BaseRevision,
+    long CurrentRevision,
+    string Reason,
+    IReadOnlyList<string> ConflictingFields,
+    JsonElement? ServerRecord);
+
 public sealed record SyncChangeDto
 {
     [JsonPropertyName("cursor")]
@@ -169,4 +269,64 @@ internal sealed record MoveRecordDto
 
     [JsonPropertyName("updatedAt")]
     public required DateTimeOffset UpdatedAt { get; init; }
+}
+
+internal sealed record PushResponseWireDto
+{
+    [JsonPropertyName("contractVersion")]
+    public required int ContractVersion { get; init; }
+
+    [JsonPropertyName("workspaceId")]
+    public required Guid WorkspaceId { get; init; }
+
+    [JsonPropertyName("latestCursor")]
+    public required long LatestCursor { get; init; }
+
+    [JsonPropertyName("results")]
+    public required IReadOnlyList<OperationResultWireDto> Results { get; init; }
+}
+
+internal sealed record OperationResultWireDto
+{
+    [JsonPropertyName("operationId")]
+    public required Guid OperationId { get; init; }
+
+    [JsonPropertyName("status")]
+    public required string Status { get; init; }
+
+    [JsonPropertyName("revision")]
+    public long? Revision { get; init; }
+
+    [JsonPropertyName("cursor")]
+    public long? Cursor { get; init; }
+
+    [JsonPropertyName("conflict")]
+    public SyncConflictWireDto? Conflict { get; init; }
+}
+
+internal sealed record SyncConflictWireDto
+{
+    [JsonPropertyName("operationId")]
+    public required Guid OperationId { get; init; }
+
+    [JsonPropertyName("entityType")]
+    public required string EntityType { get; init; }
+
+    [JsonPropertyName("entityId")]
+    public required Guid EntityId { get; init; }
+
+    [JsonPropertyName("baseRevision")]
+    public required long BaseRevision { get; init; }
+
+    [JsonPropertyName("currentRevision")]
+    public required long CurrentRevision { get; init; }
+
+    [JsonPropertyName("reason")]
+    public required string Reason { get; init; }
+
+    [JsonPropertyName("conflictingFields")]
+    public required IReadOnlyList<string> ConflictingFields { get; init; }
+
+    [JsonPropertyName("serverRecord")]
+    public JsonElement? ServerRecord { get; init; }
 }
