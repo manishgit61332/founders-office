@@ -106,8 +106,12 @@ class OpenLoopsViewModel(private val container: AppContainer) : ViewModel() {
     }
 
     private fun launchMessage(successMessage: String, work: suspend () -> Unit) = viewModelScope.launch {
-        runCatching(work).onSuccess { _notice.value = successMessage }
-            .onFailure { _notice.value = "That local change could not be saved." }
+        try {
+            work()
+            _notice.value = successMessage
+        } catch (_: Exception) {
+            _notice.value = "That local change could not be saved."
+        }
     }
 }
 

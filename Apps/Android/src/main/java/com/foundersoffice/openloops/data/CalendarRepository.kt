@@ -1,6 +1,7 @@
 package com.foundersoffice.openloops.data
 
 import android.Manifest
+import android.content.ContentUris
 import android.content.Context
 import android.content.pm.PackageManager
 import android.provider.CalendarContract
@@ -77,10 +78,10 @@ class CalendarRepository(
         }
 
         val end = reference.plusSeconds(30L * 24 * 60 * 60)
-        val uri = CalendarContract.Instances.CONTENT_URI.buildUpon()
-            .appendId(reference.toEpochMilli())
-            .appendId(end.toEpochMilli())
-            .build()
+        val instanceBuilder = CalendarContract.Instances.CONTENT_URI.buildUpon()
+        ContentUris.appendId(instanceBuilder, reference.toEpochMilli())
+        ContentUris.appendId(instanceBuilder, end.toEpochMilli())
+        val uri = instanceBuilder.build()
         val projection = arrayOf(
             CalendarContract.Instances.EVENT_ID,
             CalendarContract.Instances.TITLE,

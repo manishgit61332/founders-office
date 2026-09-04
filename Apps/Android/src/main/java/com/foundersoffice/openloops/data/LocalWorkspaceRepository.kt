@@ -101,7 +101,7 @@ class LocalWorkspaceRepository(
     private val operationFactory = MoveOutboxOperationFactory(json)
 
     val visibleMoves: Flow<List<Move>> = moveDao.observeVisible().map { entities ->
-        entities.map(MoveEntity::asMove)
+        entities.map(::toMove)
     }
 
     suspend fun ensureDeviceIdentity(): String {
@@ -128,7 +128,7 @@ class LocalWorkspaceRepository(
             updatedAt = timestamp
         )
         writeMove(move, changedFields = CREATE_FIELDS)
-        return move.asMove()
+        return toMove(move)
     }
 
     suspend fun editMove(id: String, draft: MoveDraft): Move {
@@ -148,7 +148,7 @@ class LocalWorkspaceRepository(
             if (updated.priority != current.priority) add("priority")
         }
         if (changed.isNotEmpty()) writeMove(updated, changed)
-        return updated.asMove()
+        return toMove(updated)
     }
 
     suspend fun markDone(id: String) {
@@ -172,17 +172,17 @@ class LocalWorkspaceRepository(
             moveDao.upsert(move)
             database.outboxDao().insert(operation)
         }
-        projectionStore.setNextMove(moveDao.nextActive()?.asMove())
+        projectionStore.setNextMove(moveDao.nextActive()?.let(::toMove))
     }
 
-    private fun MoveEntity.asMove() = Move(
-        id = id,
-        title = title,
-        details = details,
-        dueOn = dueOn?.let(LocalDate::parse),
-        priority = MovePriority.fromWire(priority),
-        status = MoveStatus.fromWire(status),
-        completedAt = completedAt?.let(Instant::parse)
+    private fun toMove(entity: MoveEntity) = Move(
+        id = entity.id,
+        title = entity.title,
+        details = entity.details,
+        dueOn = entity.dueOn?.let(LocalDate::parse),
+        priority = MovePriority.fromWire(entity.priority),
+        status = MoveStatus.fromWire(entity.status),
+        completedAt = entity.completedAt?.let(Instant::parse)
     )
 
     companion object {

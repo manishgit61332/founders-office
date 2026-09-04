@@ -64,6 +64,7 @@ local.properties
 *.keystore
 
 # Tool and editor state
+/.gradle/
 __pycache__/
 *.py[cod]
 .idea/

@@ -164,6 +164,8 @@ class GoogleProductAuthGateway(
     private val configuration: ProductAuthConfiguration,
     private val sessionStore: SecureProductSessionStore
 ) {
+    private val json = Json { ignoreUnknownKeys = true }
+
     suspend fun start(): GoogleAuthStartResult {
         if (configuration.availability != AuthAvailability.Ready) return GoogleAuthStartResult.Unconfigured
         val request = PendingPkceRequest(
