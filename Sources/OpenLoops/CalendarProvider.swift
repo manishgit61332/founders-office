@@ -1,6 +1,7 @@
 import Combine
 import EventKit
 import Foundation
+import FounderOfficeCore
 
 #if os(macOS)
 import AppKit
@@ -24,6 +25,18 @@ struct CalendarSignal: Identifiable, Hashable {
     var calendarTitle: String
     var accountTitle: String
     var providerTitle: String
+
+    // Presentation-only metadata. No provider event or calendar is modified.
+    var isReferenceCalendar = false
+    var involvesCurrentUser = false
+
+    var upNextKind: CalendarEventPresentation.Kind {
+        CalendarEventPresentation.kind(
+            isAllDay: isAllDay,
+            isReferenceCalendar: isReferenceCalendar,
+            involvesCurrentUser: involvesCurrentUser
+        )
+    }
 
     var sourceLabel: String {
         if accountTitle.localizedCaseInsensitiveCompare(calendarTitle) == .orderedSame {
@@ -299,7 +312,16 @@ final class CalendarProvider: ObservableObject {
                     isAllDay: event.isAllDay,
                     calendarTitle: event.calendar.title,
                     accountTitle: source.map(displayTitle(for:)) ?? event.calendar.title,
-                    providerTitle: source.map(providerTitle(for:)) ?? "Calendar"
+                    providerTitle: source.map(providerTitle(for:)) ?? "Calendar",
+                    // Google holiday feeds may be read-only CalDAV calendars,
+                    // rather than EventKit subscription calendars. Preserve
+                    // invited/organized events even on those read-only sources.
+                    isReferenceCalendar: event.calendar.isSubscribed
+                        || event.calendar.type == .subscription
+                        || event.calendar.type == .birthday
+                        || !event.calendar.allowsContentModifications,
+                    involvesCurrentUser: event.organizer?.isCurrentUser == true
+                        || event.attendees?.contains(where: \.isCurrentUser) == true
                 )
             }
 

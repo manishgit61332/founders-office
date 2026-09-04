@@ -977,7 +977,8 @@ struct NotchBoardView: View {
                 from: calendarProvider.events,
                 at: context.date,
                 startDate: \.startDate,
-                endDate: \.endDate
+                endDate: \.endDate,
+                kind: \.upNextKind
             )
 
             Button {

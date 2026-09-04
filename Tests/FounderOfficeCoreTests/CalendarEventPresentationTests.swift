@@ -7,6 +7,7 @@ struct CalendarEventPresentationTests {
         var id: String
         var start: Date
         var end: Date
+        var kind: CalendarEventPresentation.Kind = .timed
     }
 
     @Test
@@ -43,7 +44,7 @@ struct CalendarEventPresentationTests {
         kolkata.timeZone = try #require(TimeZone(identifier: "Asia/Kolkata"))
         let dayStart = try #require(kolkata.date(from: DateComponents(year: 2026, month: 9, day: 1)))
         let dayEnd = try #require(kolkata.date(byAdding: .day, value: 1, to: dayStart))
-        let event = Event(id: "all-day", start: dayStart, end: dayEnd)
+        let event = Event(id: "all-day", start: dayStart, end: dayEnd, kind: .allDay)
         let evening = try #require(kolkata.date(bySettingHour: 20, minute: 0, second: 0, of: dayStart))
 
         #expect(upNext(from: [event], at: evening) == event)
@@ -94,12 +95,112 @@ struct CalendarEventPresentationTests {
         #expect(upNext(from: [event], at: end) == nil)
     }
 
-    private func upNext(from events: [Event], at date: Date) -> Event? {
+    @Test
+    func publicHolidayCannotDisplacePersonalEvents() {
+        let now = Date(timeIntervalSince1970: 1_788_523_200)
+        let holiday = Event(id: "holiday", start: now - 3_600, end: now + 43_200, kind: .calendarNotice)
+        let later = Event(id: "later", start: now + 7_200, end: now + 10_800)
+        let sooner = Event(id: "sooner", start: now + 600, end: now + 1_800)
+
+        #expect(upNext(from: [holiday, later, sooner], at: now) == sooner)
+        #expect(upNext(from: [sooner, holiday, later], at: now) == sooner)
+        #expect(upNext(from: [holiday, later, sooner], at: now + 1_800) == later)
+    }
+
+    @Test
+    func holidayIsFallbackEvenWhenNextCommitmentIsTomorrow() {
+        let now = Date(timeIntervalSince1970: 1_788_523_200)
+        let holiday = Event(id: "holiday", start: now - 3_600, end: now + 43_200, kind: .calendarNotice)
+        let tomorrow = Event(id: "tomorrow", start: now + 86_400, end: now + 90_000)
+
+        #expect(upNext(from: [holiday, tomorrow], at: now) == tomorrow)
+    }
+
+    @Test
+    func fallbackNoticesStillExpireAndSortByTime() {
+        let now = Date(timeIntervalSince1970: 1_788_523_200)
+        let finished = Event(id: "finished", start: now - 86_400, end: now, kind: .calendarNotice)
+        let current = Event(id: "current", start: now - 3_600, end: now + 43_200, kind: .calendarNotice)
+        let future = Event(id: "future", start: now + 86_400, end: now + 172_800, kind: .calendarNotice)
+
+        #expect(upNext(from: [future, finished, current], at: now) == current)
+        #expect(upNext(from: [finished, current], at: current.end) == nil)
+    }
+
+    @Test
+    func timedCommitmentsWinWithinTodayButAllDayTodayBeatsTomorrow() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try #require(TimeZone(identifier: "Asia/Kolkata"))
+        let start = try #require(calendar.date(from: DateComponents(year: 2026, month: 9, day: 4)))
+        let end = try #require(calendar.date(byAdding: .day, value: 1, to: start))
+        let now = start + 12 * 3_600
+        let personal = Event(id: "personal-all-day", start: start, end: end, kind: .allDay)
+        let notice = Event(id: "notice", start: start, end: end, kind: .calendarNotice)
+        let ongoing = Event(id: "ongoing", start: now - 300, end: now + 600)
+        let tonight = Event(id: "tonight", start: start + 23 * 3_600, end: end)
+        let tomorrow = Event(id: "tomorrow", start: end + 3_600, end: end + 7_200)
+
+        #expect(upNext(from: [personal, notice, tomorrow, tonight, ongoing], at: now, calendar: calendar) == ongoing)
+        #expect(upNext(from: [personal, notice, tomorrow, tonight], at: now, calendar: calendar) == tonight)
+        #expect(upNext(from: [notice, tomorrow, personal], at: now, calendar: calendar) == personal)
+        #expect(upNext(from: [notice, tomorrow, personal], at: end, calendar: calendar) == tomorrow)
+    }
+
+    @Test
+    func personalAllDayRemainsRelevantAcrossShortDSTDay() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try #require(TimeZone(identifier: "America/Los_Angeles"))
+        let start = try #require(calendar.date(from: DateComponents(year: 2026, month: 3, day: 8)))
+        let end = try #require(calendar.date(byAdding: .day, value: 1, to: start))
+        #expect(end.timeIntervalSince(start) == 23 * 3_600)
+        let personal = Event(id: "all-day", start: start, end: end, kind: .allDay)
+        let tomorrow = Event(id: "tomorrow", start: end + 900, end: end + 1_800)
+
+        #expect(upNext(from: [tomorrow, personal], at: end - 600, calendar: calendar) == personal)
+        #expect(upNext(from: [tomorrow, personal], at: end, calendar: calendar) == tomorrow)
+    }
+
+    @Test
+    func equalTimesUseEndThenStableInputOrder() {
+        let now = Date(timeIntervalSince1970: 1_788_523_200)
+        let short = Event(id: "short", start: now, end: now + 300)
+        let long = Event(id: "long", start: now, end: now + 600)
+        let tie = Event(id: "tie", start: now, end: now + 300)
+        #expect(upNext(from: [long, short, tie], at: now) == short)
+        #expect(upNext(from: [long, tie, short], at: now) == tie)
+        #expect(upNext(from: [], at: now) == nil)
+    }
+
+    @Test("Timed events remain commitments even on read-only calendars", arguments: [false, true])
+    func timedReferenceCalendarsAreNotMistakenForHolidays(involvesCurrentUser: Bool) {
+        #expect(CalendarEventPresentation.kind(
+            isAllDay: false,
+            isReferenceCalendar: true,
+            involvesCurrentUser: involvesCurrentUser
+        ) == .timed)
+    }
+
+    @Test
+    func allDayClassificationPreservesPersonalAndInvitedEvents() {
+        #expect(CalendarEventPresentation.kind(
+            isAllDay: true, isReferenceCalendar: true, involvesCurrentUser: false
+        ) == .calendarNotice)
+        #expect(CalendarEventPresentation.kind(
+            isAllDay: true, isReferenceCalendar: true, involvesCurrentUser: true
+        ) == .allDay)
+        #expect(CalendarEventPresentation.kind(
+            isAllDay: true, isReferenceCalendar: false, involvesCurrentUser: false
+        ) == .allDay)
+    }
+
+    private func upNext(from events: [Event], at date: Date, calendar: Calendar = .current) -> Event? {
         CalendarEventPresentation.upNext(
             from: events,
             at: date,
             startDate: \.start,
-            endDate: \.end
+            endDate: \.end,
+            kind: \.kind,
+            calendar: calendar
         )
     }
 }

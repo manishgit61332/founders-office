@@ -112,6 +112,10 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Fixed
 
+- Home's **Up next** prioritizes unfinished personal commitments by day and time,
+  with timed events ahead of personal all-day entries on the same day. All-day
+  holiday/reference feeds are a last resort, without hiding anything in Calendar
+  or demoting invited meetings merely because their calendar is read-only.
 - The Mac notch now uses a nonactivating, all-apps overlay and reconciles its
   window ordering after desktop changes without reopening it over an unfinished
   popup or switching the user back to the previous desktop.
