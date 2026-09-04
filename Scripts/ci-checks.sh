@@ -66,7 +66,7 @@ swift build \
 Scripts/verify-customer-binary-policy.sh .build/distribution-policy/release/OpenLoops
 swift Scripts/validate-notch-transparency.swift
 swiftc -frontend -parse Apps/macOSUITests/*.swift
-swiftc -frontend -parse Apps/iOS/*.swift
+swiftc -frontend -parse Apps/iOS/*.swift Apps/iOSShared/*.swift Apps/iOSWidget/*.swift
 swift Scripts/validate-motion.swift
 plutil -lint \
     Resources/Info.plist \
@@ -75,6 +75,8 @@ plutil -lint \
     Apps/macOS/PrivacyInfo.xcprivacy \
     Apps/iOS/Resources/Info.plist \
     Apps/iOS/Resources/FoundersOfficeiOS.entitlements \
+    Apps/iOSWidget/Resources/Info.plist \
+    Apps/iOSWidget/Resources/FoundersOfficeWidget.entitlements \
     Apps/iOS/Resources/PrivacyInfo.xcprivacy
 
 echo "CI checks passed."

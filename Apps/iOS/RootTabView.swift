@@ -3,15 +3,17 @@ import SwiftUI
 
 struct RootTabView: View {
     @EnvironmentObject private var model: AppModel
+    @State private var selectedTab = 0
 
     var body: some View {
-        TabView {
+        TabView(selection: $selectedTab) {
             NavigationStack {
                 HomeView()
             }
             .tabItem {
                 Label("Home", systemImage: "house")
             }
+            .tag(0)
 
             NavigationStack {
                 LoopsView()
@@ -19,6 +21,7 @@ struct RootTabView: View {
             .tabItem {
                 Label("Moves", systemImage: "checklist")
             }
+            .tag(1)
 
             NavigationStack {
                 CalendarView()
@@ -26,6 +29,7 @@ struct RootTabView: View {
             .tabItem {
                 Label("Calendar", systemImage: "calendar")
             }
+            .tag(2)
 
             NavigationStack {
                 SettingsView()
@@ -33,7 +37,10 @@ struct RootTabView: View {
             .tabItem {
                 Label("Settings", systemImage: "gearshape")
             }
+            .tag(3)
         }
+        .onAppear { selectTab(for: model.route) }
+        .onChange(of: model.route) { _, route in selectTab(for: route) }
         .safeAreaInset(edge: .top, spacing: 0) {
             if let recoveryMessage = model.recoveryMessage {
                 WorkspaceRecoveryBanner(
@@ -44,6 +51,16 @@ struct RootTabView: View {
                 .padding(.top, 8)
                 .padding(.bottom, 4)
             }
+        }
+    }
+
+    private func selectTab(for route: IOSAppRoute?) {
+        switch route {
+        case .home: selectedTab = 0
+        case .moves: selectedTab = 1
+        case .calendar: selectedTab = 2
+        case .goal: selectedTab = 3
+        case nil: break
         }
     }
 }
@@ -64,7 +81,7 @@ private struct WorkspaceRecoveryBanner: View {
                 Text("Workspace recovery required")
                     .font(appearance.interfaceFont(.secondary, weight: .semibold))
 
-                Text("\(message) Editing and iCloud sync are paused to protect it.")
+                Text("\(message) Editing and device sync are paused to protect it.")
                     .font(appearance.interfaceFont(.secondary))
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -89,7 +106,7 @@ private struct WorkspaceRecoveryBanner: View {
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(
-            "Workspace recovery required. \(message) Editing and iCloud sync are paused to protect it."
+            "Workspace recovery required. \(message) Editing and device sync are paused to protect it."
         )
     }
 }

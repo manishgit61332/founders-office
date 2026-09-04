@@ -29,24 +29,20 @@
     <string>0.1.0</string>
     <key>CFBundleVersion</key>
     <string>1</string>
-    <key>FounderOfficeCloudEnabled</key>
-    <true/>
-    <!-- Provisional development value; App Store release configuration must
-         replace it with the entitlement-matched production container. -->
-    <key>FounderOfficeCloudContainerIdentifier</key>
-    <string>iCloud.com.manish.foundersoffice</string>
+    <key>FounderOfficeSyncAuthority</key>
+    <string>supabase</string>
     <key>FounderOfficeSupabaseURL</key>
     <string>$(FOUNDER_OFFICE_SUPABASE_URL)</string>
     <key>FounderOfficeSupabasePublishableKey</key>
     <string>$(FOUNDER_OFFICE_SUPABASE_PUBLISHABLE_KEY)</string>
     <key>FounderOfficeAuthCallbackURL</key>
     <string>$(FOUNDER_OFFICE_AUTH_CALLBACK_SCHEME)://auth/callback</string>
+    <key>FounderOfficeAppleSignInEnabled</key>
+    <false/>
     <key>LSRequiresIPhoneOS</key>
     <true/>
     <key>NSCalendarsFullAccessUsageDescription</key>
     <string>Founder's Office shows upcoming meetings from the calendars already connected to this device.</string>
-    <key>NSPhotoLibraryUsageDescription</key>
-    <string>Choose a personal vision image for your Founder's Office home screen.</string>
     <key>UIAppFonts</key>
     <array>
         <string>InstrumentSerif-Regular.ttf</string>
@@ -56,10 +52,6 @@
         <key>UIApplicationSupportsMultipleScenes</key>
         <false/>
     </dict>
-    <key>UIBackgroundModes</key>
-    <array>
-        <string>remote-notification</string>
-    </array>
     <key>UILaunchScreen</key>
     <dict/>
     <key>UISupportedInterfaceOrientations</key>

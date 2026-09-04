@@ -7,6 +7,7 @@ struct CalendarView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.calendar) private var localeCalendar
     @State private var planningSelection: TaskPlanningSelection?
+    @State private var highlightedEventID: String?
 
     private var appearance: AppearancePreferences { model.personalization.resolvedAppearance }
 
@@ -62,7 +63,10 @@ struct CalendarView: View {
                             )
                         } else {
                             ForEach(calendar.events) { event in
-                                CalendarEventRow(event: event)
+                                CalendarEventRow(
+                                    event: event,
+                                    isHighlighted: event.id == highlightedEventID
+                                )
                             }
                         }
                     }
@@ -106,8 +110,16 @@ struct CalendarView: View {
         .founderSurface(appearance)
         .onAppear {
             calendar.refreshIfAuthorized()
+            handleRoute(model.route)
         }
+        .onChange(of: model.route) { _, route in handleRoute(route) }
         .taskPlanningSheet(selection: $planningSelection)
+    }
+
+    private func handleRoute(_ route: IOSAppRoute?) {
+        guard case let .calendar(identifier) = route else { return }
+        highlightedEventID = identifier
+        model.consumeRoute()
     }
 }
 
@@ -115,6 +127,7 @@ private struct CalendarEventRow: View {
     @EnvironmentObject private var model: AppModel
 
     let event: DeviceCalendarEvent
+    let isHighlighted: Bool
 
     private var appearance: AppearancePreferences { model.personalization.resolvedAppearance }
 
@@ -148,7 +161,10 @@ private struct CalendarEventRow: View {
         )
         .overlay(
             RoundedRectangle(cornerRadius: appearance.nodeCornerRadius, style: .continuous)
-                .stroke(appearance.nodeBorderColor, lineWidth: 1)
+                .stroke(
+                    isHighlighted ? appearance.primaryAccentColor : appearance.nodeBorderColor,
+                    lineWidth: isHighlighted ? 3 : 1
+                )
         )
         .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
         .listRowBackground(Color.clear)

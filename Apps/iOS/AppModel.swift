@@ -1,8 +1,8 @@
 import Combine
-import Foundation
-import FounderOfficeCloud
 import FounderOfficeCore
+import Foundation
 import UIKit
+import WidgetKit
 
 enum TaskPlanningSaveResult: Equatable {
     case saved
@@ -10,81 +10,41 @@ enum TaskPlanningSaveResult: Equatable {
     case failed
 }
 
+enum IOSAppRoute: Equatable {
+    case home
+    case moves(UUID?)
+    case calendar(String?)
+    case goal(UUID)
+}
+
+/// SwiftUI-facing iOS workspace state. The SQLite repository is the local
+/// authority; JSON remains a read-only legacy migration input and CloudKit is
+/// not constructed here.
 @MainActor
 final class AppModel: ObservableObject {
     @Published private(set) var openLoops: OpenLoopsDocument
     @Published private(set) var personalization: PersonalizationDocument
-    @Published private(set) var cloudStatus: FounderOfficeCloudStatus = .preparing
-    @Published private(set) var recoveryState: WorkspaceRecoveryState
+    @Published private(set) var recoveryState: WorkspaceRecoveryState = .ready
+    @Published private(set) var isOpeningWorkspace = true
+    @Published private(set) var saveMessage: String?
+    @Published private(set) var route: IOSAppRoute?
+    @Published private(set) var workspaceSession: IOSWorkspaceSession?
 
-    private let storage: WorkspaceStorage
-    private let cloudSync: FounderOfficeCloudSync?
-    private var cancellables = Set<AnyCancellable>()
+    private let storage: IOSWorkspaceStorage
+    private var sessionCancellable: AnyCancellable?
+    private var widgetIsSignedIn = false
+    private var widgetCommitment: IOSWidgetProjection.Commitment?
 
-    init(storage: WorkspaceStorage = WorkspaceStorage()) {
-        let openLoopsLoad = storage.loadOpenLoops()
-        let personalizationLoad = storage.loadPersonalization()
-        let initialOpenLoops = openLoopsLoad.value ?? OpenLoopsDocument(
-            schemaVersion: 3,
-            updatedAt: .now,
-            items: []
-        )
-        let initialPersonalization = personalizationLoad.value ?? PersonalizationDocument(
-            schemaVersion: 6,
-            displayName: "Founder's Office",
-            accent: .blue,
-            iconStyle: .system,
-            photoFileName: nil,
-            primaryGoal: nil,
-            milestones: [],
-            preferredName: nil,
-            workspaceName: "Founder's Office",
-            appearance: .manish()
-        )
-        let initialRecoveryState = openLoopsLoad.recoveryState
-            .merging(personalizationLoad.recoveryState)
-
+    init(storage: IOSWorkspaceStorage = IOSWorkspaceStorage()) {
         self.storage = storage
-        self.openLoops = initialOpenLoops
-        self.personalization = initialPersonalization
-        self.recoveryState = initialRecoveryState
+        let snapshot = IOSWorkspaceSession.freshSnapshot
+        openLoops = snapshot.openLoops
+        personalization = snapshot.personalization
 
-        if !initialRecoveryState.requiresRecovery {
-            // Bootstrap the offline mirror before CKSyncEngine starts. This avoids
-            // a first launch ever uploading an empty workspace over existing data.
-            storage.save(initialOpenLoops)
-            storage.save(initialPersonalization)
-        }
-
-        let snapshotStore = JSONSnapshotStore(rootURL: storage.storageDirectory)
-        if let configuration = try? FounderOfficeCloudConfiguration.bundled() {
-            cloudSync = FounderOfficeCloudSync(
-                snapshotStore: snapshotStore,
-                sidecarURL: storage.storageDirectory.appendingPathComponent("cloud-sync-state.json"),
-                configuration: configuration
-            )
-        } else {
-            cloudSync = nil
-            cloudStatus = .error
-        }
-
-        NotificationCenter.default.publisher(for: .founderOfficeSnapshotDidChange)
-            .receive(on: RunLoop.main)
-            .sink { [weak self] _ in
-                self?.reloadFromOfflineMirror()
-            }
-            .store(in: &cancellables)
-
-        if initialRecoveryState.requiresRecovery {
-            cloudStatus = .error
-        } else if let cloudSync {
-            Task { [weak self] in
-                guard let self else { return }
-                await cloudSync.start()
-                try? await cloudSync.syncNow()
-                await refreshCloudStatus()
-            }
-        }
+        // Do not let a stale App Group file expose content before the Keychain
+        // session has been revalidated.
+        publishWidgetProjection()
+        Task { [weak self] in await self?.openWorkspace() }
     }
 
     var recoveryMessage: String? {
@@ -108,10 +68,18 @@ final class AppModel: ObservableObject {
     }
 
     var visionImage: UIImage? {
-        guard let fileName = personalization.photoFileName,
-              let data = storage.loadPhoto(named: fileName)
-        else { return nil }
+        guard let fileName = personalization.resolvedPhotoFileName,
+              let data = storage.loadPhoto(named: fileName) else { return nil }
         return UIImage(data: data)
+    }
+
+    var hasCustomerData: Bool {
+        !openLoops.items.isEmpty
+            || activePrimaryGoal != nil
+            || personalization.milestones.contains(where: { $0.deletedAt == nil })
+            || personalization.resolvedPhotoFileName != nil
+            || personalization.resolvedPreferredName != nil
+            || personalization.resolvedWorkspaceName != "Founder's Office"
     }
 
     func addLoop(
@@ -139,18 +107,48 @@ final class AppModel: ObservableObject {
             priorityUpdatedAt: now,
             dueAtUpdatedAt: now
         )
-        openLoops.items.append(loop)
-        persistOpenLoops(at: now)
+        var candidate = openLoops
+        candidate.schemaVersion = max(candidate.schemaVersion, 3)
+        candidate.updatedAt = now
+        candidate.items.append(loop)
+        persistOpenLoops(
+            candidate,
+            entityID: loop.id,
+            changedFields: [
+                "title", "details", "status", "previousStatus", "priority", "dueAt",
+                "createdAt", "updatedAt", "priorityUpdatedAt", "dueAtUpdatedAt",
+                "completedAt", "deletedAt", "source"
+            ],
+            at: now
+        )
     }
 
     func toggleCompletion(_ loop: OpenLoop) {
-        guard canEdit else { return }
-        replace(loop, with: OpenLoopRules.toggledCompletion(loop, at: .now))
+        guard canEdit, let index = openLoops.items.firstIndex(where: { $0.id == loop.id }) else { return }
+        let now = Date()
+        var candidate = openLoops
+        candidate.items[index] = OpenLoopRules.toggledCompletion(loop, at: now)
+        candidate.updatedAt = now
+        persistOpenLoops(
+            candidate,
+            entityID: loop.id,
+            changedFields: ["status", "previousStatus", "completedAt", "updatedAt"],
+            at: now
+        )
     }
 
     func move(_ loop: OpenLoop, to status: LoopStatus) {
-        guard canEdit else { return }
-        replace(loop, with: OpenLoopRules.moved(loop, to: status, at: .now))
+        guard canEdit, let index = openLoops.items.firstIndex(where: { $0.id == loop.id }) else { return }
+        let now = Date()
+        var candidate = openLoops
+        candidate.items[index] = OpenLoopRules.moved(loop, to: status, at: now)
+        candidate.updatedAt = now
+        persistOpenLoops(
+            candidate,
+            entityID: loop.id,
+            changedFields: ["status", "previousStatus", "completedAt", "updatedAt"],
+            at: now
+        )
     }
 
     @discardableResult
@@ -161,98 +159,84 @@ final class AppModel: ObservableObject {
         updatesPriority: Bool,
         updatesDeadline: Bool
     ) -> TaskPlanningSaveResult {
-        guard canEdit else { return .failed }
-
-        // Merge the draft into the newest offline mirror rather than the copy
-        // that happened to be visible when the sheet opened. Cloud sync can
-        // update a different field while this editor remains on screen.
-        let latestDocument: OpenLoopsDocument
-        switch storage.loadOpenLoops() {
-        case let .loaded(document):
-            latestDocument = document
-        case .missing:
-            return .failed
-        case let .recoveryRequired(discoveredRecovery):
-            recoveryState = recoveryState.merging(discoveredRecovery)
-            cloudStatus = .error
+        guard canEdit,
+              let index = openLoops.items.firstIndex(where: { $0.id == id && $0.deletedAt == nil }) else {
             return .failed
         }
-        guard let index = latestDocument.items.firstIndex(where: {
-                  $0.id == id && $0.deletedAt == nil
-              })
-        else { return .failed }
-
-        let current = latestDocument.items[index]
-        let mergedPriority = updatesPriority ? priority : current.priority
-        let mergedDueAt = updatesDeadline ? dueAt : current.dueAt
-
-        let savedAt = Date.now
+        let current = openLoops.items[index]
+        let resolvedPriority = updatesPriority ? priority : current.priority
+        let resolvedDeadline = updatesDeadline ? dueAt : current.dueAt
         let updated = OpenLoopRules.updatedPlanning(
             current,
-            priority: mergedPriority,
-            dueAt: mergedDueAt,
-            at: savedAt
+            priority: resolvedPriority,
+            dueAt: resolvedDeadline,
+            at: .now
         )
         guard updated != current else { return .unchanged }
 
-        // Stage the complete document and publish it only after the atomic file
-        // save succeeds. A failed write therefore cannot leave UI state ahead
-        // of the offline mirror that CloudKit reads.
-        var candidate = latestDocument
-        candidate.schemaVersion = max(candidate.schemaVersion, 3)
+        let now = Date()
+        var candidate = openLoops
         candidate.items[index] = updated
-        candidate.updatedAt = savedAt
-        guard storage.save(candidate) else { return .failed }
-
-        openLoops = candidate
-        queueCloudSave()
+        candidate.updatedAt = now
+        let fields = [
+            current.priority == resolvedPriority ? nil : "priority",
+            current.priority == resolvedPriority ? nil : "priorityUpdatedAt",
+            current.dueAt == resolvedDeadline ? nil : "dueAt",
+            current.dueAt == resolvedDeadline ? nil : "dueAtUpdatedAt",
+            "updatedAt"
+        ].compactMap { $0 }
+        persistOpenLoops(candidate, entityID: id, changedFields: fields, at: now)
         return .saved
     }
 
     func softDelete(_ loop: OpenLoop) {
-        guard canEdit else { return }
-        replace(loop, with: OpenLoopRules.softDeleted(loop, at: .now))
-    }
-
-    func updatePreferredName(_ preferredName: String) {
-        guard canEdit else { return }
-        let cleanValue = preferredName.trimmingCharacters(in: .whitespacesAndNewlines)
-        personalization.preferredName = cleanValue.isEmpty ? nil : cleanValue
-        persistPersonalization()
+        guard canEdit, let index = openLoops.items.firstIndex(where: { $0.id == loop.id }) else { return }
+        let now = Date()
+        var candidate = openLoops
+        candidate.items[index] = OpenLoopRules.softDeleted(loop, at: now)
+        candidate.updatedAt = now
+        persistOpenLoops(
+            candidate,
+            entityID: loop.id,
+            changedFields: ["deletedAt", "updatedAt"],
+            at: now
+        )
     }
 
     func updateWorkspaceName(_ workspaceName: String) {
         guard canEdit else { return }
-        let cleanValue = workspaceName.trimmingCharacters(in: .whitespacesAndNewlines)
-        personalization.workspaceName = cleanValue.isEmpty ? "Founder's Office" : cleanValue
-        persistPersonalization()
+        let now = Date()
+        var candidate = personalization
+        let clean = workspaceName.trimmingCharacters(in: .whitespacesAndNewlines)
+        candidate.workspaceName = clean.isEmpty ? "Founder's Office" : clean
+        candidate.updatedAt = now
+        persistPersonalization(
+            candidate,
+            entityKind: .workspace,
+            entityID: "workspace",
+            changedFields: ["workspaceName", "updatedAt"],
+            at: now
+        )
     }
 
     func updateAccent(_ accent: AccentPalette) {
-        guard canEdit else { return }
-        personalization.accent = accent
-        var appearance = personalization.resolvedAppearance
-        appearance.presetID = .custom
-        appearance.accent = AccentStyle(
-            mode: .solid,
-            stops: [AccentStop(color: accent.rgb24, location: 0)]
-        )
-        appearance.updatedAt = .now
-        personalization.appearance = appearance
-        persistPersonalization()
+        updateAppearance { appearance in
+            appearance.accent = AccentStyle(
+                mode: .solid,
+                stops: [AccentStop(color: accent.rgb24, location: 0)],
+                angleDegrees: appearance.accent.angleDegrees
+            )
+        }
     }
 
     func applyAppearancePreset(_ preset: AppearancePresetID) {
-        guard canEdit else { return }
         guard preset != .custom else { return }
-        let appearance = AppearancePreferences.preset(preset)
-        personalization.appearance = appearance
-        personalization.accent = nearestLegacyAccent(to: appearance.accent.primaryColor)
-        persistPersonalization()
+        var candidate = AppearancePreferences.preset(preset)
+        candidate.updatedAt = .now
+        persistAppearance(candidate)
     }
 
     func updateAccentMode(_ mode: AccentMode) {
-        guard canEdit else { return }
         updateAppearance { appearance in
             var stops = appearance.accent.normalizedStops
             if mode == .gradient, stops.count == 1 {
@@ -263,7 +247,6 @@ final class AppModel: ObservableObject {
     }
 
     func updateAccentColor(_ color: RGB24Color, stopIndex: Int) {
-        guard canEdit else { return }
         updateAppearance { appearance in
             var stops = appearance.accent.normalizedStops
             while stops.count <= stopIndex {
@@ -279,116 +262,211 @@ final class AppModel: ObservableObject {
     }
 
     func updateAccentAngle(_ angle: Double) {
-        guard canEdit else { return }
         updateAppearance { $0.accent.angleDegrees = angle }
     }
 
     func updateDisplayFont(_ font: FontChoiceID) {
-        guard canEdit else { return }
         updateAppearance { $0.displayFontID = font }
     }
 
     func updateInterfaceFont(_ font: FontChoiceID) {
-        guard canEdit else { return }
         updateAppearance { $0.interfaceFontID = font }
     }
 
     func updateNodeStyle(_ style: NodeStyleID) {
-        guard canEdit else { return }
         updateAppearance { $0.nodeStyleID = style }
     }
 
     func updateSurfaceStyle(_ style: SurfaceStyleID) {
-        guard canEdit else { return }
         updateAppearance { $0.surfaceStyleID = style }
     }
 
     func setPrimaryGoal(_ goal: PrimaryGoal) {
         guard canEdit else { return }
+        let now = Date()
+        var candidate = personalization
         var updated = goal
-        updated.updatedAt = .now
+        updated.updatedAt = now
         updated.deletedAt = nil
-        personalization.primaryGoal = updated
-        persistPersonalization()
+        candidate.primaryGoal = updated
+        candidate.updatedAt = now
+        persistPersonalization(
+            candidate,
+            entityKind: .primaryGoal,
+            entityID: updated.id.uuidString.lowercased(),
+            changedFields: [
+                "title", "metric", "currentValue", "targetValue", "unit", "dueAt",
+                "createdAt", "updatedAt", "deletedAt"
+            ],
+            at: now
+        )
     }
 
     func clearPrimaryGoal() {
-        guard canEdit else { return }
-        guard var goal = personalization.primaryGoal else { return }
+        guard canEdit, var goal = personalization.primaryGoal else { return }
         let now = Date()
         goal.updatedAt = now
         goal.deletedAt = now
-        personalization.primaryGoal = goal
-        persistPersonalization(at: now)
+        var candidate = personalization
+        candidate.primaryGoal = goal
+        candidate.updatedAt = now
+        persistPersonalization(
+            candidate,
+            entityKind: .primaryGoal,
+            entityID: goal.id.uuidString.lowercased(),
+            changedFields: ["updatedAt", "deletedAt"],
+            at: now
+        )
     }
 
-    func saveVisionImage(_ data: Data) {
-        guard canEdit else { return }
-        guard let image = UIImage(data: data),
-              let jpeg = image.jpegData(compressionQuality: 0.9)
-        else { return }
-
-        let fileName = "vision-\(UUID().uuidString.lowercased()).jpg"
-        guard storage.savePhoto(jpeg, named: fileName) else { return }
-        personalization.photoFileName = fileName
-        persistPersonalization()
+    func setWidgetAccountState(_ state: ProductAuthState) {
+        if case .signedIn = state {
+            widgetIsSignedIn = true
+        } else {
+            widgetIsSignedIn = false
+        }
+        publishWidgetProjection()
     }
 
-    func syncCloudNow() {
-        guard canUseCloud, let cloudSync else { return }
-        Task { [weak self] in
-            guard let self else { return }
-            try? await cloudSync.syncNow()
-            await refreshCloudStatus()
+    func updateWidgetCalendar(nextEvent: DeviceCalendarEvent?) {
+        widgetCommitment = nextEvent.map {
+                IOSWidgetProjection.Commitment(
+                    id: $0.id,
+                    title: $0.title,
+                    startAt: $0.startDate
+                )
+            }
+        publishWidgetProjection()
+    }
+
+    func handleDeepLink(_ url: URL) {
+        guard url.scheme?.lowercased() == "founders-office" else { return }
+        let parts = url.pathComponents.filter { $0 != "/" }
+        switch (url.host?.lowercased(), parts.first) {
+        case ("home", _): route = .home
+        case ("moves", _): route = .moves(nil)
+        case ("move", let id?): route = .moves(UUID(uuidString: id))
+        case ("calendar", let id?): route = .calendar(id)
+        case ("calendar", _): route = .calendar(nil)
+        case ("goal", let id?) where UUID(uuidString: id) != nil:
+            route = .goal(UUID(uuidString: id)!)
+        default: route = .home
         }
     }
 
-    func resumeCloudAfterAccountReview(uploadLocalWorkspace: Bool) {
-        guard canUseCloud, let cloudSync else { return }
-        Task { [weak self] in
-            guard let self else { return }
-            try? await cloudSync.resumeAfterAccountReview(
-                uploadLocalWorkspace: uploadLocalWorkspace
-            )
-            await refreshCloudStatus()
+    func consumeRoute() { route = nil }
+
+    func refreshWorkspace() {
+        guard let workspaceSession else { return }
+        Task { [weak self, workspaceSession] in
+            if let latest = try? await workspaceSession.repository.snapshot() {
+                self?.apply(latest)
+            }
         }
     }
 
-    private func replace(_ original: OpenLoop, with updated: OpenLoop) {
-        guard let index = openLoops.items.firstIndex(where: { $0.id == original.id }) else { return }
-        openLoops.items[index] = updated
-        persistOpenLoops(at: updated.updatedAt)
+    private func openWorkspace() async {
+        do {
+            let session = try await IOSWorkspaceSession.open(rootURL: storage.storageDirectory)
+            workspaceSession = session
+            apply(session.snapshot)
+            sessionCancellable = session.$snapshot
+                .dropFirst()
+                .receive(on: RunLoop.main)
+                .sink { [weak self] in self?.apply($0) }
+        } catch let IOSWorkspaceSessionError.recoveryRequired(state) {
+            recoveryState = state
+            saveMessage = state.message
+        } catch {
+            recoveryState = WorkspaceRecoveryState(affectedComponents: WorkspaceStorageComponent.allCases)
+            saveMessage = recoveryState.message
+        }
+        isOpeningWorkspace = false
     }
 
-    private func persistOpenLoops(at date: Date) {
-        guard canEdit else { return }
-        openLoops.schemaVersion = max(openLoops.schemaVersion, 3)
-        openLoops.updatedAt = date
-        guard storage.save(openLoops) else { return }
-        queueCloudSave()
+    private func persistOpenLoops(
+        _ candidate: OpenLoopsDocument,
+        entityID: UUID,
+        changedFields: [String],
+        at date: Date
+    ) {
+        guard let session = workspaceSession else { return }
+        openLoops = candidate
+        publishWidgetProjection()
+        let mutation = WorkspacePatchMutation(
+            entityKind: WorkspaceLocalEntityKind.move.rawValue,
+            entityID: entityID.uuidString.lowercased(),
+            changedFields: changedFields,
+            fieldClocks: Dictionary(uniqueKeysWithValues: changedFields.map { ($0, date) }),
+            patch: .openLoops(candidate),
+            createdAt: date
+        )
+        commit(mutation, through: session)
     }
 
-    private func persistPersonalization(at date: Date = .now) {
-        guard canEdit else { return }
-        personalization.schemaVersion = max(personalization.schemaVersion, 6)
-        personalization.updatedAt = date
-        guard storage.save(personalization) else { return }
-        queueCloudSave()
+    private func persistPersonalization(
+        _ candidate: PersonalizationDocument,
+        entityKind: WorkspaceLocalEntityKind,
+        entityID: String,
+        changedFields: [String],
+        at date: Date
+    ) {
+        guard let session = workspaceSession else { return }
+        personalization = candidate
+        publishWidgetProjection()
+        let mutation = WorkspacePatchMutation(
+            entityKind: entityKind.rawValue,
+            entityID: entityID,
+            changedFields: changedFields,
+            fieldClocks: Dictionary(uniqueKeysWithValues: changedFields.map { ($0, date) }),
+            patch: .personalization(candidate),
+            createdAt: date
+        )
+        commit(mutation, through: session)
+    }
+
+    private func commit(_ mutation: WorkspacePatchMutation, through session: IOSWorkspaceSession) {
+        Task { [weak self, session] in
+            do {
+                _ = try await session.commit(mutation)
+            } catch {
+                guard let self else { return }
+                apply(session.snapshot)
+                saveMessage = "The change could not be saved locally."
+            }
+        }
     }
 
     private func updateAppearance(_ update: (inout AppearancePreferences) -> Void) {
+        guard canEdit else { return }
         var appearance = personalization.resolvedAppearance
         update(&appearance)
         appearance.presetID = .custom
         appearance.updatedAt = .now
-        personalization.appearance = appearance
-        personalization.accent = nearestLegacyAccent(to: appearance.accent.primaryColor)
-        persistPersonalization()
+        persistAppearance(appearance)
+    }
+
+    private func persistAppearance(_ appearance: AppearancePreferences) {
+        guard canEdit else { return }
+        let now = appearance.updatedAt ?? .now
+        var candidate = personalization
+        candidate.appearance = appearance
+        candidate.accent = nearestLegacyAccent(to: appearance.accent.primaryColor)
+        candidate.updatedAt = now
+        persistPersonalization(
+            candidate,
+            entityKind: .appearance,
+            entityID: WorkspaceLocalEntityKind.appearance.rawValue,
+            changedFields: ["appearance", "accent", "updatedAt"],
+            at: now
+        )
     }
 
     private func nearestLegacyAccent(to color: RGB24Color) -> AccentPalette {
         AccentPalette.allCases.min { lhs, rhs in
-            colorDistance(lhs.rgb24, color) < colorDistance(rhs.rgb24, color)
+            let lhsDistance = colorDistance(lhs.rgb24, color)
+            let rhsDistance = colorDistance(rhs.rgb24, color)
+            return lhsDistance < rhsDistance
         } ?? .blue
     }
 
@@ -399,212 +477,65 @@ final class AppModel: ObservableObject {
         return red * red + green * green + blue * blue
     }
 
-    private func queueCloudSave() {
-        guard canUseCloud, let cloudSync else { return }
-        Task { [weak self] in
-            guard let self else { return }
-            await cloudSync.noteLocalChange()
-            await refreshCloudStatus()
-        }
+    private func apply(_ snapshot: WorkspaceRepositorySnapshot) {
+        openLoops = snapshot.content.openLoops
+        personalization = snapshot.content.personalization
+        recoveryState = .ready
+        publishWidgetProjection()
     }
 
-    private func refreshCloudStatus() async {
-        guard let cloudSync else {
-            cloudStatus = .error
-            return
+    private func publishWidgetProjection() {
+        let goal = activePrimaryGoal.map { goal in
+            IOSWidgetProjection.Goal(
+                id: goal.id,
+                title: goal.title,
+                progress: goal.targetValue.map { target in
+                    let current = goal.currentValue ?? .zero
+                    return "\(goal.unit.format(current)) of \(goal.unit.format(target))"
+                }
+            )
         }
-        cloudStatus = await cloudSync.status
-    }
-
-    private func reloadFromOfflineMirror() {
-        let openLoopsLoad = storage.loadOpenLoops()
-        let personalizationLoad = storage.loadPersonalization()
-
-        if let latestOpenLoops = openLoopsLoad.value {
-            openLoops = latestOpenLoops
-        }
-        if let latestPersonalization = personalizationLoad.value {
-            personalization = latestPersonalization
-        }
-
-        let discoveredRecovery = openLoopsLoad.recoveryState
-            .merging(personalizationLoad.recoveryState)
-        if discoveredRecovery.requiresRecovery {
-            recoveryState = recoveryState.merging(discoveredRecovery)
-            cloudStatus = .error
-        }
+        let move = nextMove.map { IOSWidgetProjection.Move(id: $0.id, title: $0.title, dueAt: $0.dueAt) }
+        _ = IOSWidgetProjectionStore.save(
+            IOSWidgetProjection(
+                isSignedIn: widgetIsSignedIn,
+                nextMove: move,
+                nextCommitment: widgetCommitment,
+                primaryGoal: goal
+            )
+        )
+        WidgetCenter.shared.reloadAllTimelines()
     }
 
     private var canEdit: Bool {
-        !recoveryState.requiresRecovery
-    }
-
-    private var canUseCloud: Bool {
-        guard !recoveryState.requiresRecovery else {
-            cloudStatus = .error
-            return false
-        }
-        guard cloudSync != nil else {
-            cloudStatus = .error
+        guard !isOpeningWorkspace, workspaceSession != nil, !recoveryState.requiresRecovery else {
+            if !isOpeningWorkspace { saveMessage = recoveryState.message }
             return false
         }
         return true
     }
 }
 
-enum WorkspaceLoadResult<Value> {
-    case missing
-    case loaded(Value)
-    case recoveryRequired(WorkspaceRecoveryState)
-
-    var value: Value? {
-        guard case let .loaded(value) = self else { return nil }
-        return value
-    }
-
-    var recoveryState: WorkspaceRecoveryState {
-        guard case let .recoveryRequired(state) = self else { return .ready }
-        return state
-    }
-}
-
-struct WorkspaceStorage {
+struct IOSWorkspaceStorage {
     private let fileManager: FileManager
-    private let appGroupID = "group.com.manish.foundersoffice"
+    private let appGroupID = IOSWidgetProjectionStore.appGroupID
 
     init(fileManager: FileManager = .default) {
         self.fileManager = fileManager
-    }
-
-    func loadOpenLoops() -> WorkspaceLoadResult<OpenLoopsDocument> {
-        switch decode(OpenLoopsDocument.self, named: "openloops", component: .openLoops) {
-        case .missing:
-            return .missing
-        case let .loaded(document):
-            return .loaded(OpenLoopsMigration.upgradingPlanningSchema(document))
-        case let .recoveryRequired(recovery):
-            return .recoveryRequired(recovery)
-        }
-    }
-
-    func loadPersonalization() -> WorkspaceLoadResult<PersonalizationDocument> {
-        decode(PersonalizationDocument.self, named: "personalization", component: .personalization)
-    }
-
-    @discardableResult
-    func save(_ document: OpenLoopsDocument) -> Bool {
-        encode(document, named: "openloops")
-    }
-
-    @discardableResult
-    func save(_ document: PersonalizationDocument) -> Bool {
-        encode(document, named: "personalization")
-    }
-
-    func loadPhoto(named fileName: String) -> Data? {
-        guard let fileName = AssetFileName.validated(fileName) else { return nil }
-        return try? Data(contentsOf: photoDirectory.appendingPathComponent(fileName))
-    }
-
-    @discardableResult
-    func savePhoto(_ data: Data, named fileName: String) -> Bool {
-        guard let fileName = AssetFileName.validated(fileName) else { return false }
-        do {
-            try ensureStorageDirectory()
-            try fileManager.createDirectory(at: photoDirectory, withIntermediateDirectories: true)
-            try data.write(to: photoDirectory.appendingPathComponent(fileName), options: .atomic)
-            return true
-        } catch {
-            return false
-        }
     }
 
     var storageDirectory: URL {
         if let groupURL = fileManager.containerURL(forSecurityApplicationGroupIdentifier: appGroupID) {
             return groupURL.appendingPathComponent("FounderOffice", isDirectory: true)
         }
-
-        let applicationSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        return applicationSupport.appendingPathComponent("FounderOffice", isDirectory: true)
+        return fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("FounderOffice", isDirectory: true)
     }
 
-    private var photoDirectory: URL {
-        storageDirectory.appendingPathComponent("Personalization", isDirectory: true)
-    }
-
-    private func decode<Value: Decodable>(
-        _ type: Value.Type,
-        named name: String,
-        component: WorkspaceStorageComponent
-    ) -> WorkspaceLoadResult<Value> {
-        let localURL = storageDirectory.appendingPathComponent("\(name).json")
-        let hasCanonicalFile = fileManager.fileExists(atPath: localURL.path)
-        guard let sourceURL = hasCanonicalFile
-            ? localURL
-            : Bundle.main.url(forResource: name, withExtension: "json")
-        else {
-            return .missing
-        }
-
-        let data: Data
-        do {
-            data = try Data(contentsOf: sourceURL)
-        } catch {
-            return .recoveryRequired(recoveryState(for: component, preservedCopyName: nil))
-        }
-
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        do {
-            return .loaded(try decoder.decode(type, from: data))
-        } catch {
-            let preservedCopyName: String?
-            if hasCanonicalFile {
-                preservedCopyName = (try? CorruptFileQuarantine.preserve(
-                    localURL,
-                    fileManager: fileManager
-                ))?.lastPathComponent
-            } else {
-                preservedCopyName = nil
-            }
-            return .recoveryRequired(
-                recoveryState(for: component, preservedCopyName: preservedCopyName)
-            )
-        }
-    }
-
-    private func recoveryState(
-        for component: WorkspaceStorageComponent,
-        preservedCopyName: String?
-    ) -> WorkspaceRecoveryState {
-        WorkspaceRecoveryState(
-            affectedComponents: [component],
-            preservedCopyNames: preservedCopyName.map { [$0] } ?? []
-        )
-    }
-
-    private func encode<Value: Encodable>(_ value: Value, named name: String) -> Bool {
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-
-        do {
-            try ensureStorageDirectory()
-            let data = try encoder.encode(value)
-            try data.write(
-                to: storageDirectory.appendingPathComponent("\(name).json"),
-                options: .atomic
-            )
-            return true
-        } catch {
-            return false
-        }
-    }
-
-    private func ensureStorageDirectory() throws {
-        try fileManager.createDirectory(
-            at: storageDirectory,
-            withIntermediateDirectories: true
-        )
+    func loadPhoto(named fileName: String) -> Data? {
+        guard let fileName = AssetFileName.validated(fileName) else { return nil }
+        return try? Data(contentsOf: storageDirectory
+            .appendingPathComponent("Personalization", isDirectory: true)
+            .appendingPathComponent(fileName))
     }
 }

@@ -1,5 +1,6 @@
 import Combine
 import EventKit
+import FounderOfficeCore
 import Foundation
 import UIKit
 
@@ -17,6 +18,16 @@ struct DeviceCalendarEvent: Identifiable, Hashable {
     var isAllDay: Bool
     var calendarName: String
     var accountName: String
+    var isReferenceCalendar: Bool
+    var involvesCurrentUser: Bool
+
+    var upNextKind: CalendarEventPresentation.Kind {
+        CalendarEventPresentation.kind(
+            isAllDay: isAllDay,
+            isReferenceCalendar: isReferenceCalendar,
+            involvesCurrentUser: involvesCurrentUser
+        )
+    }
 }
 
 @MainActor
@@ -47,6 +58,16 @@ final class CalendarProvider: ObservableObject {
         if hasReadAccess { return "Calendar connected" }
         if isDenied { return "Review Calendar access" }
         return "Connect Calendar"
+    }
+
+    var upNextEvent: DeviceCalendarEvent? {
+        CalendarEventPresentation.upNext(
+            from: events,
+            at: .now,
+            startDate: \.startDate,
+            endDate: \.endDate,
+            kind: \.upNextKind
+        )
     }
 
     /// EventKit keeps the user's choice. This method requests access only for a
@@ -106,7 +127,13 @@ final class CalendarProvider: ObservableObject {
                     endDate: event.endDate,
                     isAllDay: event.isAllDay,
                     calendarName: event.calendar.title,
-                    accountName: accountName.nonEmpty ?? event.calendar.title
+                    accountName: accountName.nonEmpty ?? event.calendar.title,
+                    isReferenceCalendar: event.calendar.isSubscribed
+                        || event.calendar.type == .subscription
+                        || event.calendar.type == .birthday
+                        || !event.calendar.allowsContentModifications,
+                    involvesCurrentUser: event.organizer?.isCurrentUser == true
+                        || event.attendees?.contains(where: \.isCurrentUser) == true
                 )
             }
         lastRefreshedAt = .now

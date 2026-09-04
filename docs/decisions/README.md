@@ -31,3 +31,4 @@ Each ADR records status, date, context, decision, consequences, privacy/security
 - [0026 — Configuration-gated customer cloud-sync runtime](0026-configured-customer-cloud-sync-runtime.md)
 - [0027 — Mac customer builds use Supabase as the sole cloud authority](0027-mac-supabase-only-customer-authority.md)
 - [0028 — Commitments before calendar notices](0028-commitments-before-calendar-notices.md)
+- [0029 — iPhone uses Supabase authority and a bounded WidgetKit projection](0029-ios-supabase-authority-and-bounded-widget.md)

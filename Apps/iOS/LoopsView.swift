@@ -135,6 +135,8 @@ struct LoopsView: View {
             }
         }
         .taskPlanningSheet(selection: $planningSelection)
+        .onAppear { handleRoute(model.route) }
+        .onChange(of: model.route) { _, route in handleRoute(route) }
     }
 
     private func move(moveID: UUID, to priority: LoopPriority) -> Bool {
@@ -154,6 +156,14 @@ struct LoopsView: View {
             UIImpactFeedbackGenerator(style: .soft).impactOccurred()
         }
         return result != .failed
+    }
+
+    private func handleRoute(_ route: IOSAppRoute?) {
+        guard case let .moves(identifier) = route else { return }
+        if let identifier {
+            planningSelection = TaskPlanningSelection(id: identifier)
+        }
+        model.consumeRoute()
     }
 
     @ViewBuilder

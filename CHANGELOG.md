@@ -6,6 +6,15 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Added
 
+- A native iPhone Account & Sync surface backed by the durable SQLite workspace
+  repository and Supabase product-identity runtime. It keeps local-only use
+  available, requires an explicit local claim or fresh-device attachment after
+  sign-in, exposes conservative conflict review, and clears the local secure
+  session plus widget projection on sign-out.
+- An iPhone WidgetKit prototype that reads a bounded App Group projection for
+  one next Move, local upcoming commitment, or primary goal; it deep-links to
+  the matching app item, marks content privacy-sensitive, and cannot run
+  agents, send messages, read the workspace database, or make mutations.
 - Local Mac builds retain reviewed Google/Supabase public configuration across
   reinstalls. Account & Sync shows only configured sign-in providers.
 - A fail-closed source-preview installer and documented workflow for technical
@@ -71,6 +80,10 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Changed
 
+- The iPhone app now uses Supabase as its only active cloud authority. The
+  legacy CloudKit writer, push capability, and background remote-notification
+  mode are removed; legacy local files remain migration input and remote-only
+  legacy data requires a separately reviewed one-time migration.
 - The Founder’s Office website now centers an interactive MacBook demo. Scroll
   changes the live Home, Moves, Calendar, and Personalize views, while direct
   controls let visitors complete Moves, pick days, and change the accent.

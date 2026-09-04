@@ -83,6 +83,7 @@ targets:
           - README.md
           - Resources/Info.plist
           - Resources/FoundersOfficeiOS.entitlements
+      - path: Apps/iOSShared
       - path: Resources/Fonts/InstrumentSerif-Regular.ttf
         buildPhase: resources
       - path: Resources/Licenses
@@ -92,9 +93,9 @@ targets:
       - package: FounderOfficePackage
         product: FounderOfficeCore
       - package: FounderOfficePackage
-        product: FounderOfficeCloud
-      - package: FounderOfficePackage
         product: FounderOfficeIdentity
+      - target: FoundersOfficeiOSWidget
+        embed: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.manish.foundersoffice.ios
@@ -114,3 +115,24 @@ targets:
         FOUNDER_OFFICE_SUPABASE_PUBLISHABLE_KEY: ""
     scheme:
       gatherCoverageData: true
+
+  FoundersOfficeiOSWidget:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: Apps/iOSWidget
+        excludes:
+          - Resources/Info.plist
+          - Resources/FoundersOfficeWidget.entitlements
+      - path: Apps/iOSShared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.manish.foundersoffice.ios.widget
+        PRODUCT_NAME: "Founder’s Office Next"
+        INFOPLIST_FILE: Apps/iOSWidget/Resources/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Apps/iOSWidget/Resources/FoundersOfficeWidget.entitlements
+        CODE_SIGN_STYLE: Automatic
+        SWIFT_VERSION: "5.10"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SKIP_INSTALL: YES

@@ -1,15 +1,13 @@
 import FounderOfficeCore
-import PhotosUI
 import SwiftUI
 
 struct SettingsView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var calendar: CalendarProvider
-    @EnvironmentObject private var cloudAccount: CloudAccountMonitor
+    @EnvironmentObject private var account: IOSAccountController
 
-    @State private var selectedPhoto: PhotosPickerItem?
-    @State private var preferredNameDraft = ""
     @State private var workspaceNameDraft = ""
+    @State private var isPresentingPrimaryGoal = false
 
     private var appearance: AppearancePreferences { model.personalization.resolvedAppearance }
     private var isRecoveryRequired: Bool { model.recoveryMessage != nil }
@@ -44,28 +42,30 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Section("Profile") {
-                TextField("Your name", text: $preferredNameDraft)
-                    .textContentType(.name)
                 TextField("Workspace name", text: $workspaceNameDraft)
 
-                Button("Save identity") {
-                    model.updatePreferredName(preferredNameDraft)
+                Button("Save workspace name") {
                     model.updateWorkspaceName(workspaceNameDraft)
                 }
 
-                PhotosPicker(selection: $selectedPhoto, matching: .images) {
+                if let image = model.visionImage {
                     HStack {
-                        Label("Choose vision image", systemImage: "photo")
+                        Label("Vision image", systemImage: "photo")
                         Spacer()
-                        if let image = model.visionImage {
-                            Image(uiImage: image)
-                                .resizable()
-                                .scaledToFill()
-                                .frame(width: 44, height: 44)
-                                .clipShape(.rect(cornerRadius: 10))
-                        }
+                        Image(uiImage: image)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(width: 44, height: 44)
+                            .clipShape(.rect(cornerRadius: 10))
                     }
                 }
+
+                Label(
+                    "Vision images stay on this iPhone for now. Existing images are preserved and block workspace claim until private export and erasure are verified.",
+                    systemImage: "lock.fill"
+                )
+                .font(appearance.interfaceFont(.secondary))
+                .foregroundStyle(.secondary)
             }
 
             Section("Appearance") {
@@ -144,76 +144,163 @@ struct SettingsView: View {
                 }
             }
 
-            Section("Calendar") {
-                Button {
+            AccountAndSyncSection(account: account, isRecoveryRequired: isRecoveryRequired)
+
+            Section("Connections") {
+                Label(
+                    "Calendar access is local to this iPhone. Product sign-in is never reused as a calendar or tool grant.",
+                    systemImage: "link.badge.plus"
+                )
+                .font(appearance.interfaceFont(.secondary))
+                .foregroundStyle(.secondary)
+
+                Button(calendar.connectionTitle) {
                     calendar.connectOrOpenSettings()
-                } label: {
-                    Label(calendar.connectionTitle, systemImage: "calendar")
-                }
-
-                if calendar.hasReadAccess {
-                    LabeledContent("Accounts", value: "\(calendar.accounts.count)")
-                }
-            }
-
-            Section("Cloud") {
-                LabeledContent("Private iCloud", value: cloudAccount.state.title)
-                LabeledContent(
-                    "Workspace",
-                    value: isRecoveryRequired ? "Recovery required" : model.cloudStatus.title
-                )
-
-                if isRecoveryRequired {
-                    Label(
-                        "Sync is paused until workspace recovery is complete.",
-                        systemImage: "pause.circle.fill"
-                    )
-                    .foregroundStyle(.orange)
-                    .accessibilityLabel(
-                        "iCloud sync is paused until workspace recovery is complete."
-                    )
-                }
-
-                Button("Sync now") {
-                    model.syncCloudNow()
-                }
-                .disabled(isRecoveryRequired)
-                .accessibilityHint(
-                    isRecoveryRequired
-                        ? "Unavailable while workspace recovery is required."
-                        : "Syncs this workspace with iCloud."
-                )
-
-                Button("Check iCloud again") {
-                    cloudAccount.refresh()
-                }
-
-                if model.cloudStatus == .accountReviewRequired {
-                    Button("Keep this workspace and sync") {
-                        model.resumeCloudAfterAccountReview(uploadLocalWorkspace: true)
-                    }
-                    .disabled(isRecoveryRequired)
-
-                    Button("Use the workspace from iCloud") {
-                        model.resumeCloudAfterAccountReview(uploadLocalWorkspace: false)
-                    }
-                    .disabled(isRecoveryRequired)
                 }
             }
         }
         .founderSurface(appearance)
         .navigationTitle("Settings")
         .onAppear {
-            preferredNameDraft = model.personalization.resolvedPreferredName ?? ""
             workspaceNameDraft = model.personalization.resolvedWorkspaceName
+            handleRoute(model.route)
         }
-        .onChange(of: selectedPhoto) { _, item in
-            guard let item else { return }
-            Task {
-                if let data = try? await item.loadTransferable(type: Data.self) {
-                    model.saveVisionImage(data)
+        .onChange(of: model.route) { _, route in handleRoute(route) }
+        .sheet(isPresented: $isPresentingPrimaryGoal) {
+            NavigationStack { PrimaryGoalEditor(goal: model.activePrimaryGoal) }
+        }
+    }
+
+    private func handleRoute(_ route: IOSAppRoute?) {
+        guard case .goal = route else { return }
+        isPresentingPrimaryGoal = true
+        model.consumeRoute()
+    }
+}
+
+private struct AccountAndSyncSection: View {
+    @ObservedObject var account: IOSAccountController
+
+    let isRecoveryRequired: Bool
+
+    var body: some View {
+        Section("Account & Sync") {
+            LabeledContent("Status", value: account.statusTitle)
+            Text(account.statusDetail)
+                .foregroundStyle(.secondary)
+
+            if isRecoveryRequired {
+                Label(
+                    "Sync is paused until workspace recovery is complete.",
+                    systemImage: "pause.circle.fill"
+                )
+                .foregroundStyle(.orange)
+            }
+
+            if account.availability == .available {
+                accountActions
+            }
+
+            if case let .localOnly(message) = account.availability {
+                Label(message, systemImage: "iphone")
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var accountActions: some View {
+        switch account.authState {
+        case .localOnly, .failed:
+            Button("Continue with Google") {
+                account.signInWithGoogle()
+            }
+            .disabled(!account.isGoogleSignInAvailable || isRecoveryRequired)
+
+            if account.isAppleSignInAvailable {
+                Button("Continue with Apple") {
+                    account.signInWithApple()
+                }
+                .disabled(isRecoveryRequired)
+            } else {
+                Text("Apple sign-in is retained for App Store parity and stays unavailable until this build is configured for it.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
+        case .restoring, .signingIn:
+            ProgressView()
+
+        case .signedIn:
+            if account.setupStage == .reviewDisplayName {
+                TextField("Name to use in this workspace", text: $account.reviewedDisplayNameDraft)
+                    .textContentType(.name)
+                if let error = account.displayNameError {
+                    Text(error).foregroundStyle(.red)
+                }
+                Button("Save name and continue") {
+                    account.saveReviewedDisplayName()
+                }
+                .disabled(account.isBusy || isRecoveryRequired)
+            }
+
+            if account.setupStage == .chooseWorkspace {
+                Text("Sign-in does not upload local data. Choose one explicit action.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                ForEach(account.availableWorkspaceChoices, id: \.rawValue) { choice in
+                    Button(workspaceChoiceTitle(choice)) {
+                        account.chooseWorkspace(choice)
+                    }
+                    .disabled(account.isBusy || isRecoveryRequired)
                 }
             }
+
+            if account.setupStage == .none {
+                TextField("Account display name", text: $account.reviewedDisplayNameDraft)
+                    .textContentType(.name)
+                Button("Save account name") {
+                    account.saveReviewedDisplayName()
+                }
+                .disabled(account.isBusy || isRecoveryRequired)
+                Text("This updates your product account. A connected workspace keeps its reviewed bootstrap name.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+
+                Button("Sync now") { account.syncNow() }
+                    .disabled(account.isBusy || isRecoveryRequired)
+                Button("Sign out on this iPhone", role: .destructive) {
+                    account.signOut()
+                }
+                .disabled(account.isBusy)
+            }
+
+            ForEach(account.conflicts) { conflict in
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Review \(conflict.entityLabel.lowercased()) change")
+                        .font(.headline)
+                    Text("Overlapping fields: \(conflict.fields.joined(separator: ", ")).")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Button("Keep my value") {
+                        account.resolve(conflict, keepingLocalValue: true)
+                    }
+                    .disabled(account.isBusy)
+                    Button("Use latest value") {
+                        account.resolve(conflict, keepingLocalValue: false)
+                    }
+                    .disabled(account.isBusy)
+                }
+            }
+        }
+    }
+
+    private func workspaceChoiceTitle(_ choice: LocalWorkspaceAccountChoice) -> String {
+        switch choice {
+        case .keepLocalOnly: return "Keep this iPhone local-only"
+        case .claimAsNewWorkspace: return "Claim this local workspace"
+        case .switchWorkspace: return "Use my existing workspace"
+        case .exportAndReplace: return "Replace after export"
         }
     }
 }
