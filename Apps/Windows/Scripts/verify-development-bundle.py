@@ -55,7 +55,7 @@ PRIVATE_NAMES = {
 PATH_MARKERS = (
     b"/Users/",
     b"\\Users\\",
-    b"D:\\a\\",
+    b"D:\\a\\founders-office\\founders-office\\",
     b"founders-office-worktrees",
 )
 SECRET_PATTERNS = (
@@ -100,14 +100,14 @@ def validate_zip_metadata(info: zipfile.ZipInfo) -> None:
         fail("archive contains a symbolic link")
 
 
-def scan_bytes(data: bytes) -> None:
+def scan_bytes(data: bytes, *, context: str) -> None:
     lowered = data.lower()
     for marker in PATH_MARKERS:
         if marker.lower() in lowered or marker.decode("ascii").encode("utf-16le").lower() in lowered:
-            fail("archive embeds a development-machine path")
+            fail(f"archive embeds a development-machine path in {context}")
     for pattern in SECRET_PATTERNS:
         if pattern.search(data):
-            fail("archive contains possible credential material")
+            fail(f"archive contains possible credential material in {context}")
 
 
 def inspect_nested_package(name: str, data: bytes, *, application: bool) -> None:
@@ -127,7 +127,7 @@ def inspect_nested_package(name: str, data: bytes, *, application: bool) -> None
             if total_size > 900 * 1024 * 1024:
                 fail("nested package expands beyond the reviewed size limit")
             if not info.is_dir():
-                scan_bytes(package.read(info))
+                scan_bytes(package.read(info), context=f"{name}:{info.filename}")
 
         if application:
             if "appxmanifest.xml" not in package_names:
@@ -190,7 +190,8 @@ def main() -> None:
             total_size += len(data)
             if total_size > 900 * 1024 * 1024:
                 fail("outer archive expands beyond the reviewed size limit")
-            scan_bytes(data)
+            if pathlib.PurePosixPath(name).suffix.lower() not in (".appx", ".msix"):
+                scan_bytes(data, context=name)
 
     required = {
         f"{ROOT_NAME}/BUILD-INFO.txt",

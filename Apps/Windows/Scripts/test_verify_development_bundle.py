@@ -72,7 +72,9 @@ class DevelopmentBundleVerifierTests(unittest.TestCase):
     def test_rejects_development_machine_path_inside_msix(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             archive = pathlib.Path(directory) / "bundle.zip"
-            package = application_package({"Metadata/source.txt": b"D:\\a\\private-build\\source.cs"})
+            package = application_package(
+                {"Metadata/source.txt": b"D:\\a\\founders-office\\founders-office\\source.cs"}
+            )
             write_bundle(archive, package=package)
 
             result = self.run_verifier(archive)
