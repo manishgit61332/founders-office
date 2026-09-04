@@ -13,7 +13,7 @@ public sealed partial class MainWindow : Window, IDisposable
     private readonly SqliteWorkspaceRepository _repository;
     private readonly TopEdgeSurfaceController _surfaceController;
     private readonly TrayIconService _trayIcon;
-    private IReadOnlyDictionary<Guid, Move> _movesById = new Dictionary<Guid, Move>();
+    private Dictionary<Guid, Move> _movesById = new();
     private Guid? _editingMoveId;
     private bool _disposed;
     private bool _exitRequested;
