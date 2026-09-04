@@ -22,4 +22,24 @@ public enum AssetFileName {
         guard allowedExtensions.contains((value as NSString).pathExtension.lowercased()) else { return nil }
         return value
     }
+
+    /// Returns a legacy app-owned vision filename, never an arbitrary basename.
+    ///
+    /// Founder’s Office versions before bounded image variants generated
+    /// `vision-<uuid>.<extension>` files. This narrower validator is used only
+    /// when retiring those files; a synced payload cannot make cleanup delete a
+    /// different basename in the personalization directory.
+    public static func validatedLegacyVisionAsset(_ value: String) -> String? {
+        guard let value = validated(value) else { return nil }
+        let name = value as NSString
+        let stem = name.deletingPathExtension
+        guard stem.hasPrefix("vision-") else { return nil }
+        let identifier = String(stem.dropFirst("vision-".count))
+        guard UUID(uuidString: identifier) != nil else { return nil }
+        return value
+    }
+
+    public static func isSupportedImageExtension(_ value: String) -> Bool {
+        allowedExtensions.contains(value.lowercased())
+    }
 }

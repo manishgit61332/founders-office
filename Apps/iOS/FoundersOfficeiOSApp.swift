@@ -13,7 +13,7 @@ struct FoundersOfficeiOSApp: App {
                 .environmentObject(calendar)
                 .environmentObject(cloudAccount)
                 .tint(model.personalization.resolvedAppearance.primaryAccentColor)
-                .font(model.personalization.resolvedAppearance.interfaceFont(size: 17))
+                .font(model.personalization.resolvedAppearance.interfaceFont(.secondary))
                 .preferredColorScheme(
                     model.personalization.resolvedAppearance.surfaceStyleID == .solidBlack
                         ? .dark

@@ -80,6 +80,11 @@ final class RuntimeHealthCoordinator: NSObject, MXMetricManagerSubscriber {
         )
     }
 
+    func markCleanTermination() {
+        guard tracksCrashLoop else { return }
+        crashLoopMarker.markCleanTermination()
+    }
+
     func stop() {
         if isSubscribed {
             MXMetricManager.shared.remove(self)

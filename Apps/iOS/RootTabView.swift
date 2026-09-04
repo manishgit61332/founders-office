@@ -62,10 +62,10 @@ private struct WorkspaceRecoveryBanner: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 Text("Workspace recovery required")
-                    .font(.headline)
+                    .font(appearance.interfaceFont(.secondary, weight: .semibold))
 
                 Text("\(message) Editing and iCloud sync are paused to protect it.")
-                    .font(.body)
+                    .font(appearance.interfaceFont(.secondary))
                     .fixedSize(horizontal: false, vertical: true)
             }
 

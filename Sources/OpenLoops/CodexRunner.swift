@@ -2,6 +2,7 @@ import AppKit
 import Foundation
 import FounderOfficeCore
 
+#if !FOUNDER_OFFICE_DISTRIBUTION
 enum CodexTaskAction {
     case execute
     case prepare
@@ -33,11 +34,10 @@ enum CodexRunState {
 @MainActor
 final class CodexRunner: ObservableObject {
     @Published private(set) var state: CodexRunState = .idle
+    @Published private(set) var lastSuccessfulRunAt: Date?
 
     let founderOfficeURL: URL
-#if !FOUNDER_OFFICE_DISTRIBUTION
     private var process: Process?
-#endif
 
     init(founderOfficeURL: URL) {
         self.founderOfficeURL = founderOfficeURL
@@ -49,11 +49,7 @@ final class CodexRunner: ObservableObject {
     }
 
     var isAvailable: Bool {
-#if FOUNDER_OFFICE_DISTRIBUTION
-        false
-#else
         true
-#endif
     }
 
     func action(for item: OpenLoop) -> CodexTaskAction {
@@ -66,12 +62,6 @@ final class CodexRunner: ObservableObject {
     }
 
     func run(_ item: OpenLoop) {
-#if FOUNDER_OFFICE_DISTRIBUTION
-        state = .failed(
-            title: item.title,
-            message: "Assistant execution is not included in this customer build."
-        )
-#else
         guard !isRunning else { return }
 
         let action = action(for: item)
@@ -122,6 +112,7 @@ final class CodexRunner: ObservableObject {
 
                     if completedProcess.terminationStatus == 0,
                        FileManager.default.fileExists(atPath: summaryURL.path) {
+                        self.lastSuccessfulRunAt = Date()
                         self.state = .finished(title: item.title, summaryURL: summaryURL)
                         NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
                     } else {
@@ -140,18 +131,14 @@ final class CodexRunner: ObservableObject {
             state = .failed(title: item.title, message: "Couldn’t start Codex")
             AppDiagnostics.failure(.codexProcessStart, category: .automation, error: error)
         }
-#endif
     }
 
     func prepareForTermination() {
-#if !FOUNDER_OFFICE_DISTRIBUTION
         guard let process, process.isRunning else { return }
         process.terminate()
         self.process = nil
-#endif
     }
 
-#if !FOUNDER_OFFICE_DISTRIBUTION
     private func prompt(for item: OpenLoop, action: CodexTaskAction, runURL: URL) -> String {
         """
         Work on this Founder's Office move:
@@ -170,7 +157,7 @@ final class CodexRunner: ObservableObject {
         - You may read existing workspace material and create or update task-specific deliverables.
         - Do not send messages, publish content, schedule calls, make purchases, use private credentials, or make other irreversible external changes.
         - Do not delete existing files.
-        - Do not edit openloops.json or OPEN_LOOPS_CONTEXT.md and do not mark the task done. The user will review the result first.
+        - Do not edit founders-office.sqlite3, generated workspace projections, or mark the task done. The user will review the result first.
         - Finish with a concise summary of what you completed and the exact files to review.
         """
     }
@@ -199,5 +186,5 @@ final class CodexRunner: ObservableObject {
         formatter.dateFormat = "yyyyMMdd-HHmmss"
         return formatter
     }()
-#endif
 }
+#endif

@@ -1,7 +1,7 @@
 import Foundation
 import FounderOfficeCore
 
-struct PreparedWorkspaceBootstrap {
+struct PreparedWorkspaceBootstrap: Sendable {
     let decision: WorkspaceBootstrapDecision
     let workspaceExistedBeforeLaunch: Bool
     let identityURL: URL
@@ -27,9 +27,11 @@ enum WorkspaceBootstrapCoordinator {
         let openLoopsURL = rootURL.appendingPathComponent("openloops.json")
         let personalizationURL = rootURL.appendingPathComponent("personalization.json")
         let identityURL = rootURL.appendingPathComponent(identityFileName)
+        let databaseURL = rootURL.appendingPathComponent("founders-office.sqlite3")
         let openLoopsExists = fileManager.fileExists(atPath: openLoopsURL.path)
         let personalizationExists = fileManager.fileExists(atPath: personalizationURL.path)
         let identityExists = fileManager.fileExists(atPath: identityURL.path)
+        let databaseExists = fileManager.fileExists(atPath: databaseURL.path)
 
         var onDiskWorkspaceID: UUID?
         var identityReadable = !identityExists
@@ -52,16 +54,35 @@ enum WorkspaceBootstrapCoordinator {
             }
         }
 
-        return PreparedWorkspaceBootstrap(
-            decision: WorkspaceBootstrapPolicy.decide(
+        let decision: WorkspaceBootstrapDecision
+        if databaseExists {
+            guard identityExists, identityReadable, let onDiskWorkspaceID else {
+                return PreparedWorkspaceBootstrap(
+                    decision: .requireRecovery(affectedComponents: WorkspaceStorageComponent.allCases),
+                    workspaceExistedBeforeLaunch: true,
+                    identityURL: identityURL,
+                    preservedIdentityCopyName: preservedIdentityCopyName
+                )
+            }
+            if let expectedWorkspaceID, expectedWorkspaceID != onDiskWorkspaceID {
+                decision = .requireRecovery(affectedComponents: WorkspaceStorageComponent.allCases)
+            } else {
+                decision = .useExisting(workspaceID: onDiskWorkspaceID, needsIdentityCommit: false)
+            }
+        } else {
+            decision = WorkspaceBootstrapPolicy.decide(
                 openLoopsExists: openLoopsExists,
                 personalizationExists: personalizationExists,
                 identityFileExists: identityExists,
                 identityFileIsReadable: identityReadable,
                 onDiskWorkspaceID: onDiskWorkspaceID,
                 expectedWorkspaceID: expectedWorkspaceID
-            ),
-            workspaceExistedBeforeLaunch: openLoopsExists && personalizationExists,
+            )
+        }
+
+        return PreparedWorkspaceBootstrap(
+            decision: decision,
+            workspaceExistedBeforeLaunch: databaseExists || (openLoopsExists && personalizationExists),
             identityURL: identityURL,
             preservedIdentityCopyName: preservedIdentityCopyName
         )

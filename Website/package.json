@@ -7,8 +7,11 @@
   },
   "scripts": {
     "dev": "vinext dev",
+    "dev:vercel": "next dev",
     "build": "vinext build",
+    "build:vercel": "next build",
     "start": "wrangler dev --config dist/server/wrangler.json",
+    "start:vercel": "next start",
     "lint": "oxlint",
     "format": "oxfmt",
     "format:check": "oxfmt --check .",
@@ -16,6 +19,7 @@
     "test:release-policy": "node scripts/test-release-policy.mjs"
   },
   "dependencies": {
+    "next": "16.3.4",
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "react-server-dom-webpack": "19.2.8",

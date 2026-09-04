@@ -43,11 +43,15 @@ Lag is a defect when any of these release budgets fail:
 | Recreate disposable image caches | Enter safe mode after a crash loop | Download code and patch the installed app |
 | Pause a failing optional connector | Erase local or cloud data | Run an AI-generated migration without review |
 
-Every repair has a maximum attempt count, a timeout, an idempotency key, a before/after health check, and a durable outcome. Three failed attempts stop the repair and create a Needs You item.
+Every repair has a stable content-free idempotency key, a before/after health check, a hard timeout, and a redacted durable outcome. One trigger runs at most one attempt; three unsuccessful attempts for the same key across relaunches stop the repair and create a **Needs You** state. Concurrent triggers share one attempt. A timed-out operation that ignores cancellation blocks that key until the operation really exits, so retries never overlap.
+
+The current Mac build wires only generated JSON/Markdown projection repair. The repair verifies the exact bounded manifest and file digests, refuses symbolic links, and uses a reversible sibling backup. Its ledger is separate from canonical SQLite and has no field for customer content, paths, or raw errors. An unavailable ledger fails closed and runs no repair.
 
 ## Crash-loop safe mode
 
-If the app fails before ready three times for the same build, the next launch enters safe mode. Safe mode keeps canonical local data read-only and disables Cloud sends, assistant execution, connectors, large-image decoding, and nonessential animation. It offers export, diagnostics, and an explicit retry.
+If the app fails before ready three times for the same build, the next launch enters safe mode. Safe mode does not open the workspace at all. It disables Cloud sends, assistant execution, connectors, Calendar, personalization, image decoding, and nonessential animation. It offers an incident ID, a ten-field redacted crash-state diagnostic, and an explicit retry. It cannot offer a workspace export because exporting would require opening canonical data.
+
+The pre-ready marker distinguishes an abrupt process loss from an AppKit-confirmed clean termination. A clean quit clears only the current launch’s in-progress bit; it never erases earlier failure evidence or an active safe-mode latch. Development installs request a clean application termination and fail closed if the live bundle does not exit, so build tooling cannot manufacture a crash loop or overwrite a running app.
 
 ## AI-assisted fixes
 

@@ -1,11 +1,28 @@
 import AppKit
 import Combine
 import FounderOfficeCore
-import ServiceManagement
 import SwiftUI
+
+private func onboardingSystemFont(
+    _ role: FounderTextRole,
+    weight: Font.Weight = .regular
+) -> Font {
+    .system(size: CGFloat(FounderTypeScale.points(for: role)), weight: weight)
+}
+
+private func onboardingDisplayFont(_ role: FounderTextRole) -> Font {
+    .custom(
+        "Instrument Serif",
+        size: CGFloat(FounderTypeScale.points(for: role)),
+        relativeTo: role == .primaryTitle ? .largeTitle : .body
+    )
+}
 
 enum FirstRunStorageMode: String, Codable {
     case localOnly
+    /// Read-only compatibility for onboarding records written before the
+    /// transactional Supabase sync boundary. The retired CloudKit writer is
+    /// never re-enabled from this value.
     case iCloud
 }
 
@@ -35,7 +52,7 @@ enum FirstRunStep: Int, Codable, CaseIterable {
 }
 
 private struct FirstRunOnboardingState: Codable {
-    static let currentVersion = 2
+    static let currentVersion = 3
 
     var schemaVersion = currentVersion
     var completedVersion: Int?
@@ -99,12 +116,11 @@ final class FirstRunOnboardingStore: ObservableObject {
                 upgrade.completedAt = nil
                 upgrade.completedVersion = nil
                 upgrade.workspaceID = workspaceID
+                // Earlier builds offered an iCloud choice before the shared
+                // sync contract existed. Re-consent at the local-first screen;
+                // never interpret that legacy value as permission to upload.
                 upgrade.storageMode = nil
-                upgrade.calendarChoice = nil
-                upgrade.launchAtLoginEnabled = nil
-                upgrade.stepRawValue = workspaceExistedBeforeLaunch
-                    ? FirstRunStep.storage.rawValue
-                    : FirstRunStep.welcome.rawValue
+                upgrade.stepRawValue = FirstRunStep.storage.rawValue
                 state = upgrade
                 persist()
             } else if decoded.schemaVersion > FirstRunOnboardingState.currentVersion
@@ -212,14 +228,136 @@ private final class FirstRunPanel: NSPanel {
 }
 
 @MainActor
+enum FirstRunOnboardingChrome {
+    static let cornerRadius: CGFloat = 34
+
+    static func configure(_ panel: NSPanel) {
+        // A WindowServer shadow follows the rectangular NSPanel frame rather
+        // than the SwiftUI alpha silhouette. Keep all depth inside the
+        // onboarding squircle so its transparent corners stay truly clear.
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = false
+    }
+}
+
+struct FirstRunOnboardingShell<Content: View>: View {
+    private let content: Content
+    private let shellShape = RoundedRectangle(
+        cornerRadius: FirstRunOnboardingChrome.cornerRadius,
+        style: .continuous
+    )
+
+    init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
+
+    var body: some View {
+        content
+            .frame(
+                width: FirstRunOnboardingPlacement.panelSize.width,
+                height: FirstRunOnboardingPlacement.panelSize.height
+            )
+            .background(.ultraThinMaterial, in: shellShape)
+            .background(Color.black.opacity(0.52), in: shellShape)
+            .overlay {
+                shellShape
+                    .inset(by: 1)
+                    .stroke(
+                        LinearGradient(
+                            colors: [
+                                Color.white.opacity(0.22),
+                                Color.white.opacity(0.09),
+                                Color.white.opacity(0.035)
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        ),
+                        lineWidth: 1
+                    )
+            }
+            // Clip the complete hierarchy once. Shaping only the background
+            // leaves children and effects free to redraw a rectangular host.
+            .mask(shellShape)
+    }
+}
+
+struct FirstRunOnboardingPlacement {
+    static let panelSize = NSSize(width: 720, height: 500)
+    static let screenMargin: CGFloat = 18
+
+    static func targetScreen(
+        screens: [NSScreen],
+        pointerLocation: NSPoint,
+        fallback: NSScreen?
+    ) -> NSScreen? {
+        screens.first(where: { $0.frame.contains(pointerLocation) })
+            ?? fallback
+            ?? screens.first
+    }
+
+    static func frame(
+        visibleFrame: NSRect,
+        panelSize: NSSize = panelSize,
+        margin: CGFloat = screenMargin
+    ) -> NSRect {
+        let horizontalMargin = min(
+            max(margin, 0),
+            max((visibleFrame.width - panelSize.width) / 2, 0)
+        )
+        let verticalMargin = min(
+            max(margin, 0),
+            max((visibleFrame.height - panelSize.height) / 2, 0)
+        )
+
+        let minimumX = visibleFrame.minX + horizontalMargin
+        let maximumX = visibleFrame.maxX - horizontalMargin - panelSize.width
+        let centeredX = visibleFrame.midX - panelSize.width / 2
+        let x = maximumX >= minimumX
+            ? min(max(centeredX, minimumX), maximumX)
+            : centeredX
+
+        let minimumY = visibleFrame.minY + verticalMargin
+        let maximumY = visibleFrame.maxY - verticalMargin - panelSize.height
+        let y = maximumY >= minimumY
+            ? maximumY
+            : visibleFrame.midY - panelSize.height / 2
+
+        return NSRect(
+            x: x.rounded(),
+            y: y.rounded(),
+            width: panelSize.width,
+            height: panelSize.height
+        )
+    }
+
+    static func safeVisibleFrame(
+        screenFrame: NSRect,
+        visibleFrame: NSRect,
+        safeAreaInsets: NSEdgeInsets
+    ) -> NSRect {
+        let hardwareSafeFrame = NSRect(
+            x: screenFrame.minX + safeAreaInsets.left,
+            y: screenFrame.minY + safeAreaInsets.bottom,
+            width: max(screenFrame.width - safeAreaInsets.left - safeAreaInsets.right, 0),
+            height: max(screenFrame.height - safeAreaInsets.top - safeAreaInsets.bottom, 0)
+        )
+        let intersection = visibleFrame.intersection(hardwareSafeFrame)
+        return intersection.isNull || intersection.isEmpty ? visibleFrame : intersection
+    }
+}
+
+@MainActor
 final class FirstRunOnboardingWindowController {
     private let panel: FirstRunPanel
+    private var screenParametersObserver: NSObjectProtocol?
 
     init(
         stateStore: FirstRunOnboardingStore,
         taskStore: OpenLoopStore,
         personalization: PersonalizationStore,
-        cloudAvailable: Bool,
+        calendarMode: CalendarProvider.Mode,
+        currentLaunchAtLogin: @escaping () -> Bool,
         setLaunchAtLogin: @escaping (Bool) throws -> Bool,
         onComplete: @escaping (FirstRunStorageMode) -> Void
     ) {
@@ -227,42 +365,96 @@ final class FirstRunOnboardingWindowController {
             stateStore: stateStore,
             taskStore: taskStore,
             personalization: personalization,
-            cloudAvailable: cloudAvailable,
+            calendarMode: calendarMode,
+            currentLaunchAtLogin: currentLaunchAtLogin,
             setLaunchAtLogin: setLaunchAtLogin,
             onComplete: onComplete
         )
 
         panel = FirstRunPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 720, height: 500),
+            contentRect: NSRect(origin: .zero, size: FirstRunOnboardingPlacement.panelSize),
             styleMask: [.borderless, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
         panel.level = .statusBar
-        panel.isOpaque = false
-        panel.backgroundColor = .clear
-        panel.hasShadow = true
+        panel.title = "Founder's Office Setup"
+        panel.identifier = NSUserInterfaceItemIdentifier("foundersOffice.onboarding")
+        FirstRunOnboardingChrome.configure(panel)
         panel.hidesOnDeactivate = false
         panel.isMovable = false
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
         panel.animationBehavior = .none
         panel.isReleasedWhenClosed = false
         panel.contentViewController = NSHostingController(rootView: FirstRunOnboardingView(model: model))
+
+        // Installing an NSHostingController can temporarily collapse a
+        // borderless panel to zero size. Never let that transient AppKit frame
+        // become the anchor used for first-run placement.
+        panel.setFrame(
+            NSRect(origin: .zero, size: FirstRunOnboardingPlacement.panelSize),
+            display: false
+        )
+
+        screenParametersObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.repositionIfVisible()
+            }
+        }
     }
 
     func show() {
-        guard let screen = NSScreen.main ?? NSScreen.screens.first else { return }
-        let frame = panel.frame
-        let x = screen.frame.midX - frame.width / 2
-        let topInset = max(screen.frame.maxY - screen.visibleFrame.maxY, 0)
-        let y = screen.frame.maxY - topInset - frame.height - 18
-        panel.setFrameOrigin(NSPoint(x: x.rounded(), y: y.rounded()))
-        panel.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        reposition()
+        panel.makeKeyAndOrderFront(nil)
+
+        // App activation and the first SwiftUI layout pass may both change the
+        // active screen or panel frame. Reassert the complete, constrained
+        // frame after AppKit has processed that pass.
+        DispatchQueue.main.async { [weak self] in
+            self?.repositionIfVisible()
+        }
     }
 
     func close() {
         panel.orderOut(nil)
+        if let screenParametersObserver {
+            NotificationCenter.default.removeObserver(screenParametersObserver)
+            self.screenParametersObserver = nil
+        }
+    }
+
+    private func repositionIfVisible() {
+        guard panel.isVisible else { return }
+        reposition(preferCurrentScreen: true)
+    }
+
+    private func reposition(preferCurrentScreen: Bool = false) {
+        let screens = NSScreen.screens
+        let currentScreen = panel.screen.flatMap { current in
+            screens.first(where: { $0 === current })
+        }
+        let screen = (preferCurrentScreen ? currentScreen : nil)
+            ?? FirstRunOnboardingPlacement.targetScreen(
+                screens: screens,
+                pointerLocation: NSEvent.mouseLocation,
+                fallback: currentScreen ?? NSScreen.main
+            )
+        guard let screen else { return }
+        let safeVisibleFrame = FirstRunOnboardingPlacement.safeVisibleFrame(
+            screenFrame: screen.frame,
+            visibleFrame: screen.visibleFrame,
+            safeAreaInsets: screen.safeAreaInsets
+        )
+        panel.setFrame(
+            FirstRunOnboardingPlacement.frame(visibleFrame: safeVisibleFrame),
+            display: panel.isVisible,
+            animate: false
+        )
     }
 }
 
@@ -272,13 +464,13 @@ private final class FirstRunOnboardingModel: ObservableObject {
     @Published var nameDraft: String
     @Published var storageMode: FirstRunStorageMode?
     @Published var firstMoveDraft = ""
+    @Published private(set) var isSavingFirstMove = false
     @Published var launchAtLoginEnabled: Bool
     @Published var launchError: String?
     @Published var moveError: String?
     @Published var didRehearseNotch: Bool
 
-    let calendar = CalendarProvider()
-    let cloudAvailable: Bool
+    let calendar: CalendarProvider
 
     private let stateStore: FirstRunOnboardingStore
     private let taskStore: OpenLoopStore
@@ -291,20 +483,21 @@ private final class FirstRunOnboardingModel: ObservableObject {
         stateStore: FirstRunOnboardingStore,
         taskStore: OpenLoopStore,
         personalization: PersonalizationStore,
-        cloudAvailable: Bool,
+        calendarMode: CalendarProvider.Mode,
+        currentLaunchAtLogin: @escaping () -> Bool,
         setLaunchAtLogin: @escaping (Bool) throws -> Bool,
         onComplete: @escaping (FirstRunStorageMode) -> Void
     ) {
         self.stateStore = stateStore
         self.taskStore = taskStore
         self.personalization = personalization
-        self.cloudAvailable = cloudAvailable
         self.setLaunchAtLogin = setLaunchAtLogin
         self.onComplete = onComplete
+        calendar = CalendarProvider(mode: calendarMode)
 
         step = stateStore.resumedStep
         storageMode = stateStore.storageMode
-        launchAtLoginEnabled = SMAppService.mainApp.status == .enabled
+        launchAtLoginEnabled = currentLaunchAtLogin()
         didRehearseNotch = stateStore.didRehearseNotch
 
         let savedName = stateStore.preferredName ?? personalization.preferredName
@@ -334,7 +527,10 @@ private final class FirstRunOnboardingModel: ObservableObject {
     }
 
     func finishStorageStep() {
-        guard let storageMode, storageMode == .localOnly || cloudAvailable else { return }
+        // Onboarding is deliberately local-first. Product sign-in and an
+        // explicit workspace disposition happen later in Account & Sync;
+        // reaching this screen never authorizes an upload.
+        chooseStorage(.localOnly)
         go(to: .calendar)
     }
 
@@ -364,21 +560,33 @@ private final class FirstRunOnboardingModel: ObservableObject {
     }
 
     func addFirstMove() {
+        guard !isSavingFirstMove else { return }
         let title = firstMoveDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty else { return }
         moveError = nil
         let previousIDs = Set(taskStore.items.map(\.id))
         taskStore.add(title: title, status: .next, priority: .p1, dueAt: nil)
 
-        guard let added = taskStore.items.first(where: { !previousIDs.contains($0.id) }),
-              savedDocumentContains(id: added.id) else {
-            taskStore.reload()
-            moveError = "That Move was not saved. Your existing tasks were not changed. Try again or skip for now."
+        guard let added = taskStore.items.first(where: { !previousIDs.contains($0.id) }) else {
+            moveError = "That Move could not be created. Try again or skip for now."
             return
         }
 
-        stateStore.recordFirstMove(created: true)
-        go(to: .rehearsal)
+        isSavingFirstMove = true
+        Task { [weak self] in
+            guard let self else { return }
+            let writesSaved = await taskStore.waitForPendingWrites()
+            isSavingFirstMove = false
+            guard writesSaved,
+                  taskStore.session.snapshot.content.openLoops.items.contains(where: { $0.id == added.id }) else {
+                taskStore.reload()
+                moveError = "That Move was not saved. Your existing tasks were not changed. Try again or skip for now."
+                return
+            }
+
+            stateStore.recordFirstMove(created: true)
+            go(to: .rehearsal)
+        }
     }
 
     func skipFirstMove() {
@@ -409,14 +617,6 @@ private final class FirstRunOnboardingModel: ObservableObject {
         stateStore.recordStep(newStep)
     }
 
-    private func savedDocumentContains(id: UUID) -> Bool {
-        guard let data = try? Data(contentsOf: taskStore.jsonURL) else { return false }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        guard let document = try? decoder.decode(OpenLoopsDocument.self, from: data) else { return false }
-        return document.items.contains(where: { $0.id == id })
-    }
-
     private static var suggestedPreferredName: String {
         let fullName = NSFullUserName().trimmingCharacters(in: .whitespacesAndNewlines)
         guard !fullName.isEmpty else { return "" }
@@ -440,23 +640,17 @@ private struct FirstRunOnboardingView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            header
-            Divider().overlay(Color.white.opacity(0.12))
-            content
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .padding(32)
-            Divider().overlay(Color.white.opacity(0.12))
-            footer
+        FirstRunOnboardingShell {
+            VStack(spacing: 0) {
+                header
+                Divider().overlay(Color.white.opacity(0.12))
+                content
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .padding(32)
+                Divider().overlay(Color.white.opacity(0.12))
+                footer
+            }
         }
-        .frame(width: 720, height: 500)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 34, style: .continuous))
-        .background(Color.black.opacity(0.52), in: RoundedRectangle(cornerRadius: 34, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 34, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.18), lineWidth: 1)
-        }
-        .shadow(color: .black.opacity(0.5), radius: 38, y: 18)
         .preferredColorScheme(.dark)
         .onAppear { focusCurrentField() }
         .onChange(of: model.step) { _, _ in focusCurrentField() }
@@ -470,7 +664,7 @@ private struct FirstRunOnboardingView: View {
                 .background(Color.white.opacity(0.1), in: Circle())
 
             Text("Founder’s Office")
-                .font(.system(size: 16, weight: .semibold))
+                .font(onboardingSystemFont(.secondary, weight: .semibold))
 
             Spacer()
 
@@ -505,13 +699,13 @@ private struct FirstRunOnboardingView: View {
         VStack(alignment: .leading, spacing: 20) {
             onboardingTitle("Welcome. What should we call you?")
             Text("Your name stays in your Founder’s Office workspace and shapes the greeting. You can change it later.")
-                .font(.system(size: 16))
+                .font(onboardingSystemFont(.secondary))
                 .foregroundStyle(Color.white.opacity(0.78))
                 .fixedSize(horizontal: false, vertical: true)
 
             TextField("Preferred name", text: $model.nameDraft)
                 .textFieldStyle(.plain)
-                .font(.system(size: 22, weight: .medium))
+                .font(onboardingSystemFont(.secondary, weight: .medium))
                 .padding(.horizontal, 18)
                 .frame(height: 58)
                 .background(Color.white.opacity(0.1), in: RoundedRectangle(cornerRadius: 15, style: .continuous))
@@ -527,28 +721,44 @@ private struct FirstRunOnboardingView: View {
 
     private var storageStep: some View {
         VStack(alignment: .leading, spacing: 18) {
-            onboardingTitle("Choose where your workspace lives")
-            Text("Nothing syncs until you choose. You can start local and review iCloud later.")
-                .font(.system(size: 16))
+            onboardingTitle("Start safely on this Mac")
+            Text("Founder’s Office works without an account. Nothing is uploaded during setup.")
+                .font(onboardingSystemFont(.secondary))
                 .foregroundStyle(Color.white.opacity(0.78))
 
-            HStack(spacing: 14) {
-                choiceCard(
-                    title: "Only on this Mac",
-                    detail: "No cloud connection. Your tasks and personalization stay in this Mac’s Application Support folder.",
-                    symbol: "macbook",
-                    selected: model.storageMode == .localOnly
-                ) { model.chooseStorage(.localOnly) }
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(spacing: 14) {
+                    Image(systemName: "macbook")
+                        .font(.system(size: 24, weight: .semibold))
+                        .frame(width: 42, height: 42)
+                        .background(Color.white.opacity(0.10), in: Circle())
 
-                choiceCard(
-                    title: "Sync with iCloud",
-                    detail: model.cloudAvailable
-                        ? "Use your signed-in Apple account to sync this workspace with supported Apple devices."
-                        : "iCloud is unavailable in this build. Choose local storage to continue.",
-                    symbol: "icloud",
-                    selected: model.storageMode == .iCloud,
-                    enabled: model.cloudAvailable
-                ) { model.chooseStorage(.iCloud) }
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Local workspace")
+                            .font(onboardingSystemFont(.secondary, weight: .semibold))
+                        Text("Moves and personalization are stored in the transactional workspace on this Mac.")
+                            .font(onboardingSystemFont(.tertiary))
+                            .foregroundStyle(Color.white.opacity(0.76))
+                    }
+                }
+
+                Divider().overlay(Color.white.opacity(0.10))
+
+                Label {
+                    Text("When you want the same workspace on another device, open Account & Sync and sign in with Google or Apple. You will review what happens to existing local data before any upload.")
+                        .font(onboardingSystemFont(.tertiary, weight: .medium))
+                        .foregroundStyle(Color.white.opacity(0.78))
+                        .fixedSize(horizontal: false, vertical: true)
+                } icon: {
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                        .foregroundStyle(Color.white.opacity(0.9))
+                }
+            }
+            .padding(20)
+            .background(Color.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.13), lineWidth: 1)
             }
         }
     }
@@ -560,7 +770,7 @@ private struct FirstRunOnboardingView: View {
                 "Founder’s Office will only register as a login item after you press Enable. "
                     + "macOS keeps the final control in System Settings."
             )
-                .font(.system(size: 16))
+                .font(onboardingSystemFont(.secondary))
                 .foregroundStyle(Color.white.opacity(0.78))
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -568,12 +778,12 @@ private struct FirstRunOnboardingView: View {
                 model.launchAtLoginEnabled ? "Launch at Login is on" : "Launch at Login is off",
                 systemImage: model.launchAtLoginEnabled ? "checkmark.circle.fill" : "circle"
             )
-            .font(.system(size: 18, weight: .semibold))
+            .font(onboardingSystemFont(.secondary, weight: .semibold))
             .foregroundStyle(model.launchAtLoginEnabled ? Color.green : Color.white)
 
             if let launchError = model.launchError {
                 Label(launchError, systemImage: "exclamationmark.triangle.fill")
-                    .font(.system(size: 15, weight: .medium))
+                    .font(onboardingSystemFont(.tertiary, weight: .medium))
                     .foregroundStyle(Color.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -584,13 +794,13 @@ private struct FirstRunOnboardingView: View {
         VStack(alignment: .leading, spacing: 20) {
             onboardingTitle("What is your next Move?")
             Text("Add one concrete thing you want to move forward. If you are not ready, skip safely and add it from the notch later.")
-                .font(.system(size: 16))
+                .font(onboardingSystemFont(.secondary))
                 .foregroundStyle(Color.white.opacity(0.78))
                 .fixedSize(horizontal: false, vertical: true)
 
             TextField("For example: send the proposal", text: $model.firstMoveDraft)
                 .textFieldStyle(.plain)
-                .font(.system(size: 19, weight: .medium))
+                .font(onboardingSystemFont(.secondary, weight: .medium))
                 .padding(.horizontal, 18)
                 .frame(height: 58)
                 .background(Color.white.opacity(0.1), in: RoundedRectangle(cornerRadius: 15, style: .continuous))
@@ -603,7 +813,7 @@ private struct FirstRunOnboardingView: View {
 
             if let moveError = model.moveError {
                 Label(moveError, systemImage: "exclamationmark.triangle.fill")
-                    .font(.system(size: 15, weight: .medium))
+                    .font(onboardingSystemFont(.tertiary, weight: .medium))
                     .foregroundStyle(Color.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -614,7 +824,7 @@ private struct FirstRunOnboardingView: View {
         VStack(alignment: .leading, spacing: 18) {
             onboardingTitle("One gesture. Then you are in.")
             Text("Move the pointer onto the notch below. It expands like the real one. Move away and it settles back.")
-                .font(.system(size: 16))
+                .font(onboardingSystemFont(.secondary))
                 .foregroundStyle(Color.white.opacity(0.78))
 
             NotchRehearsal(didRehearse: model.didRehearseNotch) {
@@ -624,7 +834,7 @@ private struct FirstRunOnboardingView: View {
 
             if model.didRehearseNotch {
                 Label("You’ve got it", systemImage: "checkmark.circle.fill")
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(onboardingSystemFont(.secondary, weight: .semibold))
                     .foregroundStyle(Color.green)
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
@@ -648,9 +858,8 @@ private struct FirstRunOnboardingView: View {
                     .disabled(model.cleanName.isEmpty)
                     .keyboardShortcut(.defaultAction)
             case .storage:
-                Button("Continue", action: model.finishStorageStep)
+                Button("Continue on this Mac", action: model.finishStorageStep)
                     .buttonStyle(PrimaryOnboardingButtonStyle())
-                    .disabled(model.storageMode == nil || (model.storageMode == .iCloud && !model.cloudAvailable))
                     .keyboardShortcut(.defaultAction)
             case .calendar:
                 Button(model.calendar.isAuthorized ? "Continue" : "Not now", action: model.finishCalendarStep)
@@ -669,9 +878,13 @@ private struct FirstRunOnboardingView: View {
             case .firstMove:
                 Button("Skip for now", action: model.skipFirstMove)
                     .buttonStyle(SecondaryOnboardingButtonStyle())
+                    .disabled(model.isSavingFirstMove)
                 Button("Add Move", action: model.addFirstMove)
                     .buttonStyle(PrimaryOnboardingButtonStyle())
-                    .disabled(model.firstMoveDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(
+                        model.isSavingFirstMove
+                            || model.firstMoveDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    )
                     .keyboardShortcut(.defaultAction)
             case .rehearsal:
                 if !model.didRehearseNotch {
@@ -689,53 +902,10 @@ private struct FirstRunOnboardingView: View {
 
     private func onboardingTitle(_ value: String) -> some View {
         Text(value)
-            .font(.custom("Instrument Serif", size: 39, relativeTo: .largeTitle))
+            .font(onboardingDisplayFont(.primaryTitle))
             .foregroundStyle(Color.white)
             .fixedSize(horizontal: false, vertical: true)
             .accessibilityAddTraits(.isHeader)
-    }
-
-    private func choiceCard(
-        title: String,
-        detail: String,
-        symbol: String,
-        selected: Bool,
-        enabled: Bool = true,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            VStack(alignment: .leading, spacing: 14) {
-                HStack {
-                    Image(systemName: symbol)
-                        .font(.system(size: 22, weight: .semibold))
-                    Spacer()
-                    Image(systemName: selected ? "checkmark.circle.fill" : "circle")
-                        .font(.system(size: 20, weight: .semibold))
-                }
-                Text(title)
-                    .font(.system(size: 18, weight: .semibold))
-                Text(detail)
-                    .font(.system(size: 15))
-                    .foregroundStyle(Color.white.opacity(0.76))
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .frame(maxWidth: .infinity, minHeight: 150, alignment: .topLeading)
-            .padding(18)
-            .background(
-                selected ? Color.accentColor.opacity(0.24) : Color.white.opacity(0.07),
-                in: RoundedRectangle(cornerRadius: 18, style: .continuous)
-            )
-            .overlay {
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .strokeBorder(selected ? Color.accentColor : Color.white.opacity(0.12), lineWidth: selected ? 2 : 1)
-            }
-            .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        }
-        .buttonStyle(.plain)
-        .disabled(!enabled)
-        .opacity(enabled ? 1 : 0.5)
-        .accessibilityLabel("\(title). \(detail)")
-        .accessibilityValue(selected ? "Selected" : "Not selected")
     }
 
     private func focusCurrentField() {
@@ -755,14 +925,14 @@ private struct CalendarPermissionStep: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             Text("See what matters next")
-                .font(.custom("Instrument Serif", size: 39, relativeTo: .largeTitle))
+                .font(onboardingDisplayFont(.primaryTitle))
                 .accessibilityAddTraits(.isHeader)
 
             Text(
                 "Calendar access is optional. Founder’s Office reads upcoming event titles and times "
                     + "from the Calendar database on this Mac. It does not add, change, or upload events."
             )
-                .font(.system(size: 16))
+                .font(onboardingSystemFont(.secondary))
                 .foregroundStyle(Color.white.opacity(0.78))
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -773,9 +943,9 @@ private struct CalendarPermissionStep: View {
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text(model.calendar.isAuthorized ? "Calendar is connected" : "Calendar remains off until you allow it")
-                        .font(.system(size: 18, weight: .semibold))
+                        .font(onboardingSystemFont(.secondary, weight: .semibold))
                     Text(model.calendar.isAuthorized ? model.calendar.accountCountLabel : model.calendar.message)
-                        .font(.system(size: 15))
+                        .font(onboardingSystemFont(.tertiary))
                         .foregroundStyle(Color.white.opacity(0.75))
                 }
 
@@ -813,9 +983,9 @@ private struct NotchRehearsal: View {
                                     .font(.system(size: 24))
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text("Your next Move is one glance away")
-                                        .font(.system(size: 16, weight: .semibold))
+                                        .font(onboardingSystemFont(.secondary, weight: .semibold))
                                     Text("Move away to close it")
-                                        .font(.system(size: 14))
+                                        .font(onboardingSystemFont(.tertiary))
                                         .foregroundStyle(Color.white.opacity(0.7))
                                 }
                             }
@@ -856,7 +1026,7 @@ private struct NotchRehearsal: View {
 private struct PrimaryOnboardingButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 15, weight: .semibold))
+            .font(onboardingSystemFont(.secondary, weight: .semibold))
             .foregroundStyle(Color.black)
             .padding(.horizontal, 20)
             .frame(minWidth: 112, minHeight: 42)
@@ -869,7 +1039,7 @@ private struct PrimaryOnboardingButtonStyle: ButtonStyle {
 private struct SecondaryOnboardingButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 15, weight: .semibold))
+            .font(onboardingSystemFont(.secondary, weight: .semibold))
             .foregroundStyle(Color.white)
             .padding(.horizontal, 18)
             .frame(minHeight: 42)

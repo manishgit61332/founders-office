@@ -92,7 +92,7 @@ func calendarDate(
 }
 
 func document(items: [OpenLoop], updatedAt: Date) -> OpenLoopsDocument {
-    OpenLoopsDocument(schemaVersion: 2, updatedAt: updatedAt, items: items)
+    OpenLoopsDocument(schemaVersion: 3, updatedAt: updatedAt, items: items)
 }
 
 func runChecks() async throws {
@@ -157,7 +157,6 @@ func runChecks() async throws {
         minute: 59,
         calendar: presentationCalendar
     )
-    let startOfToday = try calendarDate(2026, 3, 9, calendar: presentationCalendar)
     let todayMorning = try calendarDate(
         2026,
         3,
@@ -179,6 +178,18 @@ func runChecks() async throws {
         7,
         hour: 23,
         minute: 59,
+        calendar: presentationCalendar
+    )
+    let overdueDeadline = PlanningDate.storedDate(
+        fromLocal: justBeforeToday,
+        calendar: presentationCalendar
+    )
+    let todayDeadline = PlanningDate.storedDate(
+        fromLocal: todayMorning,
+        calendar: presentationCalendar
+    )
+    let tomorrowDeadline = PlanningDate.storedDate(
+        fromLocal: startOfTomorrow,
         calendar: presentationCalendar
     )
 
@@ -212,7 +223,7 @@ func runChecks() async throws {
             id: todayZuluID,
             title: "Zulu",
             status: .doing,
-            dueAt: todayMorning,
+            dueAt: todayDeadline,
             updatedAt: presentationNow
         ),
         makePresentationLoop(
@@ -227,7 +238,7 @@ func runChecks() async throws {
             id: upcomingID,
             title: "Tomorrow",
             status: .next,
-            dueAt: startOfTomorrow,
+            dueAt: tomorrowDeadline,
             updatedAt: presentationNow
         ),
         makePresentationLoop(
@@ -242,7 +253,7 @@ func runChecks() async throws {
             title: "Critical later today",
             status: .next,
             priority: .p0,
-            dueAt: todayEvening,
+            dueAt: todayDeadline,
             updatedAt: presentationNow
         ),
         makePresentationLoop(
@@ -250,14 +261,14 @@ func runChecks() async throws {
             title: "Blocked today",
             status: .waiting,
             priority: .p2,
-            dueAt: startOfToday,
+            dueAt: todayDeadline,
             updatedAt: presentationNow
         ),
         makePresentationLoop(
             id: overdueID,
             title: "Overdue",
             status: .doing,
-            dueAt: justBeforeToday,
+            dueAt: overdueDeadline,
             updatedAt: presentationNow
         ),
         makePresentationLoop(
@@ -278,7 +289,7 @@ func runChecks() async throws {
             id: deletedActiveID,
             title: "Deleted active",
             status: .doing,
-            dueAt: todayMorning,
+            dueAt: todayDeadline,
             deletedAt: presentationNow,
             updatedAt: presentationNow
         ),
@@ -286,7 +297,7 @@ func runChecks() async throws {
             id: todayAlphaID,
             title: "Alpha",
             status: .doing,
-            dueAt: todayMorning,
+            dueAt: todayDeadline,
             updatedAt: presentationNow
         ),
         makePresentationLoop(
@@ -300,7 +311,7 @@ func runChecks() async throws {
             id: todayLaterP1ID,
             title: "A title that sorts first",
             status: .next,
-            dueAt: todayEvening,
+            dueAt: todayDeadline,
             updatedAt: presentationNow
         ),
         makePresentationLoop(
@@ -335,13 +346,26 @@ func runChecks() async throws {
         "Active deadline groups were not emitted in urgency order"
     )
     try expect(
+        movePresentation.priorityGroups.map(\.priority) == [.p0, .p1, .p2],
+        "Active priority groups were not emitted in P0-to-P3 rank order"
+    )
+    try expect(
+        movePresentation.items(in: .p0).map(\.id) == [todayP0ID],
+        "Priority lookup included a Done or soft-deleted Move"
+    )
+    try expect(
         movePresentation.items(in: .overdue).map(\.id) == [overdueID],
         "Pre-midnight deadline was not classified as overdue"
     )
     try expect(
         movePresentation.items(in: .today).map(\.id)
-            == [waitingID, todayAlphaID, todayZuluID, todayP0ID, todayLaterP1ID],
+            == [todayP0ID, todayLaterP1ID, todayAlphaID, todayZuluID, waitingID],
         "Today Moves were not sorted by deadline, priority, and title"
+    )
+    try expect(
+        movePresentation.activeItems(dueOn: todayMorning, calendar: presentationCalendar).map(\.id)
+            == [todayP0ID, todayLaterP1ID, todayAlphaID, todayZuluID, waitingID],
+        "Selected-day lookup did not match the stored planning day"
     )
     try expect(
         movePresentation.items(in: .upcoming).map(\.id) == [upcomingID],
@@ -389,7 +413,9 @@ func runChecks() async throws {
         calendar: presentationCalendar
     )
     try expect(emptyPresentation.activeGroups.isEmpty, "Empty store emitted empty presentation sections")
+    try expect(emptyPresentation.priorityGroups.isEmpty, "Empty store emitted empty priority sections")
     try expect(emptyPresentation.items(in: .today).isEmpty, "Missing bucket did not return an empty collection")
+    try expect(emptyPresentation.items(in: .p3).isEmpty, "Missing priority did not return an empty collection")
 
     struct LegacyPersonalization: Encodable {
         var schemaVersion = 3

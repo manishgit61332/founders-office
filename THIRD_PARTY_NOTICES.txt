@@ -1,5 +1,9 @@
 Founder’s Office third-party notices
 
+Product identity uses Supabase Swift and its pinned Swift package
+dependencies. Their complete license and notice texts ship in the bundled
+`Licenses` resource directory and are tracked in `Resources/Licenses`.
+
 Instrument Serif
 Copyright 2022 The Instrument Serif Project Authors
 https://github.com/Instrument/instrument-serif

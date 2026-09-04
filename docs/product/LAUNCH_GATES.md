@@ -16,6 +16,8 @@ The product advances by evidence, not by a calendar date.
 10. Finish sandboxing, icons, licenses, privacy manifests, export/erase, StoreKit recovery, signed CI, and production CloudKit tests.
 11. Use synthetic preview data and privacy-safe diagnostics only.
 12. Keep the website download disabled until the versioned macOS ZIP passes Developer ID signing, hardened-runtime, notarization, stapling, Gatekeeper, checksum, and clean-Mac acceptance checks.
+13. Freeze the update origin and Ed25519 public key, then prove signed staged rollout, pause, withdrawal, and higher-build rollback evidence from the public bytes.
+14. Keep remote sync disabled until Supabase RLS/RPC tests run against the production-equivalent stack, the exact-manifest Storage adapter proves export and deletion, and the bounded access-token revocation window is explicitly accepted or eliminated with an officially supported mechanism.
 
 ## Alpha gate
 

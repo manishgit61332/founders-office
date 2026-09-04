@@ -6,7 +6,7 @@ umask 077
 script_dir="${0:A:h}"
 
 usage() {
-    print -u2 "Usage: Scripts/verify-macos-release.sh --artifact PATH.zip --metadata PATH.json --expected-team-id TEAM_ID --expected-bundle-id BUNDLE_ID --expected-icloud-container CONTAINER --expected-archs 'arm64 x86_64'"
+    print -u2 "Usage: Scripts/verify-macos-release.sh --artifact PATH.zip --metadata PATH.json --expected-team-id TEAM_ID --expected-bundle-id BUNDLE_ID --expected-update-feed-url HTTPS_URL --expected-update-channel beta|stable --expected-update-public-key BASE64 --expected-archs 'arm64 x86_64'"
 }
 
 fail() {
@@ -18,7 +18,9 @@ artifact_path=""
 metadata_path=""
 expected_team_id=""
 expected_bundle_id=""
-expected_icloud_container=""
+expected_update_feed_url=""
+expected_update_channel=""
+expected_update_public_key=""
 expected_archs=""
 
 while (( $# > 0 )); do
@@ -43,14 +45,24 @@ while (( $# > 0 )); do
             expected_bundle_id="$2"
             shift 2
             ;;
-        --expected-icloud-container)
-            (( $# >= 2 )) || { usage; exit 64; }
-            expected_icloud_container="$2"
-            shift 2
-            ;;
         --expected-archs)
             (( $# >= 2 )) || { usage; exit 64; }
             expected_archs="$2"
+            shift 2
+            ;;
+        --expected-update-feed-url)
+            (( $# >= 2 )) || { usage; exit 64; }
+            expected_update_feed_url="$2"
+            shift 2
+            ;;
+        --expected-update-channel)
+            (( $# >= 2 )) || { usage; exit 64; }
+            expected_update_channel="$2"
+            shift 2
+            ;;
+        --expected-update-public-key)
+            (( $# >= 2 )) || { usage; exit 64; }
+            expected_update_public_key="$2"
             shift 2
             ;;
         --help|-h)
@@ -68,7 +80,48 @@ done
 [[ -f "$metadata_path" && ! -L "$metadata_path" ]] || fail "metadata must be a regular non-symlink file"
 [[ "$expected_team_id" =~ '^[A-Z0-9]{10}$' ]] || fail "expected Team ID is malformed"
 [[ "$expected_bundle_id" =~ '^[A-Za-z0-9][A-Za-z0-9.-]+$' ]] || fail "expected bundle identifier is malformed"
-[[ "$expected_icloud_container" == iCloud.* ]] || fail "expected iCloud container is malformed"
+python3 - "$expected_update_feed_url" "$expected_update_channel" "$expected_update_public_key" <<'PY'
+import base64
+import binascii
+import sys
+from urllib.parse import urlsplit
+
+feed_url, channel, public_key = sys.argv[1:]
+try:
+    parsed = urlsplit(feed_url)
+    port = parsed.port
+except ValueError:
+    raise SystemExit("expected update feed URL is malformed")
+if (
+    len(feed_url) > 2048
+    or any(character.isspace() for character in feed_url)
+    or parsed.scheme != "https"
+    or not parsed.hostname
+    or parsed.username is not None
+    or parsed.password is not None
+    or parsed.query
+    or parsed.fragment
+    or len(parsed.path) > 1024
+    or not parsed.path.startswith("/")
+    or parsed.path == "/"
+    or not parsed.path.endswith(".json")
+    or "//" in parsed.path
+    or "%" in parsed.path
+    or any(component in {".", ".."} for component in parsed.path.split("/"))
+    or port is not None and not 1 <= port <= 65535
+):
+    raise SystemExit("expected update feed must be an exact credential-free HTTPS URL")
+if channel not in {"beta", "stable"}:
+    raise SystemExit("expected update channel must be beta or stable")
+if public_key != public_key.strip() or len(public_key) > 128:
+    raise SystemExit("expected update public key is malformed")
+try:
+    decoded = base64.b64decode(public_key, validate=True)
+except (binascii.Error, ValueError):
+    raise SystemExit("expected update public key is malformed")
+if len(decoded) != 32 or base64.b64encode(decoded).decode("ascii") != public_key:
+    raise SystemExit("expected update public key must be one canonical Ed25519 public key")
+PY
 [[ -n "$expected_archs" ]] || fail "expected architectures are missing"
 for expected_arch in ${=expected_archs}; do
     [[ "$expected_arch" == "arm64" || "$expected_arch" == "x86_64" ]] \
@@ -121,7 +174,7 @@ require_exact_keys(
     "release metadata",
 )
 
-if manifest.get("schemaVersion") != 1:
+if manifest.get("schemaVersion") != 2:
     raise SystemExit("unsupported release metadata schema")
 if manifest.get("writeOnce") is not True:
     raise SystemExit("release metadata is not marked write-once")
@@ -147,7 +200,7 @@ signing = manifest.get("signing", {})
 notarization = manifest.get("notarization", {})
 require_exact_keys(
     product,
-    {"name", "bundleIdentifier", "cloudEnabled", "iCloudContainer", "minimumSystemVersion", "architectures"},
+    {"name", "bundleIdentifier", "cloudEnabled", "syncAuthority", "minimumSystemVersion", "architectures"},
     "product",
 )
 require_exact_keys(release, {"version", "build", "tag", "commit", "record"}, "release")
@@ -160,7 +213,9 @@ require_exact_keys(
 if product.get("name") != "Founder's Office":
     raise SystemExit("release metadata names an unexpected product")
 if product.get("cloudEnabled") is not True:
-    raise SystemExit("release metadata does not require CloudKit")
+    raise SystemExit("release metadata does not enable device sync")
+if product.get("syncAuthority") != "supabase":
+    raise SystemExit("release metadata does not name Supabase as the sole sync authority")
 if not re.fullmatch(r"[0-9]+\.[0-9]+(\.[0-9]+)?", product.get("minimumSystemVersion", "")):
     raise SystemExit("minimum system version is malformed")
 architectures = product.get("architectures")
@@ -213,7 +268,6 @@ values = [
     str(release.get("build", "")),
     signing.get("teamIdentifier", ""),
     " ".join(architectures),
-    product.get("iCloudContainer", ""),
     product.get("minimumSystemVersion", ""),
     signing.get("identity", ""),
     notarization.get("submissionId", ""),
@@ -234,19 +288,16 @@ expected_version="${metadata_values[4]:-}"
 expected_build="${metadata_values[5]:-}"
 metadata_team_id="${metadata_values[6]:-}"
 metadata_archs="${metadata_values[7]:-}"
-metadata_icloud_container="${metadata_values[8]:-}"
-metadata_minimum_system_version="${metadata_values[9]:-}"
-metadata_signing_identity="${metadata_values[10]:-}"
-metadata_notarization_id="${metadata_values[11]:-}"
-metadata_release_tag="${metadata_values[12]:-}"
-metadata_release_commit="${metadata_values[13]:-}"
-metadata_release_record="${metadata_values[14]:-}"
+metadata_minimum_system_version="${metadata_values[8]:-}"
+metadata_signing_identity="${metadata_values[9]:-}"
+metadata_notarization_id="${metadata_values[10]:-}"
+metadata_release_tag="${metadata_values[11]:-}"
+metadata_release_commit="${metadata_values[12]:-}"
+metadata_release_record="${metadata_values[13]:-}"
 [[ "$metadata_bundle_id" == "$expected_bundle_id" ]] \
     || fail "release metadata does not match the independently supplied bundle identifier"
 [[ "$metadata_team_id" == "$expected_team_id" ]] \
     || fail "release metadata does not match the independently supplied Team ID"
-[[ "$metadata_icloud_container" == "$expected_icloud_container" ]] \
-    || fail "release metadata does not match the independently supplied iCloud container"
 metadata_arch_array=(${=metadata_archs})
 expected_arch_array=(${=expected_archs})
 metadata_arch_sorted="${(j: :)${(on)metadata_arch_array}}"
@@ -374,13 +425,24 @@ if plutil -extract OpenLoopsWorkspace raw -o - "$info_plist" >/dev/null 2>&1; th
 fi
 distribution_channel="$(plutil -extract FounderOfficeDistributionChannel raw -o - "$info_plist")"
 notarization_claim="$(plutil -extract FounderOfficeNotarized raw -o - "$info_plist")"
-cloud_enabled="$(plutil -extract FounderOfficeCloudEnabled raw -o - "$info_plist")"
-runtime_cloud_container="$(plutil -extract FounderOfficeCloudContainerIdentifier raw -o - "$info_plist")"
+runtime_update_feed="$(plutil -extract FounderOfficeUpdateFeedURL raw -o - "$info_plist")"
+runtime_update_channel="$(plutil -extract FounderOfficeUpdateChannel raw -o - "$info_plist")"
+runtime_update_public_key="$(plutil -extract FounderOfficeUpdatePublicKey raw -o - "$info_plist")"
+runtime_apple_sign_in_enabled="$(plutil -extract FounderOfficeAppleSignInEnabled raw -o - "$info_plist")"
 [[ "$distribution_channel" == "direct" ]] || fail "app is not marked for direct distribution"
 [[ "$notarization_claim" == "true" ]] || fail "app is missing the notarization release marker"
-[[ "$cloud_enabled" == "true" ]] || fail "app does not enable CloudKit"
-[[ "$runtime_cloud_container" == "$expected_icloud_container" ]] \
-    || fail "runtime CloudKit container does not match the signed release"
+if plutil -extract FounderOfficeCloudEnabled raw -o - "$info_plist" >/dev/null 2>&1 \
+    || plutil -extract FounderOfficeCloudContainerIdentifier raw -o - "$info_plist" >/dev/null 2>&1; then
+    fail "app contains retired CloudKit runtime configuration"
+fi
+[[ "$runtime_update_feed" == "$expected_update_feed_url" ]] \
+    || fail "runtime update feed does not match independent release policy"
+[[ "$runtime_update_channel" == "$expected_update_channel" ]] \
+    || fail "runtime update channel does not match independent release policy"
+[[ "$runtime_update_public_key" == "$expected_update_public_key" ]] \
+    || fail "runtime update public key does not match independent release policy"
+[[ "$runtime_apple_sign_in_enabled" == "true" ]] \
+    || fail "signed release does not enable its entitled Apple identity provider"
 privacy_manifest="${app_path}/Contents/Resources/PrivacyInfo.xcprivacy"
 [[ -f "$privacy_manifest" ]] || fail "privacy manifest is missing"
 "${script_dir}/verify-privacy-manifest.py" "$privacy_manifest"
@@ -426,11 +488,11 @@ for expected_arch in "${expected_arch_array[@]}"; do
     codesign -d --architecture "$expected_arch" --entitlements :- "$app_path" \
         >"$effective_entitlements" 2>"${verification_root}/entitlements-${expected_arch}.log"
     plutil -lint "$effective_entitlements" >/dev/null
-    python3 - "$effective_entitlements" "$expected_team_id" "$expected_bundle_id" "$expected_icloud_container" <<'PY'
+    python3 - "$effective_entitlements" "$expected_team_id" "$expected_bundle_id" <<'PY'
 import plistlib
 import sys
 
-path, team_id, bundle_id, expected_container = sys.argv[1:]
+path, team_id, bundle_id = sys.argv[1:]
 with open(path, "rb") as handle:
     entitlements = plistlib.load(handle)
 
@@ -453,18 +515,22 @@ if entitlements.get("com.apple.security.personal-information.calendars") is not 
     errors.append("Calendar entitlement is missing")
 if entitlements.get("com.apple.security.files.user-selected.read-only") is not True:
     errors.append("user-selected read-only file entitlement is missing")
+if entitlements.get("com.apple.security.network.client") is not True:
+    errors.append("network client entitlement is missing")
 if entitlements.get("com.apple.developer.team-identifier") not in (None, team_id):
     errors.append("team identifier does not match")
 if entitlements.get("com.apple.application-identifier") not in (None, f"{team_id}.{bundle_id}"):
     errors.append("application identifier does not match")
-if entitlements.get("aps-environment") != "production":
-    errors.append("push environment is not production")
-if entitlements.get("com.apple.developer.icloud-container-environment") != "Production":
-    errors.append("iCloud environment is not Production")
-if entitlements.get("com.apple.developer.icloud-container-identifiers") != [expected_container]:
-    errors.append("iCloud container does not match exactly")
-if entitlements.get("com.apple.developer.icloud-services") != ["CloudKit"]:
-    errors.append("iCloud services do not match exactly")
+if entitlements.get("com.apple.developer.applesignin") != ["Default"]:
+    errors.append("Sign in with Apple entitlement is missing or invalid")
+for retired_key in (
+    "aps-environment",
+    "com.apple.developer.icloud-container-environment",
+    "com.apple.developer.icloud-container-identifiers",
+    "com.apple.developer.icloud-services",
+):
+    if retired_key in entitlements:
+        errors.append(f"retired CloudKit/push entitlement is present: {retired_key}")
 
 if errors:
     raise SystemExit("Invalid effective entitlements: " + "; ".join(errors))

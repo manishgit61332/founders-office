@@ -4,7 +4,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-forbidden_paths='(^|/)(openloops\.json|personalization\.json|OPEN_LOOPS_CONTEXT\.md|cloud-sync-state\.json|workspace-identity\.json|Secrets\.xcconfig)$|(^|/)(Personalization|Codex Runs|support-bundles|exports|qa|audits|dist|install-backups|DerivedData|\.build|\.secrets)/|(^|/)\.env($|\.(local|development|production|staging|test)$)|\.(p8|p12|pem|key|mobileprovision|provisionprofile|log|jsonl|trace|crash)$|(^|/)(GoogleService-Info\.plist|client_secret[^/]*\.json|service-account[^/]*\.json)$'
+forbidden_paths='(^|/)(openloops\.json|personalization\.json|OPEN_LOOPS_CONTEXT\.md|cloud-sync-state\.json|workspace-identity\.json|Secrets\.xcconfig)$|(^|/)(Personalization|Codex Runs|support-bundles|exports|qa|audits|dist|install-backups|DerivedData|\.build|\.secrets)/|(^|/)\.env($|\.(local|development|production|staging|test)$)|\.(sqlite|sqlite3)(-(wal|shm))?$|\.(p8|p12|pem|key|mobileprovision|provisionprofile|log|jsonl|trace|crash)$|(^|/)(GoogleService-Info\.plist|client_secret[^/]*\.json|service-account[^/]*\.json)$'
 
 tracked_forbidden="$(git ls-files | grep -E "$forbidden_paths" || true)"
 if [[ -n "$tracked_forbidden" ]]; then

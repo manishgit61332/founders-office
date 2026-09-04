@@ -38,7 +38,7 @@ enum TestFixtures {
     }
 
     static func document(
-        schemaVersion: Int = 2,
+        schemaVersion: Int = 3,
         updatedAt: Date = date(10),
         items: [OpenLoop]
     ) -> OpenLoopsDocument {

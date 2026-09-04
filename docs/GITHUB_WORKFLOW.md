@@ -16,7 +16,13 @@ Default branch: `main`
 6. Merge only after `Build and verify` passes.
 7. Use squash merge and delete the branch.
 
-The cloud check validates the privacy boundary, shared model, release Swift package, deterministic motion, plists/manifests, generated Xcode project, unsigned macOS app, and unsigned iOS Simulator app.
+The cloud checks validate the privacy boundary, shared model, release Swift
+package, deterministic motion, plists/manifests, generated Xcode project,
+unsigned macOS and iOS Simulator builds, and website policy. A full-Xcode Mac
+runner executes—not only compiles—the serial macOS UI suite and retains its
+`.xcresult` on failure. A separate Linux runner starts the exact local Supabase
+Postgres image selected by the pinned CLI and executes the pgTAP RLS/RPC suite.
+Neither local CI service is production evidence.
 
 ## Local push gate
 
@@ -46,7 +52,7 @@ Until the account is upgraded:
 After upgrading, enable:
 
 - pull request required for `main`;
-- `Build and verify` required and up to date;
+- `Build and verify`, `Website safety and build`, and `Execute local Supabase RLS and RPC tests` required and up to date;
 - conversation resolution and linear history;
 - force-push and deletion blocks;
 - zero required approvals while there is only one maintainer;

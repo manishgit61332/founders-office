@@ -82,6 +82,16 @@ final class CrashLoopSafeModeMarker {
         save(current)
     }
 
+    /// Records an AppKit-confirmed clean process exit without erasing crash
+    /// evidence from earlier launches. A crash or force-quit never reaches this
+    /// method, so its in-progress marker remains available to the next launch.
+    func markCleanTermination() {
+        guard var current = state else { return }
+        current.launchInProgress = false
+        state = current
+        save(current)
+    }
+
     func prepareExplicitRetry() {
         var current = state ?? loadState()
         current.launchInProgress = false

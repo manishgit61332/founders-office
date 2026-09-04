@@ -1,9 +1,9 @@
 import AppKit
 import CoreText
-import FounderOfficeCloud
 import FounderOfficeCore
 import ServiceManagement
 import SwiftUI
+import UniformTypeIdentifiers
 
 @main
 struct FoundersOfficeApp: App {
@@ -22,8 +22,9 @@ final class FoundersOfficeAppDelegate: NSObject, NSApplicationDelegate {
     private let launchAtLoginPreferenceKey = "FoundersOfficeLaunchAtLoginEnabled"
     private var store: OpenLoopStore?
     private var personalization: PersonalizationStore?
-    private var cloudSyncBridge: CloudSyncBridge?
+    private var workspaceSession: WorkspaceSession?
     private var notchController: NotchWindowController?
+    private var updateController: FounderOfficeUpdateController?
     private var onboardingStore: FirstRunOnboardingStore?
     private var onboardingWindowController: FirstRunOnboardingWindowController?
     private var statusItem: NSStatusItem?
@@ -35,6 +36,33 @@ final class FoundersOfficeAppDelegate: NSObject, NSApplicationDelegate {
     private var recoveryState: WorkspaceRecoveryState?
     private var workspaceRootURL: URL?
     private var didMarkRuntimeReady = false
+    private let supportReportStorage = SupportReportStorage()
+    private var onboardingDefaults: UserDefaults = .standard
+    #if !FOUNDER_OFFICE_DISTRIBUTION
+    private var onboardingUITestDefaultsSuiteName: String?
+    #endif
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        #if !FOUNDER_OFFICE_DISTRIBUTION
+        let arguments = CommandLine.arguments
+        if arguments.contains("--snapshot")
+            || arguments.contains("--motion-frames")
+            || arguments.contains("--motion-reversal-frames")
+            || arguments.contains("--ui-testing")
+            || arguments.contains("--ui-testing-onboarding") {
+            return .terminateNow
+        }
+        #endif
+
+        guard let notchController else { return .terminateNow }
+        guard notchController.hasUnsavedAppearanceChanges
+                || notchController.hasPendingWorkspaceWrites else { return .terminateNow }
+        Task {
+            let shouldTerminate = await notchController.resolveUnsavedAppearanceForTermination()
+            sender.reply(toApplicationShouldTerminate: shouldTerminate)
+        }
+        return .terminateLater
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let arguments = CommandLine.arguments
@@ -45,18 +73,38 @@ final class FoundersOfficeAppDelegate: NSObject, NSApplicationDelegate {
         }
 
         #if FOUNDER_OFFICE_DISTRIBUTION
+        let isCaptureLaunch = false
         let launchDisposition = runtimeHealth.beginLaunch(trackCrashLoop: true)
         #else
+        let isStandardUITestLaunch = arguments.contains("--ui-testing")
+        let isOnboardingUITestLaunch = arguments.contains("--ui-testing-onboarding")
+        let isUITestLaunch = isStandardUITestLaunch || isOnboardingUITestLaunch
         let isCaptureLaunch = arguments.contains("--preview")
             || arguments.contains("--snapshot")
             || arguments.contains("--motion-frames")
             || arguments.contains("--motion-reversal-frames")
-        let launchDisposition = runtimeHealth.beginLaunch(trackCrashLoop: !isCaptureLaunch)
+            || isStandardUITestLaunch
+        if isOnboardingUITestLaunch {
+            let suiteName = "com.manish.openloops.onboarding-ui-test.\(ProcessInfo.processInfo.processIdentifier)"
+            guard let defaults = UserDefaults(suiteName: suiteName) else {
+                preconditionFailure("Unable to create isolated onboarding UI-test preferences.")
+            }
+            defaults.removePersistentDomain(forName: suiteName)
+            onboardingDefaults = defaults
+            onboardingUITestDefaultsSuiteName = suiteName
+        }
+        let launchDisposition = runtimeHealth.beginLaunch(
+            trackCrashLoop: !(isCaptureLaunch || isOnboardingUITestLaunch)
+        )
         #endif
         isSafeMode = launchDisposition.isSafeMode
         safeModeIncidentID = launchDisposition.incidentID
 
+        #if FOUNDER_OFFICE_DISTRIBUTION
         NSApp.setActivationPolicy(.accessory)
+        #else
+        NSApp.setActivationPolicy(isUITestLaunch ? .regular : .accessory)
+        #endif
         if isSafeMode {
             configureStatusItem()
             DispatchQueue.main.async { [weak self] in
@@ -70,17 +118,34 @@ final class FoundersOfficeAppDelegate: NSObject, NSApplicationDelegate {
         let rootURL = WorkspaceLocator.openLoopsRoot
         workspaceRootURL = rootURL
         #if FOUNDER_OFFICE_DISTRIBUTION
-        let expectedWorkspaceID = FirstRunOnboardingStore.persistedWorkspaceID()
+        let expectedWorkspaceID = FirstRunOnboardingStore.persistedWorkspaceID(defaults: onboardingDefaults)
         #else
         let expectedWorkspaceID = isCaptureLaunch
             ? nil
-            : FirstRunOnboardingStore.persistedWorkspaceID()
+            : FirstRunOnboardingStore.persistedWorkspaceID(defaults: onboardingDefaults)
         #endif
-        let preparedBootstrap = WorkspaceBootstrapCoordinator.inspect(
-            rootURL: rootURL,
-            expectedWorkspaceID: expectedWorkspaceID
-        )
+        Task { [weak self] in
+            let preparedBootstrap = await Task.detached(priority: .userInitiated) {
+                WorkspaceBootstrapCoordinator.inspect(
+                    rootURL: rootURL,
+                    expectedWorkspaceID: expectedWorkspaceID
+                )
+            }.value
+            await self?.continueBootstrap(
+                preparedBootstrap,
+                rootURL: rootURL,
+                arguments: arguments,
+                isCaptureLaunch: isCaptureLaunch
+            )
+        }
+    }
 
+    private func continueBootstrap(
+        _ preparedBootstrap: PreparedWorkspaceBootstrap,
+        rootURL: URL,
+        arguments: [String],
+        isCaptureLaunch: Bool
+    ) async {
         let workspaceID: UUID
         let identityNeedsCommit: Bool
         switch preparedBootstrap.decision {
@@ -96,159 +161,185 @@ final class FoundersOfficeAppDelegate: NSObject, NSApplicationDelegate {
                 preservedCopyNames: preparedBootstrap.preservedIdentityCopyName.map { [$0] } ?? []
             )
             configureStatusItem()
-            DispatchQueue.main.async { [weak self] in
-                self?.showRecoveryRequiredAlert()
-            }
+            showRecoveryRequiredAlert()
             return
         }
 
-        let cloudConfiguration = resolveCloudConfiguration()
-        let cloudAvailable = cloudConfiguration != nil
+        await openWorkspaceAndContinue(
+            rootURL: rootURL,
+            workspaceID: workspaceID,
+            identityNeedsCommit: identityNeedsCommit,
+            preparedBootstrap: preparedBootstrap,
+            arguments: arguments,
+            isCaptureLaunch: isCaptureLaunch
+        )
+    }
 
-        let store = OpenLoopStore(rootURL: rootURL)
-        let personalization = PersonalizationStore(rootURL: rootURL)
-        self.store = store
-        self.personalization = personalization
-
+    private func openWorkspaceAndContinue(
+        rootURL: URL,
+        workspaceID: UUID,
+        identityNeedsCommit: Bool,
+        preparedBootstrap: PreparedWorkspaceBootstrap,
+        arguments: [String],
+        isCaptureLaunch: Bool
+    ) async {
         do {
-            try personalization.ensureCanonicalDocumentExists()
-        } catch {
-            recoveryState = WorkspaceRecoveryState(affectedComponents: [.personalization])
-            configureStatusItem()
-            AppDiagnostics.failure(.personalizationSave, category: .storage, error: error)
-            DispatchQueue.main.async { [weak self] in
-                self?.showRecoveryRequiredAlert()
-            }
-            return
-        }
-
-        let discoveredRecovery = store.recoveryState.merging(personalization.recoveryState)
-        if discoveredRecovery.requiresRecovery {
-            recoveryState = discoveredRecovery
-            configureStatusItem()
-            DispatchQueue.main.async { [weak self] in
-                self?.showRecoveryRequiredAlert()
-            }
-            return
-        }
-
-        let missingAfterInitialization = [
-            (WorkspaceStorageComponent.openLoops, store.jsonURL),
-            (WorkspaceStorageComponent.personalization, personalization.documentURL)
-        ]
-        .compactMap { component, url in
-            FileManager.default.fileExists(atPath: url.path) ? nil : component
-        }
-        if !missingAfterInitialization.isEmpty {
-            recoveryState = WorkspaceRecoveryState(affectedComponents: missingAfterInitialization)
-            configureStatusItem()
-            DispatchQueue.main.async { [weak self] in
-                self?.showRecoveryRequiredAlert()
-            }
-            return
-        }
-
-        if identityNeedsCommit {
-            do {
-                try WorkspaceBootstrapCoordinator.commitIdentity(
-                    workspaceID: workspaceID,
-                    to: preparedBootstrap.identityURL
+            let initialSnapshot: FounderOfficeSnapshot
+            #if FOUNDER_OFFICE_DISTRIBUTION
+            initialSnapshot = WorkspaceSession.freshSnapshot
+            #else
+            if ProcessInfo.processInfo.environment["OPENLOOPS_UI_TEST_LONG_PRIORITY_FIXTURE"] == "1" {
+                let freshSnapshot = WorkspaceSession.freshSnapshot
+                initialSnapshot = FounderOfficeSnapshot(
+                    openLoops: OpenLoopStore.longPriorityPreviewDocument(),
+                    personalization: freshSnapshot.personalization
                 )
-            } catch {
-                recoveryState = WorkspaceRecoveryState(
-                    affectedComponents: WorkspaceStorageComponent.allCases
-                )
-                configureStatusItem()
-                AppDiagnostics.failure(.workspaceIdentitySave, category: .storage, error: error)
-                DispatchQueue.main.async { [weak self] in
-                    self?.showRecoveryRequiredAlert()
-                }
-                return
+            } else {
+                initialSnapshot = WorkspaceSession.freshSnapshot
             }
-        }
+            #endif
+            let session = try await WorkspaceSession.open(
+                rootURL: rootURL,
+                workspaceID: workspaceID,
+                initialSnapshot: initialSnapshot
+            )
 
-        #if FOUNDER_OFFICE_DISTRIBUTION
-        let firstRunStore: FirstRunOnboardingStore? = FirstRunOnboardingStore(
-            workspaceExistedBeforeLaunch: preparedBootstrap.workspaceExistedBeforeLaunch,
-            workspaceID: workspaceID
-        )
-        #else
-        let firstRunStore: FirstRunOnboardingStore? = isCaptureLaunch ? nil : FirstRunOnboardingStore(
-            workspaceExistedBeforeLaunch: preparedBootstrap.workspaceExistedBeforeLaunch,
-            workspaceID: workspaceID
-        )
-        #endif
-        onboardingStore = firstRunStore
+            if identityNeedsCommit {
+                let identityURL = preparedBootstrap.identityURL
+                try await Task.detached(priority: .userInitiated) {
+                    try WorkspaceBootstrapCoordinator.commitIdentity(
+                        workspaceID: workspaceID,
+                        to: identityURL
+                    )
+                }.value
+            }
 
-        if let onboardingStore = firstRunStore {
-            if !onboardingStore.isComplete {
+            workspaceSession = session
+            let store = OpenLoopStore(session: session)
+            let personalization = PersonalizationStore(session: session)
+            self.store = store
+            self.personalization = personalization
+
+            #if FOUNDER_OFFICE_DISTRIBUTION
+            let firstRunStore: FirstRunOnboardingStore? = FirstRunOnboardingStore(
+                workspaceExistedBeforeLaunch: preparedBootstrap.workspaceExistedBeforeLaunch,
+                workspaceID: workspaceID,
+                defaults: onboardingDefaults
+            )
+            #else
+            let firstRunStore: FirstRunOnboardingStore? = isCaptureLaunch ? nil : FirstRunOnboardingStore(
+                workspaceExistedBeforeLaunch: preparedBootstrap.workspaceExistedBeforeLaunch,
+                workspaceID: workspaceID,
+                defaults: onboardingDefaults
+            )
+            #endif
+            onboardingStore = firstRunStore
+
+            if let onboardingStore = firstRunStore, !onboardingStore.isComplete {
                 isOnboarding = true
                 configureStatusItem()
+                #if FOUNDER_OFFICE_DISTRIBUTION
+                let onboardingCalendarMode = CalendarProvider.Mode.live
+                let currentLaunchAtLogin = { SMAppService.mainApp.status == .enabled }
+                let updateLaunchAtLogin: (Bool) throws -> Bool = { [weak self] enabled in
+                    guard let self else { return false }
+                    return try self.setLaunchAtLogin(enabled)
+                }
+                #else
+                let isOnboardingUITestLaunch = arguments.contains("--ui-testing-onboarding")
+                let onboardingCalendarMode: CalendarProvider.Mode = isOnboardingUITestLaunch
+                    ? .syntheticPreview
+                    : .live
+                let currentLaunchAtLogin = {
+                    isOnboardingUITestLaunch ? false : SMAppService.mainApp.status == .enabled
+                }
+                let updateLaunchAtLogin: (Bool) throws -> Bool = isOnboardingUITestLaunch
+                    ? { enabled in enabled }
+                    : { [weak self] enabled in
+                        guard let self else { return false }
+                        return try self.setLaunchAtLogin(enabled)
+                    }
+                #endif
                 let onboardingWindow = FirstRunOnboardingWindowController(
                     stateStore: onboardingStore,
                     taskStore: store,
                     personalization: personalization,
-                    cloudAvailable: cloudAvailable,
-                    setLaunchAtLogin: { [weak self] enabled in
-                        guard let self else { return false }
-                        return try self.setLaunchAtLogin(enabled)
-                    },
+                    calendarMode: onboardingCalendarMode,
+                    currentLaunchAtLogin: currentLaunchAtLogin,
+                    setLaunchAtLogin: updateLaunchAtLogin,
                     onComplete: { [weak self] storageMode in
                         self?.completeOnboarding(storageMode: storageMode)
                     }
                 )
                 onboardingWindowController = onboardingWindow
-                DispatchQueue.main.async { [weak self] in
-                    onboardingWindow.show()
-                    DispatchQueue.main.async { self?.markRuntimeReady() }
-                }
+                onboardingWindow.show()
+                DispatchQueue.main.async { [weak self] in self?.markRuntimeReady() }
                 return
             }
-        }
 
-        #if FOUNDER_OFFICE_DISTRIBUTION
-        let storageMode = onboardingStore?.storageMode ?? .localOnly
-        let allowCloud = true
-        let calendarMode = CalendarProvider.Mode.live
-        #else
-        let storageMode = isCaptureLaunch ? FirstRunStorageMode.localOnly : onboardingStore?.storageMode ?? .localOnly
-        let allowCloud = !isCaptureLaunch
-        let calendarMode = isCaptureLaunch ? CalendarProvider.Mode.syntheticPreview : .live
-        #endif
-        let notchController = activateWorkspace(
-            store: store,
-            personalization: personalization,
-            storageMode: storageMode,
-            cloudConfiguration: cloudConfiguration,
-            allowCloud: allowCloud,
-            calendarMode: calendarMode
-        )
+            #if FOUNDER_OFFICE_DISTRIBUTION
+            let storageMode = onboardingStore?.storageMode ?? .localOnly
+            let calendarMode = CalendarProvider.Mode.live
+            #else
+            let storageMode = isCaptureLaunch
+                ? FirstRunStorageMode.localOnly
+                : onboardingStore?.storageMode ?? .localOnly
+            let calendarMode = isCaptureLaunch ? CalendarProvider.Mode.syntheticPreview : .live
+            #endif
+            let notchController = activateWorkspace(
+                store: store,
+                personalization: personalization,
+                storageMode: storageMode,
+                calendarMode: calendarMode
+            )
 
-        #if FOUNDER_OFFICE_DISTRIBUTION
-        reconcileLaunchAtLoginPreference()
-        #else
-        if !arguments.contains("--preview") && !arguments.contains("--snapshot") {
+            #if FOUNDER_OFFICE_DISTRIBUTION
             reconcileLaunchAtLoginPreference()
+            #else
+            if !isCaptureLaunch {
+                reconcileLaunchAtLoginPreference()
+            }
+            #endif
+
+            markRuntimeReady()
+
+            #if !FOUNDER_OFFICE_DISTRIBUTION
+            configureCaptureIfRequested(
+                arguments: arguments,
+                controller: notchController
+            )
+            #endif
+        } catch {
+            recoveryState = WorkspaceRecoveryState(affectedComponents: WorkspaceStorageComponent.allCases)
+            configureStatusItem()
+            AppDiagnostics.failure(.moveStoreLoad, category: .storage, error: error)
+            showRecoveryRequiredAlert()
         }
-        #endif
+    }
 
-        markRuntimeReady()
-
-        #if !FOUNDER_OFFICE_DISTRIBUTION
-        if arguments.contains("--snapshot") {
-            notchController.showSnapshot()
-        } else if arguments.contains("--preview") || arguments.contains("--motion-frames") || arguments.contains("--motion-reversal-frames") {
-            notchController.show(preview: true)
+    #if !FOUNDER_OFFICE_DISTRIBUTION
+    private func configureCaptureIfRequested(
+        arguments: [String],
+        controller: NotchWindowController
+    ) {
+        if arguments.contains("--ui-testing") {
+            controller.showSnapshot()
+            NSApp.activate(ignoringOtherApps: true)
+            controller.makeKeyForUITesting()
+        } else if arguments.contains("--snapshot") {
+            controller.showSnapshot()
+        } else if arguments.contains("--preview")
+                    || arguments.contains("--motion-frames")
+                    || arguments.contains("--motion-reversal-frames") {
+            controller.show(preview: true)
         }
 
         if let snapshotIndex = arguments.firstIndex(of: "--snapshot"),
            arguments.indices.contains(snapshotIndex + 1) {
             let outputURL = URL(fileURLWithPath: arguments[snapshotIndex + 1])
-            // Snapshot mode bypasses the spring; this pause is only for initial
-            // file loading and SwiftUI layout.
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
                 do {
-                    try notchController.capture(to: outputURL)
+                    try controller.capture(to: outputURL)
                     NSApp.terminate(nil)
                 } catch {
                     AppDiagnostics.failure(.snapshotCapture, category: .application, error: error)
@@ -259,35 +350,48 @@ final class FoundersOfficeAppDelegate: NSObject, NSApplicationDelegate {
 
         if let motionIndex = arguments.firstIndex(of: "--motion-frames"),
            arguments.indices.contains(motionIndex + 1) {
-            let framesURL = URL(fileURLWithPath: arguments[motionIndex + 1], isDirectory: true)
-            startMotionCapture(controller: notchController, framesURL: framesURL)
+            startMotionCapture(
+                controller: controller,
+                framesURL: URL(fileURLWithPath: arguments[motionIndex + 1], isDirectory: true)
+            )
         }
 
         if let reversalIndex = arguments.firstIndex(of: "--motion-reversal-frames"),
            arguments.indices.contains(reversalIndex + 1) {
-            let framesURL = URL(fileURLWithPath: arguments[reversalIndex + 1], isDirectory: true)
-            startReversalCapture(controller: notchController, framesURL: framesURL)
+            startReversalCapture(
+                controller: controller,
+                framesURL: URL(fileURLWithPath: arguments[reversalIndex + 1], isDirectory: true)
+            )
         }
-        #endif
     }
+    #endif
 
     func applicationWillTerminate(_ notification: Notification) {
+        // A user- or AppKit-approved quit during asynchronous bootstrap is not
+        // a crash. Clear only this launch's in-progress bit; prior failures and
+        // an active safe-mode latch remain intact.
+        runtimeHealth.markCleanTermination()
         motionCaptureTimer?.invalidate()
         motionCaptureTimer = nil
         notchController?.prepareForTermination()
-        cloudSyncBridge?.stop()
+        updateController?.cancel()
+        workspaceSession?.stop()
         store?.stop()
         personalization?.stop()
         runtimeHealth.stop()
+        #if !FOUNDER_OFFICE_DISTRIBUTION
+        if let onboardingUITestDefaultsSuiteName,
+           let defaults = UserDefaults(suiteName: onboardingUITestDefaultsSuiteName) {
+            defaults.removePersistentDomain(forName: onboardingUITestDefaultsSuiteName)
+        }
+        #endif
     }
 
     @discardableResult
     private func activateWorkspace(
         store: OpenLoopStore,
         personalization: PersonalizationStore,
-        storageMode: FirstRunStorageMode,
-        cloudConfiguration: FounderOfficeCloudConfiguration?,
-        allowCloud: Bool,
+        storageMode _: FirstRunStorageMode,
         calendarMode: CalendarProvider.Mode = .live
     ) -> NotchWindowController {
         let controller = NotchWindowController(
@@ -296,19 +400,8 @@ final class FoundersOfficeAppDelegate: NSObject, NSApplicationDelegate {
             calendarMode: calendarMode
         )
         notchController = controller
-
-        if allowCloud, let cloudConfiguration, storageMode == .iCloud {
-            let currentRecovery = store.recoveryState.merging(personalization.recoveryState)
-            if !currentRecovery.requiresRecovery {
-                let bridge = CloudSyncBridge(
-                    rootURL: store.rootURL,
-                    configuration: cloudConfiguration
-                )
-                bridge.start()
-                cloudSyncBridge = bridge
-            }
-        }
-
+        updateController?.cancel()
+        updateController = FounderOfficeUpdateController(notchController: controller)
         if statusItem == nil {
             configureStatusItem()
         } else {
@@ -334,41 +427,23 @@ final class FoundersOfficeAppDelegate: NSObject, NSApplicationDelegate {
         onboardingWindowController = nil
         isOnboarding = false
 
-        let cloudConfiguration = resolveCloudConfiguration()
         let controller = activateWorkspace(
             store: store,
             personalization: personalization,
-            storageMode: storageMode,
-            cloudConfiguration: cloudConfiguration,
-            allowCloud: true
+            storageMode: storageMode
         )
         reconcileLaunchAtLoginPreference()
         controller.show(manual: true)
-    }
-
-    private func resolveCloudConfiguration() -> FounderOfficeCloudConfiguration? {
-        guard Bundle.main.object(
-            forInfoDictionaryKey: FounderOfficeCloudConfiguration.cloudEnabledInfoPlistKey
-        ) as? Bool == true else {
-            return nil
-        }
-
-        do {
-            return try FounderOfficeCloudConfiguration.bundled()
-        } catch {
-            AppDiagnostics.failure(
-                .cloudConfigurationLoad,
-                category: .storage,
-                error: error
-            )
-            return nil
-        }
+        updateController?.startAutomaticCheckAfterRuntimeReady()
     }
 
     private func markRuntimeReady() {
         guard !didMarkRuntimeReady else { return }
         didMarkRuntimeReady = true
         runtimeHealth.markReady()
+        if !isOnboarding {
+            updateController?.startAutomaticCheckAfterRuntimeReady()
+        }
     }
 
     private func registerBundledFonts() {
@@ -572,6 +647,7 @@ final class FoundersOfficeAppDelegate: NSObject, NSApplicationDelegate {
 
     private func showStatusMenu() {
         let menu = NSMenu()
+        menu.identifier = TransientPresentationCoordinator.statusMenuIdentifier
 
         if isSafeMode {
             let status = NSMenuItem(title: "Safe Mode Active", action: nil, keyEquivalent: "")
@@ -586,6 +662,14 @@ final class FoundersOfficeAppDelegate: NSObject, NSApplicationDelegate {
                 )
                 incidentItem.target = self
                 menu.addItem(incidentItem)
+
+                let diagnosticItem = NSMenuItem(
+                    title: "Save Redacted Crash Diagnostic…",
+                    action: #selector(saveSafeModeDiagnostic),
+                    keyEquivalent: ""
+                )
+                diagnosticItem.target = self
+                menu.addItem(diagnosticItem)
             }
 
             let retryItem = NSMenuItem(
@@ -660,6 +744,15 @@ final class FoundersOfficeAppDelegate: NSObject, NSApplicationDelegate {
         folderItem.target = self
         menu.addItem(folderItem)
 
+        menu.addItem(.separator())
+        let updateItem = NSMenuItem(
+            title: "Check for Updates…",
+            action: #selector(checkForUpdates),
+            keyEquivalent: ""
+        )
+        updateItem.target = self
+        menu.addItem(updateItem)
+
         if #available(macOS 13.0, *) {
             menu.addItem(.separator())
             let loginItem = NSMenuItem(title: "Launch at Login", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
@@ -703,10 +796,61 @@ final class FoundersOfficeAppDelegate: NSObject, NSApplicationDelegate {
         NSWorkspace.shared.open(rootURL)
     }
 
+    @objc private func checkForUpdates() {
+        updateController?.checkManually()
+    }
+
     @objc private func copySafeModeIncidentID() {
         guard let incidentID = safeModeIncidentID else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(incidentID.uuidString.lowercased(), forType: .string)
+    }
+
+    @objc private func saveSafeModeDiagnostic() {
+        guard isSafeMode, let incidentID = safeModeIncidentID else { return }
+        let version = ProcessInfo.processInfo.operatingSystemVersion
+        let report = RedactedCrashStateReport(
+            incidentID: incidentID,
+            capturedAt: Date(),
+            consecutivePreReadyFailures: runtimeHealth.disposition.consecutivePreReadyFailures,
+            metadata: SupportReportMetadata(
+                appVersion: Bundle.main.object(
+                    forInfoDictionaryKey: "CFBundleShortVersionString"
+                ) as? String ?? "development",
+                buildNumber: Bundle.main.object(
+                    forInfoDictionaryKey: "CFBundleVersion"
+                ) as? String ?? "development",
+                operatingSystemMajor: version.majorVersion,
+                operatingSystemMinor: version.minorVersion,
+                operatingSystemPatch: version.patchVersion,
+                architecture: Self.supportArchitecture
+            )
+        )
+
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = "founders-office-crash-state.json"
+        panel.message = "Saves ten allow-listed crash-state fields. The workspace stays closed."
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await supportReportStorage.save(report, to: destination)
+            } catch {
+                AppDiagnostics.failure(
+                    .safeModeDiagnosticSave,
+                    category: .storage,
+                    error: error
+                )
+                let alert = NSAlert()
+                alert.alertStyle = .warning
+                alert.messageText = "Couldn’t save the crash diagnostic"
+                alert.informativeText = "Choose another location and try again."
+                alert.runModal()
+            }
+        }
     }
 
     @objc private func retryNormalMode() {
@@ -718,6 +862,10 @@ final class FoundersOfficeAppDelegate: NSObject, NSApplicationDelegate {
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
+        performNormalModeRetry()
+    }
+
+    private func performNormalModeRetry() {
         runtimeHealth.prepareExplicitRetry()
         NSApp.terminate(nil)
     }
@@ -725,11 +873,14 @@ final class FoundersOfficeAppDelegate: NSObject, NSApplicationDelegate {
     private func showSafeModeAlert() {
         let alert = NSAlert()
         alert.messageText = "Founder’s Office is in safe mode"
-        alert.informativeText = "This build failed before it was ready three times. Workspace loading, cloud sync, calendar access, personalization, and assistant execution are off. This safe-mode launch has not opened or changed your workspace. Right-click the menu bar icon when you are ready to retry."
+        alert.informativeText = "Three launches did not reach the ready checkpoint, so Founder’s Office kept your workspace closed and unchanged. Reset this build’s marker and quit, then reopen the app—or stay in safe mode and use the menu bar for diagnostics."
         alert.alertStyle = .warning
-        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Reset and Quit")
+        alert.addButton(withTitle: "Stay in Safe Mode")
         DispatchQueue.main.async { [weak self] in self?.markRuntimeReady() }
-        alert.runModal()
+        if alert.runModal() == .alertFirstButtonReturn {
+            performNormalModeRetry()
+        }
     }
 
     private func showRecoveryRequiredAlert() {
@@ -741,7 +892,7 @@ final class FoundersOfficeAppDelegate: NSObject, NSApplicationDelegate {
         let alert = NSAlert()
         alert.messageText = "Your workspace needs recovery"
         alert.informativeText = "Founder’s Office found missing or unreadable \(components). "
-            + "\(preservation) Setup stopped before iCloud sync, and no replacement workspace was written. "
+            + "\(preservation) Setup stopped before device sync, and no replacement workspace was written. "
             + "Reveal the data folder to inspect the workspace and any Recovery copies."
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Reveal Data Folder")
@@ -792,5 +943,15 @@ final class FoundersOfficeAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
+    }
+
+    private static var supportArchitecture: SupportArchitecture {
+        #if arch(arm64)
+        .arm64
+        #elseif arch(x86_64)
+        .x86_64
+        #else
+        .unknown
+        #endif
     }
 }

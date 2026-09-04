@@ -60,6 +60,110 @@ struct OpenLoopRulesTests {
     }
 
     @Test
+    func testUpdatingPlanningChangesOnlyPriorityAndDeadlineClocks() {
+        let original = TestFixtures.loop(
+            status: .doing,
+            priority: .p2,
+            dueAt: TestFixtures.date(10),
+            updatedAt: TestFixtures.date(5)
+        )
+        let newDeadline = TestFixtures.date(40)
+
+        let updated = OpenLoopRules.updatedPlanning(
+            original,
+            priority: .p0,
+            dueAt: newDeadline,
+            at: TestFixtures.date(30)
+        )
+
+        #expect(updated.priority == .p0)
+        #expect(updated.dueAt == newDeadline)
+        #expect(updated.updatedAt == original.updatedAt)
+        #expect(updated.priorityUpdatedAt == TestFixtures.date(30))
+        #expect(updated.dueAtUpdatedAt == TestFixtures.date(30))
+        #expect(updated.status == original.status)
+        #expect(updated.completedAt == original.completedAt)
+        #expect(updated.deletedAt == original.deletedAt)
+        #expect(updated.title == original.title)
+    }
+
+    @Test
+    func testUpdatingPlanningCanRemoveADeadline() {
+        let original = TestFixtures.loop(dueAt: TestFixtures.date(10))
+
+        let updated = OpenLoopRules.updatedPlanning(
+            original,
+            priority: original.priority,
+            dueAt: nil,
+            at: TestFixtures.date(30)
+        )
+
+        #expect(updated.dueAt == nil)
+        #expect(updated.updatedAt == original.updatedAt)
+        #expect(updated.priorityUpdatedAt == nil)
+        #expect(updated.dueAtUpdatedAt == TestFixtures.date(30))
+    }
+
+    @Test
+    func testUpdatingPlanningWithIdenticalValuesIsANoOp() {
+        let original = TestFixtures.loop(
+            priority: .p1,
+            dueAt: TestFixtures.date(10),
+            updatedAt: TestFixtures.date(5)
+        )
+
+        let updated = OpenLoopRules.updatedPlanning(
+            original,
+            priority: original.priority,
+            dueAt: original.dueAt,
+            at: TestFixtures.date(30)
+        )
+
+        #expect(updated == original)
+        #expect(updated.updatedAt == TestFixtures.date(5))
+    }
+
+    @Test
+    func updatingContentChangesOnlyUserAuthoredContentAndRecordClock() {
+        let original = TestFixtures.loop(
+            status: .waiting,
+            priority: .p2,
+            dueAt: TestFixtures.date(20),
+            updatedAt: TestFixtures.date(5)
+        )
+
+        let updated = OpenLoopRules.updatedContent(
+            original,
+            title: "A clearer Move",
+            details: "The full user-authored description.",
+            at: TestFixtures.date(30)
+        )
+
+        #expect(updated.title == "A clearer Move")
+        #expect(updated.details == "The full user-authored description.")
+        #expect(updated.updatedAt == TestFixtures.date(30))
+        #expect(updated.status == original.status)
+        #expect(updated.priority == original.priority)
+        #expect(updated.dueAt == original.dueAt)
+        #expect(updated.priorityUpdatedAt == original.priorityUpdatedAt)
+        #expect(updated.dueAtUpdatedAt == original.dueAtUpdatedAt)
+    }
+
+    @Test
+    func updatingContentWithIdenticalValuesIsANoOp() {
+        let original = TestFixtures.loop(details: "Already written")
+
+        let updated = OpenLoopRules.updatedContent(
+            original,
+            title: original.title,
+            details: original.details,
+            at: TestFixtures.date(30)
+        )
+
+        #expect(updated == original)
+    }
+
+    @Test
     func testSoftDeleteAndRestoreOnlyChangeTombstoneMetadata() {
         let original = TestFixtures.loop(status: .doing)
 

@@ -44,6 +44,46 @@ public enum OpenLoopRules {
         return result
     }
 
+    public static func updatedPlanning(
+        _ item: OpenLoop,
+        priority: LoopPriority,
+        dueAt: Date?,
+        at date: Date
+    ) -> OpenLoop {
+        let priorityChanged = item.priority != priority
+        let deadlineChanged = item.dueAt != dueAt
+        guard priorityChanged || deadlineChanged else { return item }
+
+        var result = item
+        result.priority = priority
+        result.dueAt = dueAt
+        if priorityChanged {
+            result.priorityUpdatedAt = date
+        }
+        if deadlineChanged {
+            result.dueAtUpdatedAt = date
+        }
+        // Planning fields have their own clocks. Keeping the whole-record clock
+        // unchanged prevents an offline priority/deadline edit from winning the
+        // status, completion, deletion, title, or details merge on another device.
+        return result
+    }
+
+    public static func updatedContent(
+        _ item: OpenLoop,
+        title: String,
+        details: String,
+        at date: Date
+    ) -> OpenLoop {
+        guard item.title != title || item.details != details else { return item }
+
+        var result = item
+        result.title = title
+        result.details = details
+        result.updatedAt = date
+        return result
+    }
+
     public static func softDeleted(_ item: OpenLoop, at date: Date) -> OpenLoop {
         var result = item
         result.deletedAt = date

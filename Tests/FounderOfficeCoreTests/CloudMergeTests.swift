@@ -38,6 +38,143 @@ struct CloudMergeTests {
     }
 
     @Test
+    func testDisjointPriorityAndDeadlineEditsMergeWithoutDataLoss() throws {
+        let id = UUID()
+        let base = TestFixtures.loop(
+            id: id,
+            priority: .p2,
+            dueAt: nil,
+            updatedAt: TestFixtures.date(5)
+        )
+        let priorityEdit = OpenLoopRules.updatedPlanning(
+            base,
+            priority: .p0,
+            dueAt: nil,
+            at: TestFixtures.date(10)
+        )
+        let deadlineEdit = OpenLoopRules.updatedPlanning(
+            base,
+            priority: .p2,
+            dueAt: TestFixtures.date(100),
+            at: TestFixtures.date(20)
+        )
+
+        let leftToRight = FounderOfficeMerge.openLoops(
+            local: TestFixtures.document(updatedAt: TestFixtures.date(10), items: [priorityEdit]),
+            remote: TestFixtures.document(updatedAt: TestFixtures.date(20), items: [deadlineEdit])
+        )
+        let rightToLeft = FounderOfficeMerge.openLoops(
+            local: TestFixtures.document(updatedAt: TestFixtures.date(20), items: [deadlineEdit]),
+            remote: TestFixtures.document(updatedAt: TestFixtures.date(10), items: [priorityEdit])
+        )
+
+        let merged = try #require(leftToRight.items.first)
+        #expect(merged.priority == .p0)
+        #expect(merged.dueAt == TestFixtures.date(100))
+        #expect(merged.priorityUpdatedAt == TestFixtures.date(10))
+        #expect(merged.dueAtUpdatedAt == TestFixtures.date(20))
+        #expect(leftToRight.items == rightToLeft.items)
+    }
+
+    @Test
+    func testLaterPlanningEditCannotEraseNewerCompletion() throws {
+        let id = UUID()
+        let base = TestFixtures.loop(
+            id: id,
+            status: .doing,
+            priority: .p2,
+            updatedAt: TestFixtures.date(10)
+        )
+        let completed = OpenLoopRules.toggledCompletion(base, at: TestFixtures.date(20))
+        let stalePriorityEdit = OpenLoopRules.updatedPlanning(
+            base,
+            priority: .p0,
+            dueAt: base.dueAt,
+            at: TestFixtures.date(30)
+        )
+
+        let localFirst = FounderOfficeMerge.openLoops(
+            local: TestFixtures.document(updatedAt: TestFixtures.date(30), items: [stalePriorityEdit]),
+            remote: TestFixtures.document(updatedAt: TestFixtures.date(20), items: [completed])
+        )
+        let remoteFirst = FounderOfficeMerge.openLoops(
+            local: TestFixtures.document(updatedAt: TestFixtures.date(20), items: [completed]),
+            remote: TestFixtures.document(updatedAt: TestFixtures.date(30), items: [stalePriorityEdit])
+        )
+
+        let merged = try #require(localFirst.items.first)
+        #expect(merged.status == .done)
+        #expect(merged.completedAt == TestFixtures.date(20))
+        #expect(merged.priority == .p0)
+        #expect(localFirst.items == remoteFirst.items)
+    }
+
+    @Test
+    func testLaterPlanningEditCannotResurrectNewerDeletion() throws {
+        let id = UUID()
+        let base = TestFixtures.loop(
+            id: id,
+            priority: .p2,
+            updatedAt: TestFixtures.date(10)
+        )
+        let deleted = OpenLoopRules.softDeleted(base, at: TestFixtures.date(20))
+        let staleDeadlineEdit = OpenLoopRules.updatedPlanning(
+            base,
+            priority: base.priority,
+            dueAt: TestFixtures.date(100),
+            at: TestFixtures.date(30)
+        )
+
+        let localFirst = FounderOfficeMerge.openLoops(
+            local: TestFixtures.document(updatedAt: TestFixtures.date(30), items: [staleDeadlineEdit]),
+            remote: TestFixtures.document(updatedAt: TestFixtures.date(20), items: [deleted])
+        )
+        let remoteFirst = FounderOfficeMerge.openLoops(
+            local: TestFixtures.document(updatedAt: TestFixtures.date(20), items: [deleted]),
+            remote: TestFixtures.document(updatedAt: TestFixtures.date(30), items: [staleDeadlineEdit])
+        )
+
+        let merged = try #require(localFirst.items.first)
+        #expect(merged.deletedAt == TestFixtures.date(20))
+        #expect(merged.dueAt == TestFixtures.date(100))
+        #expect(localFirst.items == remoteFirst.items)
+    }
+
+    @Test
+    func testNewerSchemaTwoPlanningEditIsNotIgnoredBySchemaThreeClock() throws {
+        let id = UUID()
+        var schemaThree = TestFixtures.loop(
+            id: id,
+            priority: .p0,
+            updatedAt: TestFixtures.date(10)
+        )
+        schemaThree.priorityUpdatedAt = TestFixtures.date(10)
+        schemaThree.dueAtUpdatedAt = TestFixtures.date(10)
+
+        let legacyEdit = TestFixtures.loop(
+            id: id,
+            priority: .p3,
+            updatedAt: TestFixtures.date(20)
+        )
+        let merged = FounderOfficeMerge.openLoops(
+            local: TestFixtures.document(
+                schemaVersion: 3,
+                updatedAt: TestFixtures.date(10),
+                items: [schemaThree]
+            ),
+            remote: TestFixtures.document(
+                schemaVersion: 2,
+                updatedAt: TestFixtures.date(20),
+                items: [legacyEdit]
+            )
+        )
+
+        let item = try #require(merged.items.first)
+        #expect(item.priority == .p3)
+        #expect(item.priorityUpdatedAt == TestFixtures.date(20))
+    }
+
+    @Test
     func testNewerTombstoneWinsAndNewerRestoreWins() throws {
         let id = UUID()
         let active = TestFixtures.loop(id: id, updatedAt: TestFixtures.date(10))

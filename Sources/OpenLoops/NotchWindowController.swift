@@ -3,8 +3,27 @@ import FounderOfficeCore
 import SwiftUI
 
 final class NotchPanel: NSPanel {
+    static let notchStyleMask: NSWindow.StyleMask = [.borderless, .fullSizeContentView, .nonactivatingPanel]
+    static let notchCollectionBehavior: NSWindow.CollectionBehavior = [
+        .canJoinAllSpaces, .canJoinAllApplications, .fullScreenAuxiliary, .stationary, .ignoresCycle
+    ]
+
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+}
+
+enum NotchPanelState: Sendable {
+    case hidden, opening, open, suspended, closing
+}
+
+enum NotchSpaceChangeAction: Equatable {
+    case checkHover, deferToTransient, reorderExpanded
+
+    static func resolve(state: NotchPanelState, hasTransient: Bool) -> Self {
+        if state == .hidden || state == .closing { return .checkHover }
+        if state == .suspended || hasTransient { return .deferToTransient }
+        return .reorderExpanded
+    }
 }
 
 @MainActor
@@ -13,41 +32,44 @@ final class NotchPresentationModel: ObservableObject {
     @Published var horizontalPull: CGFloat = 0
     @Published var notchWidth: CGFloat = 185
     @Published var notchHeight: CGFloat = 32
-    @Published private(set) var preventsAutoDismiss = false
+    @Published private(set) var escapeSequence: UInt64 = 0
+    let transients = TransientPresentationCoordinator()
 
-    private var interactionLeases = InteractionLeaseRegistry()
+    var preventsAutoDismiss: Bool { transients.preventsAutoDismiss }
 
     @discardableResult
-    func beginInteraction(_ reason: String) -> UUID {
-        let lease = interactionLeases.begin(reason)
-        preventsAutoDismiss = interactionLeases.isActive
-        return lease
+    func beginInteraction(_ reason: String, suspendsHost: Bool = false) -> UUID {
+        transients.begin(reason, suspendsHost: suspendsHost)
     }
 
     func endInteraction(_ lease: UUID) {
-        interactionLeases.end(lease)
-        preventsAutoDismiss = interactionLeases.isActive
+        transients.end(lease)
     }
 
     func clearInteractions() {
-        interactionLeases.clear()
-        preventsAutoDismiss = false
+        transients.cancelAll()
+    }
+
+    @discardableResult
+    func closeNativeColorPanels() -> Bool {
+        transients.closeNativeColorPanels()
+    }
+
+    func requestEscape() {
+        escapeSequence &+= 1
     }
 }
 
 @MainActor
 final class NotchWindowController {
-    private enum PanelState {
-        case hidden
-        case opening
-        case open
-        case closing
-    }
-
     private let store: OpenLoopStore
+    #if !FOUNDER_OFFICE_DISTRIBUTION
     private let codexRunner: CodexRunner
+    #endif
     private let personalization: PersonalizationStore
     private let calendarProvider: CalendarProvider
+    private let account: FounderOfficeAccountController
+    private let health: FounderOfficeHealthModel
     private let presentation = NotchPresentationModel()
     private let panel: NotchPanel
 
@@ -57,73 +79,298 @@ final class NotchWindowController {
     private var lastSpringFrameAt: Date?
     private var springVelocity: CGFloat = 0
     private var springTarget: CGFloat = 0
-    private var state: PanelState = .hidden
+    private var state: NotchPanelState = .hidden
     private var previewMode = false
     private var awaitingManualEntry = false
     private var suppressHoverRevealUntilHidden = false
+    private var isResolvingAppearanceExit = false
+    private var pendingRepositionAfterTransient = false
+    private var escapeMonitor: Any?
     private var systemObservers: [NSObjectProtocol] = []
-    private var menuInteractionLeases: [ObjectIdentifier: UUID] = [:]
-    private var popoverInteractionLeases: [ObjectIdentifier: UUID] = [:]
 
     init(
         store: OpenLoopStore,
         personalization: PersonalizationStore? = nil,
         calendarMode: CalendarProvider.Mode = .live
     ) {
+        #if !FOUNDER_OFFICE_DISTRIBUTION
+        let runner = CodexRunner(founderOfficeURL: store.rootURL)
+        #endif
+        let personalizationStore = personalization ?? PersonalizationStore(session: store.session)
+        let calendar = CalendarProvider(mode: calendarMode)
         self.store = store
-        codexRunner = CodexRunner(founderOfficeURL: store.rootURL)
-        self.personalization = personalization ?? PersonalizationStore(rootURL: store.rootURL)
-        calendarProvider = CalendarProvider(mode: calendarMode)
+        #if !FOUNDER_OFFICE_DISTRIBUTION
+        codexRunner = runner
+        #endif
+        self.personalization = personalizationStore
+        calendarProvider = calendar
         panel = NotchPanel(
             contentRect: NSRect(x: 0, y: 0, width: 720, height: 350),
-            styleMask: [.borderless, .fullSizeContentView],
+            styleMask: NotchPanel.notchStyleMask,
             backing: .buffered,
             defer: false
         )
 
         panel.level = .statusBar
+        panel.title = "Founder's Office"
+        panel.identifier = NSUserInterfaceItemIdentifier("foundersOffice.notch")
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = false
         panel.hidesOnDeactivate = false
         panel.isMovable = false
         panel.isMovableByWindowBackground = false
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        panel.collectionBehavior = NotchPanel.notchCollectionBehavior
         panel.animationBehavior = .none
         panel.isReleasedWhenClosed = false
         panel.ignoresMouseEvents = true
+        account = FounderOfficeAccountController.live(
+            infoDictionary: Bundle.main.infoDictionary ?? [:],
+            hostWindow: panel,
+            presentation: presentation,
+            repository: store.session.repository,
+            localContext: { [weak store, weak personalizationStore] in
+                guard let store, let personalizationStore else {
+                    return FounderOfficeLocalAccountContext(
+                        hasCustomerData: false,
+                        boundAccountID: nil
+                    )
+                }
+                let hasMoves = store.items.contains { $0.deletedAt == nil }
+                let hasPersonalization = !personalizationStore.preferredName.isEmpty
+                    || personalizationStore.workspaceName != "Founder's Office"
+                    || personalizationStore.photoURL != nil
+                    || personalizationStore.primaryGoal != nil
+                    || !personalizationStore.milestones.isEmpty
+                return FounderOfficeLocalAccountContext(
+                    hasCustomerData: hasMoves || hasPersonalization,
+                    boundAccountID: nil
+                )
+            },
+            workspaceName: { [weak personalizationStore] in
+                personalizationStore?.workspaceName ?? "Founder's Office"
+            },
+            applyReviewedDisplayName: { [weak personalizationStore] name in
+                personalizationStore?.updatePreferredName(name)
+            }
+        )
+        #if FOUNDER_OFFICE_DISTRIBUTION
+        health = FounderOfficeHealthModel(
+            store: store,
+            personalization: personalizationStore,
+            calendar: calendar,
+            accountSync: account
+        )
+        #else
+        health = FounderOfficeHealthModel(
+            store: store,
+            personalization: personalizationStore,
+            calendar: calendar,
+            assistant: runner,
+            accountSync: account
+        )
+        #endif
+        #if FOUNDER_OFFICE_DISTRIBUTION
+        panel.contentViewController = NSHostingController(
+            rootView: NotchBoardView(
+                store: store,
+                personalization: self.personalization,
+                calendarProvider: calendarProvider,
+                account: account,
+                health: health,
+                presentation: presentation
+            ) { [weak self] in self?.requestExplicitClose() }
+        )
+        #else
         panel.contentViewController = NSHostingController(
             rootView: NotchBoardView(
                 store: store,
                 codexRunner: codexRunner,
                 personalization: self.personalization,
                 calendarProvider: calendarProvider,
+                account: account,
+                health: health,
                 presentation: presentation
-            ) { [weak self] in self?.hide(force: true) }
+            ) { [weak self] in self?.requestExplicitClose() }
+        )
+        #endif
+        presentation.transients.configure(
+            hostWindow: panel,
+            isHostExpanded: { [weak self] in
+                guard let self else { return false }
+                return self.state == .opening || self.state == .open
+            },
+            suspendHost: { [weak self] in
+                self?.suspendForTransientPresentation()
+            },
+            restoreHost: { [weak self] in
+                self?.restoreAfterTransientPresentation()
+            }
         )
 
         startHoverMonitor()
         startSystemObservers()
+        startEscapeMonitor()
+        account.start()
     }
 
     var isVisible: Bool { state != .hidden }
+    var hasUnsavedAppearanceChanges: Bool { personalization.hasUnsavedAppearanceChanges }
+    var hasPendingWorkspaceWrites: Bool {
+        store.hasPendingWrites
+            || personalization.hasPendingWrites
+            || store.hasUnresolvedWriteFailure
+            || personalization.hasUnresolvedWriteFailure
+    }
+    private var shouldReduceMotion: Bool {
+        #if FOUNDER_OFFICE_DISTRIBUTION
+        NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        #else
+        NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+            || ProcessInfo.processInfo.environment["OPENLOOPS_UI_TEST_REDUCE_MOTION"] == "1"
+        #endif
+    }
+
+    func resolveUnsavedAppearanceForTermination() async -> Bool {
+        if state == .hidden || state == .closing {
+            show(manual: true)
+        }
+        guard await resolveAppearanceDraftForExit(
+            title: "Save your appearance before quitting?",
+            detail: "The current preview has not been saved to this Mac.",
+            cancelsRestorationOnAccept: false
+        ) else { return false }
+        let canTerminate = await finishPendingWritesBeforeTermination()
+        if canTerminate {
+            presentation.clearInteractions()
+        }
+        return canTerminate
+    }
+
+    private func resolveAppearanceDraftForExit(
+        title: String,
+        detail: String,
+        cancelsRestorationOnAccept: Bool = true
+    ) async -> Bool {
+        guard personalization.hasUnsavedAppearanceChanges else { return true }
+        guard !isResolvingAppearanceExit else { return false }
+        isResolvingAppearanceExit = true
+        defer { isResolvingAppearanceExit = false }
+
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = title
+        alert.informativeText = detail
+        alert.addButton(withTitle: "Save Changes")
+        alert.addButton(withTitle: "Discard")
+        alert.addButton(withTitle: "Cancel")
+
+        presentation.transients.present(
+            alert.window,
+            request: TransientPresentationRequest(
+                kind: .systemAlert,
+                hostDisposition: .suspendExpandedHost
+            )
+        )
+        let response = alert.runModal()
+        let choice: AppearanceTerminationChoice
+        switch response {
+        case .alertFirstButtonReturn:
+            choice = .save
+        case .alertSecondButtonReturn:
+            choice = .discard
+        default:
+            choice = .cancel
+        }
+
+        switch choice {
+        case .save:
+            let result = await personalization.saveAppearanceChanges()
+            let decision = AppearanceTerminationPolicy.decision(for: choice, saveResult: result)
+            guard decision == .terminate else {
+                presentation.transients.dismissAndEnd(alert.window)
+                return false
+            }
+            if cancelsRestorationOnAccept {
+                presentation.clearInteractions()
+            } else {
+                presentation.transients.dismissAndEnd(alert.window)
+            }
+            return true
+        case .discard:
+            personalization.discardAppearanceChanges()
+            if cancelsRestorationOnAccept {
+                presentation.clearInteractions()
+            } else {
+                presentation.transients.dismissAndEnd(alert.window)
+            }
+            return true
+        case .cancel:
+            presentation.transients.dismissAndEnd(alert.window)
+            return false
+        }
+    }
+
+    private func finishPendingWritesBeforeTermination() async -> Bool {
+        async let movesSaved = store.waitForPendingWrites()
+        async let personalizationSaved = personalization.waitForPendingWrites()
+        guard await movesSaved, await personalizationSaved else {
+            if state == .hidden || state == .closing {
+                show(manual: true)
+            }
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = "Founder’s Office is still saving"
+            alert.informativeText = "A workspace change could not be safely committed. Review the save message and try again before quitting."
+            alert.addButton(withTitle: "Keep Editing")
+            _ = runSystemAlert(alert)
+            return false
+        }
+        return true
+    }
 
     func prepareForTermination() {
+        #if !FOUNDER_OFFICE_DISTRIBUTION
         codexRunner.prepareForTermination()
-        personalization.flushPendingChanges()
+        #endif
+        account.stop()
+        personalization.discardAppearanceChanges()
         presentation.clearInteractions()
+        if let escapeMonitor {
+            NSEvent.removeMonitor(escapeMonitor)
+            self.escapeMonitor = nil
+        }
+    }
+
+    func runSystemAlert(_ alert: NSAlert) -> NSApplication.ModalResponse {
+        presentation.transients.present(
+            alert.window,
+            request: TransientPresentationRequest(
+                kind: .systemAlert,
+                hostDisposition: .suspendExpandedHost
+            )
+        )
+        defer { presentation.transients.dismissAndEnd(alert.window) }
+        return alert.runModal()
     }
 
     func show(preview: Bool = false, manual: Bool = false) {
+        // A status-item Open action can arrive while a native panel is still
+        // active. Keep the host suspended until the coordinator releases the
+        // final lease instead of revealing the notch behind that panel.
+        guard state != .suspended || !presentation.preventsAutoDismiss else { return }
         previewMode = preview
         if manual {
             awaitingManualEntry = true
+            // A deliberate reopen supersedes the post-close hover suppression
+            // used to stop the same pointer position from reopening the notch.
+            suppressHoverRevealUntilHidden = false
         }
         guard let screen = targetScreen() else { return }
         exitStartedAt = nil
         calendarProvider.syncOnOpen()
 
-        if state == .hidden {
+        if state == .hidden || state == .suspended {
             position(on: screen)
             presentation.progress = 0
             presentation.horizontalPull = magneticPull(on: screen)
@@ -131,7 +378,7 @@ final class NotchWindowController {
             panel.orderFrontRegardless()
         }
 
-        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+        if shouldReduceMotion {
             springTimer?.invalidate()
             springTimer = nil
             presentation.progress = 1
@@ -165,23 +412,31 @@ final class NotchWindowController {
         state = .open
     }
 
+    #if !FOUNDER_OFFICE_DISTRIBUTION
+    func makeKeyForUITesting() {
+        panel.makeKey()
+    }
+    #endif
+
     func hide(force: Bool = false) {
         guard state != .hidden, state != .closing else { return }
         guard force || !previewMode else { return }
-        guard force || (!presentation.preventsAutoDismiss && !hasVisibleTransientWindow) else { return }
+        guard force || (
+            !presentation.preventsAutoDismiss
+                && !presentation.transients.hasVisiblePresentedWindow
+        ) else { return }
         previewMode = false
         awaitingManualEntry = false
         if force {
             presentation.clearInteractions()
-            menuInteractionLeases.removeAll()
-            popoverInteractionLeases.removeAll()
             suppressHoverRevealUntilHidden = true
+            pendingRepositionAfterTransient = false
         }
         exitStartedAt = nil
         state = .closing
         panel.ignoresMouseEvents = true
 
-        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+        if shouldReduceMotion {
             springTimer?.invalidate()
             springTimer = nil
             presentation.progress = 0
@@ -201,7 +456,24 @@ final class NotchWindowController {
         if state == .hidden || state == .closing {
             show(manual: true)
         } else {
+            requestExplicitClose()
+        }
+    }
+
+    func requestExplicitClose() {
+        guard state != .hidden, state != .closing else { return }
+        guard personalization.hasUnsavedAppearanceChanges else {
             hide(force: true)
+            return
+        }
+        Task { [weak self] in
+            guard let self else { return }
+            let shouldClose = await self.resolveAppearanceDraftForExit(
+                title: "Save your appearance before closing?",
+                detail: "The preview will stay available if you keep editing."
+            )
+            guard shouldClose else { return }
+            self.hide(force: true)
         }
     }
 
@@ -238,15 +510,44 @@ final class NotchWindowController {
         hoverTimer = timer
     }
 
+    private func startEscapeMonitor() {
+        escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            let isEscape = event.keyCode == 53
+                || event.charactersIgnoringModifiers == "\u{1B}"
+            guard isEscape else { return event }
+            let consumed = MainActor.assumeIsolated {
+                guard let self else { return false }
+                if self.presentation.closeNativeColorPanels() {
+                    return true
+                }
+                guard NSApp.keyWindow === self.panel else { return false }
+                self.presentation.requestEscape()
+                return true
+            }
+            return consumed ? nil : event
+        }
+    }
+
     private func startSystemObservers() {
         let center = NotificationCenter.default
+        systemObservers.append(
+            NSWorkspace.shared.notificationCenter.addObserver(
+                forName: NSWorkspace.activeSpaceDidChangeNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.activeSpaceDidChange()
+                }
+            }
+        )
         systemObservers.append(
             center.addObserver(
                 forName: NSApplication.didChangeScreenParametersNotification,
                 object: nil,
                 queue: .main
             ) { [weak self] _ in
-                Task { @MainActor in
+                MainActor.assumeIsolated {
                     self?.repositionVisiblePanel()
                 }
             }
@@ -258,12 +559,28 @@ final class NotchWindowController {
                 queue: .main
             ) { [weak self] notification in
                 guard let menu = notification.object as? NSMenu else { return }
-                let key = ObjectIdentifier(menu)
-                Task { @MainActor in
-                    guard let self else { return }
-                    if self.menuInteractionLeases[key] == nil {
-                        self.menuInteractionLeases[key] = self.presentation.beginInteraction("menu")
+                let menuID = ObjectIdentifier(menu)
+                var ancestor: NSMenu? = menu
+                var isStatusMenuTree = false
+                while let candidate = ancestor {
+                    if candidate.identifier == TransientPresentationCoordinator.statusMenuIdentifier {
+                        isStatusMenuTree = true
+                        break
                     }
+                    ancestor = candidate.supermenu
+                }
+                MainActor.assumeIsolated {
+                    guard let self,
+                          self.presentation.transients.shouldTrackMenuOrigin(
+                            isStatusMenuTree: isStatusMenuTree
+                          ) else { return }
+                    self.presentation.transients.present(
+                        request: TransientPresentationRequest(
+                            kind: .menu,
+                            hostDisposition: .retainExpandedHost
+                        ),
+                        scopedTo: menuID
+                    )
                 }
             }
         )
@@ -274,11 +591,9 @@ final class NotchWindowController {
                 queue: .main
             ) { [weak self] notification in
                 guard let menu = notification.object as? NSMenu else { return }
-                let key = ObjectIdentifier(menu)
-                Task { @MainActor in
-                    guard let self,
-                          let lease = self.menuInteractionLeases.removeValue(forKey: key) else { return }
-                    self.presentation.endInteraction(lease)
+                let menuID = ObjectIdentifier(menu)
+                MainActor.assumeIsolated {
+                    self?.presentation.transients.endScoped(key: menuID)
                 }
             }
         )
@@ -289,12 +604,35 @@ final class NotchWindowController {
                 queue: .main
             ) { [weak self] notification in
                 guard let popover = notification.object as? NSPopover else { return }
-                let key = ObjectIdentifier(popover)
-                Task { @MainActor in
-                    guard let self else { return }
-                    if self.popoverInteractionLeases[key] == nil {
-                        self.popoverInteractionLeases[key] = self.presentation.beginInteraction("popover")
+                MainActor.assumeIsolated {
+                    guard let self,
+                          self.presentation.transients.shouldTrack(popover) else { return }
+                    self.presentation.transients.present(
+                        request: TransientPresentationRequest(
+                            kind: .popover,
+                            hostDisposition: .retainExpandedHost
+                        ),
+                        scopedTo: popover
+                    )
+                    DispatchQueue.main.async { [weak self, weak popover] in
+                        guard let self, let popover,
+                              let window = popover.contentViewController?.view.window else { return }
+                        self.presentation.transients.elevate(window, scopedTo: popover)
                     }
+                }
+            }
+        )
+        systemObservers.append(
+            center.addObserver(
+                forName: NSPopover.didShowNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] notification in
+                guard let popover = notification.object as? NSPopover else { return }
+                DispatchQueue.main.async { [weak self, weak popover] in
+                    guard let self, let popover,
+                          let window = popover.contentViewController?.view.window else { return }
+                    self.presentation.transients.elevate(window, scopedTo: popover)
                 }
             }
         )
@@ -305,11 +643,62 @@ final class NotchWindowController {
                 queue: .main
             ) { [weak self] notification in
                 guard let popover = notification.object as? NSPopover else { return }
-                let key = ObjectIdentifier(popover)
-                Task { @MainActor in
+                MainActor.assumeIsolated {
+                    self?.presentation.transients.endScoped(to: popover)
+                }
+            }
+        )
+        systemObservers.append(
+            center.addObserver(
+                forName: NSWindow.didResignKeyNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] notification in
+                guard let window = notification.object as? NSWindow else { return }
+                MainActor.assumeIsolated {
+                    self?.presentation.transients.noteKeyResignation(window)
+                }
+            }
+        )
+        systemObservers.append(
+            center.addObserver(
+                forName: NSWindow.didBecomeKeyNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] notification in
+                guard let window = notification.object as? NSWindow else { return }
+                MainActor.assumeIsolated {
+                    self?.coordinateNativeWindowAfterPresentation(window)
+                }
+            }
+        )
+        systemObservers.append(
+            center.addObserver(
+                forName: NSWindow.willCloseNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] notification in
+                guard let window = notification.object as? NSWindow else { return }
+                DispatchQueue.main.async { [weak self] in
                     guard let self,
-                          let lease = self.popoverInteractionLeases.removeValue(forKey: key) else { return }
-                    self.presentation.endInteraction(lease)
+                          self.presentation.transients.isTracking(window) else { return }
+                    self.presentation.transients.dismissAndEnd(window)
+                }
+            }
+        )
+        systemObservers.append(
+            center.addObserver(
+                forName: NSWindow.didResignKeyNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] notification in
+                guard let window = notification.object as? NSWindow,
+                      window is NSColorPanel || window is NSOpenPanel || window is NSSavePanel else { return }
+                DispatchQueue.main.async { [weak self, weak window] in
+                    guard let self, let window,
+                          self.presentation.transients.isTracking(window) else { return }
+                    guard !window.isVisible else { return }
+                    self.presentation.transients.endScoped(to: window)
                 }
             }
         )
@@ -319,7 +708,7 @@ final class NotchWindowController {
                 object: nil,
                 queue: .main
             ) { [weak self] _ in
-                Task { @MainActor in
+                MainActor.assumeIsolated {
                     self?.repositionVisiblePanel()
                 }
             }
@@ -328,7 +717,97 @@ final class NotchWindowController {
 
     private func repositionVisiblePanel() {
         guard state != .hidden, let screen = targetScreen() else { return }
+        guard !presentation.preventsAutoDismiss, state != .suspended else {
+            pendingRepositionAfterTransient = true
+            return
+        }
         position(on: screen)
+    }
+
+    private func activeSpaceDidChange() {
+        // AppKit can leave the window ordered behind a new Space even while
+        // the presentation model still says "open". Reconcile once per Space
+        // transition; never activate the app or switch the user's Space back.
+        exitStartedAt = nil
+        let action = NotchSpaceChangeAction.resolve(
+            state: state,
+            hasTransient: presentation.preventsAutoDismiss
+                || presentation.transients.hasVisiblePresentedWindow
+        )
+        switch action {
+        case .checkHover:
+            checkPointer()
+        case .deferToTransient:
+            // A colour/file/auth panel still owns the interaction. The notch
+            // must not reappear above it or cancel its unfinished work.
+            pendingRepositionAfterTransient = true
+        case .reorderExpanded:
+            guard let screen = targetScreen() else { return }
+            position(on: screen)
+            panel.orderFrontRegardless()
+            updatePanelMouseHandling()
+            checkPointer()
+        }
+    }
+
+    private func restoreAfterTransientPresentation() {
+        exitStartedAt = nil
+        if pendingRepositionAfterTransient, let screen = targetScreen() {
+            pendingRepositionAfterTransient = false
+            position(on: screen)
+        }
+        if state == .hidden || state == .closing || state == .suspended {
+            show(preview: previewMode)
+            return
+        }
+        panel.orderFrontRegardless()
+        panel.ignoresMouseEvents = false
+    }
+
+    private func suspendForTransientPresentation() {
+        guard state == .opening || state == .open else { return }
+        springTimer?.invalidate()
+        springTimer = nil
+        lastSpringFrameAt = nil
+        springVelocity = 0
+        springTarget = 0
+        exitStartedAt = nil
+        presentation.horizontalPull = 0
+        presentation.progress = 0
+        panel.ignoresMouseEvents = true
+        state = .suspended
+        // Native file, colour, and alert panels run independently. Remove the
+        // status-bar host entirely so stale expanded pixels can never cover a
+        // panel while AppKit establishes its modal ordering.
+        panel.contentView?.layoutSubtreeIfNeeded()
+        panel.displayIfNeeded()
+        panel.orderOut(nil)
+    }
+
+    private func coordinateNativeWindowAfterPresentation(_ window: NSWindow) {
+        let transients = presentation.transients
+        if !transients.isTracking(window) {
+            guard window is NSColorPanel || window is NSOpenPanel || window is NSSavePanel,
+                  transients.shouldTrack(window) else { return }
+            let kind: TransientPresentationKind = window is NSColorPanel
+                ? .colorPanel
+                : .fileChooser
+            transients.present(
+                window,
+                request: TransientPresentationRequest(
+                    kind: kind,
+                    hostDisposition: .suspendExpandedHost
+                )
+            )
+        }
+
+        // `begin`/`runModal` can finish resetting window level after key/order
+        // notifications. Reassert on the following main-loop turn, scoped only
+        // to windows already owned by Founder’s Office.
+        DispatchQueue.main.async { [weak transients, weak window] in
+            guard let transients, let window, transients.isTracking(window) else { return }
+            transients.promoteIfVisible(window)
+        }
     }
 
     private func checkPointer() {
@@ -338,7 +817,7 @@ final class NotchWindowController {
         let interactionZone = visibleShellFrame().insetBy(dx: -12, dy: -12)
         let isInside = hotZone.contains(pointer) || (state != .hidden && interactionZone.contains(pointer))
 
-        if presentation.preventsAutoDismiss || hasVisibleTransientWindow {
+        if presentation.preventsAutoDismiss || presentation.transients.hasVisiblePresentedWindow {
             exitStartedAt = nil
             return
         }
@@ -376,19 +855,6 @@ final class NotchWindowController {
 
         if Date().timeIntervalSince(exitStartedAt!) >= 0.24 {
             hide()
-        }
-    }
-
-    private var hasVisibleTransientWindow: Bool {
-        if NSApp.modalWindow != nil { return true }
-
-        return NSApp.windows.contains { window in
-            guard window !== panel, window.isVisible else { return false }
-            return (window is NSColorPanel && window.isKeyWindow)
-                || window is NSOpenPanel
-                || window is NSSavePanel
-                || window.sheetParent === panel
-                || window.parent === panel
         }
     }
 

@@ -1,8 +1,10 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "available": false,
   "verifiedFromCanonicalManifest": false,
   "signedAndNotarized": false,
+  "cleanMacAccepted": false,
+  "acceptanceAttestation": "",
   "version": "",
   "build": 0,
   "teamID": "",
@@ -11,5 +13,8 @@
   "artifactSizeBytes": 0,
   "releaseCommit": "",
   "sourceManifestSHA256": "",
+  "acceptanceRecordSHA256": "",
+  "canonicalManifestURL": "",
+  "acceptanceRecordURL": "",
   "downloadURL": ""
 }

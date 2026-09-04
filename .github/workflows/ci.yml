@@ -17,7 +17,9 @@ jobs:
   build:
     name: Build and verify
     runs-on: macos-15
-    timeout-minutes: 25
+    # The complete Mac gate takes roughly 45 minutes on a cold hosted runner.
+    # Leave enough time for the final iOS simulator dependency resolution/build.
+    timeout-minutes: 60
 
     steps:
       - name: Check out repository
@@ -64,6 +66,32 @@ jobs:
             -derivedDataPath "${RUNNER_TEMP}/DerivedData-macOS" \
             CODE_SIGNING_ALLOWED=NO \
             build
+
+      - name: Run macOS UI automation
+        id: mac-ui-tests
+        run: |
+          xcodebuild \
+            -project FoundersOffice.xcodeproj \
+            -scheme FoundersOfficeMac \
+            -configuration Debug \
+            -destination "platform=macOS" \
+            -derivedDataPath "${RUNNER_TEMP}/DerivedData-macOS-UITests" \
+            -resultBundlePath "${RUNNER_TEMP}/FoundersOfficeMacUITests.xcresult" \
+            -parallel-testing-enabled NO \
+            -maximum-parallel-testing-workers 1 \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGN_ENTITLEMENTS="" \
+            test
+
+      - name: Upload failed macOS UI-test result
+        if: ${{ failure() && steps.mac-ui-tests.outcome == 'failure' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: macos-ui-tests-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/FoundersOfficeMacUITests.xcresult
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Build and verify unsigned macOS customer Release
         run: |
@@ -123,11 +151,9 @@ jobs:
         working-directory: Website
         run: npm ci
 
-      - name: Audit production dependencies
+      - name: Audit complete dependency graph
         working-directory: Website
-        run: |
-          npm audit
-          npm audit --omit=dev
+        run: npm audit --audit-level=low
 
       - name: Format, lint, and build
         working-directory: Website
@@ -138,12 +164,71 @@ jobs:
           npm run test:production-headers
           npm run test:release-policy
 
+  sync_database:
+    name: Execute local Supabase RLS and RPC tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run fast credential-free contract validation
+        run: python3 Scripts/validate-sync-contracts.py
+
+      - name: Install pinned Supabase CLI
+        uses: supabase/setup-cli@ab058987d8d6c725971f6cf9d0b5c98467e30bd1 # v1.7.1
+        with:
+          version: 2.98.2
+
+      - name: Start exact local Supabase Postgres image
+        run: |
+          test "$(supabase --version)" = "2.98.2"
+          supabase db start
+
+          project_id="$(python3 - <<'PY'
+          import pathlib
+          import tomllib
+
+          config = tomllib.loads(pathlib.Path("supabase/config.toml").read_text())
+          project_id = config.get("project_id")
+          if not isinstance(project_id, str) or not project_id:
+              raise SystemExit("supabase/config.toml has no non-empty project_id")
+          print(project_id)
+          PY
+          )"
+          database_container="supabase_db_${project_id}"
+          if ! database_image="$(docker inspect \
+            --format '{{.Config.Image}}' \
+            "${database_container}")"; then
+            echo "::error::Supabase database container ${database_container} is missing."
+            exit 1
+          fi
+          expected_image="ghcr.io/supabase/postgres:15.8.1.085"
+          if [[ "${database_image}" != "${expected_image}" ]]; then
+            echo "::error::Expected ${expected_image}, found ${database_image}."
+            exit 1
+          fi
+
+      - name: Apply migrations and execute pgTAP RLS and RPC suite
+        run: |
+          supabase db reset --local --no-seed
+          supabase test db --local supabase/tests
+
+      - name: Stop ephemeral Supabase database
+        if: ${{ always() }}
+        run: supabase stop --no-backup || true
+
   report-ci-failure:
     name: File a private CI incident
-    needs: [build, website]
+    needs: [build, website, sync_database]
     if: >-
       ${{ always() &&
-          (needs.build.result == 'failure' || needs.website.result == 'failure') &&
+          (needs.build.result == 'failure' ||
+           needs.website.result == 'failure' ||
+           needs.sync_database.result == 'failure') &&
           (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-latest
     permissions:
@@ -158,6 +243,7 @@ jobs:
           RUN_ATTEMPT: ${{ github.run_attempt }}
           BUILD_RESULT: ${{ needs.build.result }}
           WEBSITE_RESULT: ${{ needs.website.result }}
+          SYNC_DATABASE_RESULT: ${{ needs.sync_database.result }}
           COMMIT_SHA: ${{ github.sha }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
@@ -168,7 +254,7 @@ jobs:
             --search "\"${marker}\" in:body" \
             --json number \
             --jq '.[0].number // empty')"
-          summary="build=${BUILD_RESULT}; website=${WEBSITE_RESULT}; attempt=${RUN_ATTEMPT}"
+          summary="build=${BUILD_RESULT}; website=${WEBSITE_RESULT}; sync-database=${SYNC_DATABASE_RESULT}; attempt=${RUN_ATTEMPT}"
           body="$(printf '%s\n' \
             "<!-- ${marker} -->" \
             "Founder’s Office CI failed on commit \`${COMMIT_SHA}\`." \

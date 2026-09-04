@@ -1,0 +1,249 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.founders-office.test/v1/schemas/records.schema.json",
+  "title": "Founder’s Office durable records v1",
+  "$defs": {
+    "UUID": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "Timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]{1,6})?(Z|[+-]([01][0-9]|2[0-3]):[0-5][0-9])$"
+    },
+    "Revision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9223372036854775807
+    },
+    "NonnegativeDecimal30Scale8": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 9999999999999999999999.99999999,
+      "multipleOf": 0.00000001,
+      "description": "Exact base-10 decimal compatible with PostgreSQL numeric(30,8); clients must not coerce through binary floating-point."
+    },
+    "FieldClocks": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 32,
+      "propertyNames": {
+        "pattern": "^[A-Za-z][A-Za-z0-9]{0,63}$"
+      },
+      "additionalProperties": { "$ref": "#/$defs/Timestamp" }
+    },
+    "ProfileRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["accountId", "identityProvider"],
+      "properties": {
+        "accountId": { "$ref": "#/$defs/UUID" },
+        "identityProvider": { "enum": ["google", "apple"] },
+        "displayName": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80,
+              "description": "NFC-normalized; trim Unicode whitespace/newlines; at most 80 Unicode scalars and 320 UTF-8 bytes; must contain a letter, number, or symbol; controls, line/paragraph separators, bidi controls, and BOM are forbidden."
+            },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "WorkspaceRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "revision", "fieldClocks", "createdAt", "updatedAt"],
+      "properties": {
+        "id": { "$ref": "#/$defs/UUID" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "revision": { "$ref": "#/$defs/Revision" },
+        "fieldClocks": { "$ref": "#/$defs/FieldClocks" },
+        "createdAt": { "$ref": "#/$defs/Timestamp" },
+        "updatedAt": { "$ref": "#/$defs/Timestamp" }
+      }
+    },
+    "MoveRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "title",
+        "details",
+        "status",
+        "priority",
+        "source",
+        "revision",
+        "fieldClocks",
+        "createdAt",
+        "updatedAt"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/UUID" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "details": { "type": "string", "maxLength": 20000 },
+        "status": { "enum": ["doing", "next", "blocked", "done"] },
+        "previousStatus": {
+          "oneOf": [
+            { "enum": ["doing", "next", "blocked", "done"] },
+            { "type": "null" }
+          ]
+        },
+        "priority": { "enum": ["P0", "P1", "P2", "P3"] },
+        "dueOn": {
+          "oneOf": [{ "type": "string", "format": "date" }, { "type": "null" }]
+        },
+        "completedAt": {
+          "oneOf": [{ "$ref": "#/$defs/Timestamp" }, { "type": "null" }]
+        },
+        "deletedAt": {
+          "oneOf": [{ "$ref": "#/$defs/Timestamp" }, { "type": "null" }]
+        },
+        "source": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "revision": { "$ref": "#/$defs/Revision" },
+        "fieldClocks": { "$ref": "#/$defs/FieldClocks" },
+        "createdAt": { "$ref": "#/$defs/Timestamp" },
+        "updatedAt": { "$ref": "#/$defs/Timestamp" }
+      }
+    },
+    "AppearanceRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "schemaVersion",
+        "preferences",
+        "revision",
+        "fieldClocks",
+        "createdAt",
+        "updatedAt"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/UUID" },
+        "schemaVersion": { "type": "integer", "minimum": 1, "maximum": 2147483647 },
+        "preferences": { "type": "object" },
+        "deletedAt": {
+          "oneOf": [{ "$ref": "#/$defs/Timestamp" }, { "type": "null" }]
+        },
+        "revision": { "$ref": "#/$defs/Revision" },
+        "fieldClocks": { "$ref": "#/$defs/FieldClocks" },
+        "createdAt": { "$ref": "#/$defs/Timestamp" },
+        "updatedAt": { "$ref": "#/$defs/Timestamp" }
+      }
+    },
+    "PrimaryGoalRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "title",
+        "metric",
+        "unit",
+        "dueOn",
+        "revision",
+        "fieldClocks",
+        "createdAt",
+        "updatedAt"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/UUID" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "metric": { "type": "string", "maxLength": 120 },
+        "currentValue": {
+          "oneOf": [
+            { "$ref": "#/$defs/NonnegativeDecimal30Scale8" },
+            { "type": "null" }
+          ]
+        },
+        "targetValue": {
+          "oneOf": [
+            { "$ref": "#/$defs/NonnegativeDecimal30Scale8" },
+            { "type": "null" }
+          ]
+        },
+        "unit": { "enum": ["usd", "inr", "number", "percent"] },
+        "dueOn": { "type": "string", "format": "date" },
+        "deletedAt": {
+          "oneOf": [{ "$ref": "#/$defs/Timestamp" }, { "type": "null" }]
+        },
+        "revision": { "$ref": "#/$defs/Revision" },
+        "fieldClocks": { "$ref": "#/$defs/FieldClocks" },
+        "createdAt": { "$ref": "#/$defs/Timestamp" },
+        "updatedAt": { "$ref": "#/$defs/Timestamp" }
+      }
+    },
+    "MilestoneRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "title",
+        "dueAt",
+        "revision",
+        "fieldClocks",
+        "createdAt",
+        "updatedAt"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/UUID" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "dueAt": { "$ref": "#/$defs/Timestamp" },
+        "deletedAt": {
+          "oneOf": [{ "$ref": "#/$defs/Timestamp" }, { "type": "null" }]
+        },
+        "revision": { "$ref": "#/$defs/Revision" },
+        "fieldClocks": { "$ref": "#/$defs/FieldClocks" },
+        "createdAt": { "$ref": "#/$defs/Timestamp" },
+        "updatedAt": { "$ref": "#/$defs/Timestamp" }
+      }
+    },
+    "AssetRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "storagePath",
+        "contentType",
+        "byteSize",
+        "sha256",
+        "revision",
+        "fieldClocks",
+        "createdAt",
+        "updatedAt"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/UUID" },
+        "kind": { "enum": ["visionImage"] },
+        "storagePath": {
+          "type": "string",
+          "pattern": "^workspaces/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/vision-images/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.jpg$",
+          "description": "Canonical path workspaces/{scoped workspaceId}/vision-images/{asset id}.jpg; contextual validators must enforce both identifiers."
+        },
+        "contentType": { "const": "image/jpeg" },
+        "byteSize": { "type": "integer", "minimum": 1, "maximum": 5242880 },
+        "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "deletedAt": {
+          "oneOf": [{ "$ref": "#/$defs/Timestamp" }, { "type": "null" }]
+        },
+        "revision": { "$ref": "#/$defs/Revision" },
+        "fieldClocks": { "$ref": "#/$defs/FieldClocks" },
+        "createdAt": { "$ref": "#/$defs/Timestamp" },
+        "updatedAt": { "$ref": "#/$defs/Timestamp" }
+      }
+    },
+    "Record": {
+      "oneOf": [
+        { "$ref": "#/$defs/WorkspaceRecord" },
+        { "$ref": "#/$defs/MoveRecord" },
+        { "$ref": "#/$defs/AppearanceRecord" },
+        { "$ref": "#/$defs/PrimaryGoalRecord" },
+        { "$ref": "#/$defs/MilestoneRecord" },
+        { "$ref": "#/$defs/AssetRecord" }
+      ]
+    }
+  }
+}

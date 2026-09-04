@@ -1,6 +1,9 @@
 import Foundation
 
 public struct RGB24Color: Codable, Hashable, Sendable {
+    public static let accessibleDarkText = RGB24Color(red: 0, green: 0, blue: 0)
+    public static let accessibleLightText = RGB24Color(red: 255, green: 255, blue: 255)
+
     public var red: UInt8
     public var green: UInt8
     public var blue: UInt8
@@ -24,6 +27,68 @@ public struct RGB24Color: Codable, Hashable, Sendable {
 
     public var hex: String {
         String(format: "#%02X%02X%02X", red, green, blue)
+    }
+
+    /// WCAG relative luminance in the sRGB colour space.
+    public var relativeLuminance: Double {
+        let red = Self.linearizedSRGB(red)
+        let green = Self.linearizedSRGB(green)
+        let blue = Self.linearizedSRGB(blue)
+        return 0.2126 * red + 0.7152 * green + 0.0722 * blue
+    }
+
+    public func contrastRatio(with other: RGB24Color) -> Double {
+        let lighter = max(relativeLuminance, other.relativeLuminance)
+        let darker = min(relativeLuminance, other.relativeLuminance)
+        return (lighter + 0.05) / (darker + 0.05)
+    }
+
+    /// Black or white, whichever creates the stronger WCAG contrast.
+    /// One of these colours always reaches at least 4.5:1 on an opaque sRGB fill.
+    public var accessibleTextColor: RGB24Color {
+        let darkRatio = contrastRatio(with: Self.accessibleDarkText)
+        let lightRatio = contrastRatio(with: Self.accessibleLightText)
+        return darkRatio >= lightRatio ? Self.accessibleDarkText : Self.accessibleLightText
+    }
+
+    /// Preserve the requested colour when it is readable; otherwise fall back
+    /// to the highest-contrast neutral foreground for that surface.
+    public func readableForeground(
+        on background: RGB24Color,
+        minimumContrast: Double = 4.5
+    ) -> RGB24Color {
+        contrastRatio(with: background) >= minimumContrast
+            ? self
+            : background.accessibleTextColor
+    }
+
+    private static func linearizedSRGB(_ component: UInt8) -> Double {
+        let value = Double(component) / 255
+        return value <= 0.04045
+            ? value / 12.92
+            : pow((value + 0.055) / 1.055, 2.4)
+    }
+}
+
+public enum FounderTextRole: String, CaseIterable, Sendable {
+    case primaryTitle
+    case secondary
+    case tertiary
+}
+
+/// The complete Founder’s Office text scale. Visual hierarchy comes from three
+/// deliberate levels instead of one-off point sizes scattered through the UI.
+public enum FounderTypeScale {
+    public static let primaryTitle = 28.0
+    public static let secondary = primaryTitle / 1.62
+    public static let tertiary = secondary / 1.6
+
+    public static func points(for role: FounderTextRole) -> Double {
+        switch role {
+        case .primaryTitle: return primaryTitle
+        case .secondary: return secondary
+        case .tertiary: return tertiary
+        }
     }
 }
 
@@ -68,6 +133,11 @@ public struct AccentStyle: Codable, Hashable, Sendable {
     public var secondaryColor: RGB24Color {
         guard mode == .gradient else { return primaryColor }
         return normalizedStops.last?.color ?? primaryColor
+    }
+
+    /// Foreground for controls filled with the primary accent colour.
+    public var primaryFillTextColor: RGB24Color {
+        primaryColor.accessibleTextColor
     }
 
     private static func normalized(_ stops: [AccentStop]) -> [AccentStop] {

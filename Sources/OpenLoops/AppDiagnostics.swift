@@ -14,14 +14,18 @@ enum AppDiagnostics {
         case lifecycle
         case resources
         case storage
+        case update
     }
 
     enum Operation: String {
         case applicationLaunch = "application.launch"
         case applicationReady = "application.ready"
         case calendarAuthorizationRequest = "calendar.authorization.request"
+        case calendarEventSave = "calendar.event.save"
         case cloudConfigurationLoad = "cloud.configuration.load"
+        #if !FOUNDER_OFFICE_DISTRIBUTION
         case codexProcessStart = "codex.process.start"
+        #endif
         case fontRegistration = "font.registration"
         case fontResourceLookup = "font.resource.lookup"
         case launchAtLoginRegister = "launch_at_login.register"
@@ -32,11 +36,17 @@ enum AppDiagnostics {
         case moveStoreSave = "move_store.save"
         case personalizationLoad = "personalization.load"
         case personalizationPhotoImport = "personalization.photo.import"
+        case personalizationPhotoExport = "personalization.photo.export"
+        case personalizationPhotoCleanup = "personalization.photo.cleanup"
         case personalizationSave = "personalization.save"
         case reversalCaptureDirectoryCreate = "reversal_capture.directory.create"
         case safeModeEnter = "safe_mode.enter"
+        case safeModeDiagnosticSave = "safe_mode.diagnostic.save"
         case safeModeRetry = "safe_mode.retry"
         case snapshotCapture = "snapshot.capture"
+        case supportReportSave = "support_report.save"
+        case updateCheck = "update.check"
+        case updateDownloadOpen = "update.download.open"
         case workspaceIdentitySave = "workspace_identity.save"
     }
 
@@ -82,6 +92,7 @@ enum AppDiagnostics {
     private static let lifecycle = Logger(subsystem: subsystem, category: Category.lifecycle.rawValue)
     private static let resources = Logger(subsystem: subsystem, category: Category.resources.rawValue)
     private static let storage = Logger(subsystem: subsystem, category: Category.storage.rawValue)
+    private static let update = Logger(subsystem: subsystem, category: Category.update.rawValue)
     private static let lifecycleSignposter = OSSignposter(logger: lifecycle)
 
     static func beginInterval(_ interval: Interval) -> IntervalToken {
@@ -157,6 +168,7 @@ enum AppDiagnostics {
         case .lifecycle: lifecycle
         case .resources: resources
         case .storage: storage
+        case .update: update
         }
     }
 }

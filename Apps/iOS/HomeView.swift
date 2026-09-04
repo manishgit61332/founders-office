@@ -12,9 +12,9 @@ struct HomeView: View {
             Section {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(greeting)
-                        .font(model.personalization.resolvedAppearance.displayFont(size: 40))
+                        .font(model.personalization.resolvedAppearance.displayFont(.primaryTitle))
                     Text("What moves the office forward today?")
-                        .font(appearance.interfaceFont(size: 17, weight: .semibold))
+                        .font(appearance.interfaceFont(.secondary, weight: .semibold))
                 }
                 .padding(.vertical, 4)
             }
@@ -79,6 +79,7 @@ struct HomeView: View {
         }
         .founderSurface(appearance)
         .navigationTitle(model.personalization.resolvedWorkspaceName)
+        .navigationBarTitleDisplayMode(.inline)
     }
 
     private var greeting: String {
@@ -99,23 +100,23 @@ private struct PrimaryGoalCard: View {
               let target = goal.targetValue,
               target > 0
         else { return nil }
-        return min(max(current / target, 0), 1)
+        return min(max(current.doubleValue / target.doubleValue, 0), 1)
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(goal.title)
-                .font(appearance.interfaceFont(size: 20, weight: .semibold))
+                .font(appearance.interfaceFont(.secondary, weight: .semibold))
 
             if let current = goal.currentValue, let target = goal.targetValue {
                 HStack(alignment: .firstTextBaseline) {
                     Text(goal.unit.format(current))
-                        .font(appearance.displayFont(size: 25, weight: .bold))
+                        .font(appearance.displayFont(.secondary, weight: .bold))
                     Text("of \(goal.unit.format(target)) \(goal.metric)")
-                        .font(appearance.interfaceFont(size: 16))
+                        .font(appearance.interfaceFont(.tertiary))
                     Spacer()
                     Text(goal.dueAt, style: .relative)
-                        .font(appearance.interfaceFont(size: 16, weight: .semibold))
+                        .font(appearance.interfaceFont(.tertiary, weight: .semibold))
                 }
             }
 
@@ -139,6 +140,7 @@ private struct PrimaryGoalCard: View {
 
 struct TaskRow: View {
     @EnvironmentObject private var model: AppModel
+    @Environment(\.calendar) private var calendar
 
     let loop: OpenLoop
     var showsStatus = false
@@ -146,48 +148,48 @@ struct TaskRow: View {
     private var appearance: AppearancePreferences { model.personalization.resolvedAppearance }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack(alignment: .firstTextBaseline) {
+        HStack(alignment: .top, spacing: 12) {
+            Capsule()
+                .fill(loop.priority.laneColor)
+                .frame(width: 5, height: 48)
+                .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 5) {
                 Text(loop.title)
-                    .font(appearance.interfaceFont(size: 17, weight: .semibold))
-                Spacer()
-                Text(loop.priority.rawValue)
-                    .font(appearance.interfaceFont(size: 12, weight: .bold))
-                    .foregroundStyle(.secondary)
-            }
+                    .font(appearance.interfaceFont(.secondary, weight: .semibold))
 
-            if !loop.details.isEmpty {
-                Text(loop.details)
-                    .font(appearance.interfaceFont(size: 15))
-                    .lineLimit(2)
-            }
-
-            if showsStatus && loop.status != .done {
-                Text(loop.status.title)
-                    .font(appearance.interfaceFont(size: 14, weight: .semibold))
-                    .foregroundStyle(appearance.primaryAccentColor)
-            }
-
-            if loop.status == .done, let completedAt = loop.completedAt {
-                Label(
-                    "Completed \(completedAt.formatted(date: .abbreviated, time: .omitted))",
-                    systemImage: "checkmark.circle"
-                )
-                .font(appearance.interfaceFont(size: 14, weight: .medium))
-                .foregroundStyle(Color(uiColor: UIColor.secondaryLabel))
-            } else if let dueAt = loop.dueAt {
-                Label {
-                    Text(dueAt, style: .relative)
-                } icon: {
-                    Image(systemName: "calendar")
+                if !loop.details.isEmpty {
+                    Text(loop.details)
+                        .font(appearance.interfaceFont(.secondary))
+                        .lineLimit(2)
                 }
-                .font(appearance.interfaceFont(size: 14, weight: .medium))
-                .foregroundStyle(
-                    dueAt < .now && loop.status != .done
-                        ? Color.red
-                        : Color(uiColor: UIColor.secondaryLabel)
-                )
+
+                if showsStatus && loop.status != .done {
+                    Text(loop.status.title)
+                        .font(appearance.interfaceFont(.tertiary, weight: .semibold))
+                        .foregroundStyle(.primary)
+                }
+
+                if loop.status == .done {
+                    Label("Completed", systemImage: "checkmark.circle")
+                        .font(appearance.interfaceFont(.tertiary, weight: .medium))
+                        .foregroundStyle(Color(uiColor: UIColor.secondaryLabel))
+                }
             }
+
+            Spacer(minLength: 8)
+
+            VStack(alignment: .trailing, spacing: 4) {
+                Text(dateColumnLabel)
+                    .font(appearance.interfaceFont(.secondary, weight: .semibold))
+                    .foregroundStyle(dateColumnColor)
+                    .lineLimit(1)
+
+                Text(loop.priority.customerTitle)
+                    .font(appearance.interfaceFont(.tertiary, weight: .medium))
+                    .foregroundStyle(loop.priority.laneColor)
+            }
+            .frame(minWidth: 72, alignment: .trailing)
         }
         .padding(12)
         .background(
@@ -201,5 +203,40 @@ struct TaskRow: View {
         .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
         .listRowBackground(Color.clear)
         .listRowSeparator(.hidden)
+        .accessibilityElement(children: .combine)
+        .accessibilityValue("\(loop.priority.customerTitle) priority, \(dateColumnAccessibilityLabel)")
+    }
+
+    private var dateColumnLabel: String {
+        if loop.status == .done, let completedAt = loop.completedAt {
+            return completedAt.formatted(.dateTime.day().month(.abbreviated))
+        }
+        guard let dueAt = loop.dueAt else { return "No date" }
+        let dueDay = PlanningDate.day(fromStored: dueAt)
+        if dueDay == PlanningDate.day(fromLocal: Date(), calendar: calendar) {
+            return "Today"
+        }
+        let localDate = PlanningDate.localDate(fromStored: dueAt, calendar: calendar)
+        return localDate.formatted(.dateTime.day().month(.abbreviated))
+    }
+
+    private var dateColumnAccessibilityLabel: String {
+        if loop.status == .done, let completedAt = loop.completedAt {
+            return "completed \(completedAt.formatted(date: .long, time: .omitted))"
+        }
+        guard let dueAt = loop.dueAt else { return "no deadline" }
+        return "due \(PlanningDate.localDate(fromStored: dueAt, calendar: calendar).formatted(date: .long, time: .omitted))"
+    }
+
+    private var dateColumnColor: Color {
+        guard loop.status != .done, let dueAt = loop.dueAt else {
+            return Color(uiColor: UIColor.secondaryLabel)
+        }
+        return isOverdue(dueAt) ? .red : .primary
+    }
+
+    private func isOverdue(_ storedDate: Date) -> Bool {
+        PlanningDate.day(fromStored: storedDate)
+            < PlanningDate.day(fromLocal: Date(), calendar: calendar)
     }
 }
