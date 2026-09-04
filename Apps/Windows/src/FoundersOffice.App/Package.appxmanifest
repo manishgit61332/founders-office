@@ -41,7 +41,7 @@
         <uap:SplashScreen Image="Assets\AppIcon.png" BackgroundColor="#17181A" />
       </uap:VisualElements>
       <Extensions>
-        <desktop:Extension Category="windows.startupTask" Executable="$targetnametoken$.exe" EntryPoint="Windows.FullTrustApplication">
+        <desktop:Extension Category="windows.startupTask" Executable="FoundersOffice.App.exe" EntryPoint="Windows.FullTrustApplication">
           <desktop:StartupTask TaskId="FounderOfficeStartup" Enabled="false" DisplayName="Founder's Office" />
         </desktop:Extension>
       </Extensions>

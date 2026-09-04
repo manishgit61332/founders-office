@@ -92,6 +92,9 @@ if family is None or family.attrib.get("MinVersion") != "10.0.22621.0":
 startup = manifest.find(".//desktop:StartupTask", namespaces)
 if startup is None or startup.attrib.get("Enabled") != "false":
     fail("launch at startup must remain opt-in")
+startup_extension = manifest.find(".//desktop:Extension[@Category='windows.startupTask']", namespaces)
+if startup_extension is None or startup_extension.attrib.get("Executable") != "FoundersOffice.App.exe":
+    fail("startup extension must name the packaged executable explicitly")
 
 for lock_path in WINDOWS.rglob("packages.lock.json"):
     lock = json.loads(lock_path.read_text(encoding="utf-8"))
@@ -134,6 +137,10 @@ for required_boundary in (
 bundle_script = (WINDOWS / "Scripts" / "New-DevelopmentBundle.ps1").read_text(encoding="utf-8")
 if "KeyExportPolicy NonExportable" not in bundle_script:
     fail("development signing private key must remain non-exportable")
+if "KeyUsage DigitalSignature" not in bundle_script:
+    fail("development signing certificate must be restricted to digital signatures")
+if '"2.5.29.19={text}"' not in bundle_script:
+    fail("development signing certificate must be an end-entity certificate")
 if r'Remove-Item -LiteralPath "Cert:\CurrentUser\My\$($certificate.Thumbprint)"' not in bundle_script:
     fail("development signing certificate must be removed from the build runner")
 

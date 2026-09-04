@@ -44,9 +44,13 @@ try {
         -KeyAlgorithm RSA `
         -KeyLength 3072 `
         -HashAlgorithm SHA256 `
+        -KeyUsage DigitalSignature `
         -KeyExportPolicy NonExportable `
         -NotAfter (Get-Date).AddDays(30) `
-        -TextExtension @("2.5.29.37={text}1.3.6.1.5.5.7.3.3")
+        -TextExtension @(
+            "2.5.29.37={text}1.3.6.1.5.5.7.3.3",
+            "2.5.29.19={text}"
+        )
 
     $buildArguments = @(
         "build",
