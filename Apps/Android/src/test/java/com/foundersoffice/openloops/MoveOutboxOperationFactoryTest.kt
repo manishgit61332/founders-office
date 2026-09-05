@@ -4,6 +4,7 @@ import com.foundersoffice.openloops.data.MoveEntity
 import com.foundersoffice.openloops.data.MoveOutboxOperationFactory
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.serialization.json.Json
 
@@ -34,4 +35,42 @@ class MoveOutboxOperationFactoryTest {
         assertEquals("[\"details\",\"title\"]", operation.changedFieldsJson)
         assertTrue(requireNotNull(operation.payloadJson).contains("Synthetic Move"))
     }
+
+    @Test
+    fun deleteUsesATombstoneWithoutLeakingTheMovePayload() {
+        val deleted = fixture().copy(deletedAt = "2026-09-05T10:02:00Z")
+
+        val operation = factory().create(deleted, setOf("deletedAt"))
+
+        assertEquals("delete", operation.action)
+        assertEquals("[\"deletedAt\"]", operation.changedFieldsJson)
+        assertNull(operation.payloadJson)
+    }
+
+    @Test
+    fun restoreIsAnUpsertWithAnExplicitNullDeletionField() {
+        val operation = factory().create(fixture(), setOf("deletedAt"))
+
+        assertEquals("upsert", operation.action)
+        assertTrue(requireNotNull(operation.payloadJson).contains("\"deletedAt\":null"))
+    }
+
+    private fun factory() = MoveOutboxOperationFactory(
+        Json { encodeDefaults = true; explicitNulls = true },
+        nextOperationId = { "33333333-3333-4333-8333-333333333333" }
+    )
+
+    private fun fixture() = MoveEntity(
+        id = "44444444-4444-4444-8444-444444444444",
+        title = "Synthetic Move",
+        details = "",
+        dueOn = "2026-09-08",
+        priority = "P1",
+        status = "next",
+        previousStatus = null,
+        completedAt = null,
+        createdAt = "2026-09-05T10:00:00Z",
+        updatedAt = "2026-09-05T10:01:00Z",
+        serverRevision = 7
+    )
 }

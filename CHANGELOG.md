@@ -6,6 +6,10 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Added
 
+- Android now has private-by-default onboarding, local Move reopen/delete/
+  restore with Undo and Recently Deleted, dark mode, working widget deep links,
+  connected launch-journey coverage, dedicated Android CI, and a fail-closed
+  signed-bundle workflow.
 - An Android Development app scaffold with native Home, Moves, Calendar, and
   Settings surfaces; local-first Room storage; an explicitly unconfigured
   Google/Supabase account boundary; and a bounded, privacy-redactable Glance
@@ -76,6 +80,8 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Changed
 
+- Android now targets API 36, uses the established Founder’s Office app artwork,
+  and presents a focused local-only account state until reviewed sync gates pass.
 - The Founder’s Office website now centers an interactive MacBook demo. Scroll
   changes the live Home, Moves, Calendar, and Personalize views, while direct
   controls let visitors complete Moves, pick days, and change the accent.

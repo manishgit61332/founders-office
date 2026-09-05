@@ -2,7 +2,6 @@ package com.foundersoffice.openloops.widget
 
 import android.content.Context
 import android.content.Intent
-import android.net.Uri
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
@@ -24,6 +23,7 @@ import androidx.glance.layout.padding
 import androidx.glance.text.FontWeight
 import androidx.glance.text.Text
 import androidx.glance.text.TextStyle
+import androidx.core.net.toUri
 import com.foundersoffice.openloops.MainActivity
 import com.foundersoffice.openloops.OpenLoopsApplication
 import com.foundersoffice.openloops.data.WidgetProjectionEntity
@@ -85,4 +85,4 @@ private fun WidgetContent(context: Context, projection: WidgetProjectionEntity, 
 }
 
 private fun itemIntent(context: Context, kind: String, id: String?): Intent = Intent(context, MainActivity::class.java)
-    .setData(Uri.parse("openloops://$kind/${id ?: "home"}"))
+    .setData("openloops://$kind/${id ?: "home"}".toUri())

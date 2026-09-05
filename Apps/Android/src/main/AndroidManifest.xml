@@ -6,12 +6,17 @@
     <application
         android:name=".OpenLoopsApplication"
         android:allowBackup="false"
-        android:label="Founder's Office"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
         android:supportsRtl="true"
-        android:theme="@style/Theme.FoundersOffice">
+        android:theme="@style/Theme.FoundersOffice.Starting"
+        android:usesCleartextTraffic="false">
         <activity
             android:name=".MainActivity"
-            android:exported="true">
+            android:exported="true"
+            android:launchMode="singleTask">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -21,6 +26,11 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="openloops" android:host="move" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="openloops" android:host="calendar" />
             </intent-filter>
             <intent-filter>
@@ -36,8 +46,8 @@
 
         <receiver
             android:name=".widget.OpenLoopsSmallWidgetReceiver"
-            android:exported="true"
-            android:label="Founder's Office">
+            android:exported="false"
+            android:label="@string/app_name">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
             </intent-filter>
@@ -48,8 +58,8 @@
 
         <receiver
             android:name=".widget.OpenLoopsMediumWidgetReceiver"
-            android:exported="true"
-            android:label="Founder's Office">
+            android:exported="false"
+            android:label="@string/app_name">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
             </intent-filter>

@@ -35,6 +35,8 @@ class AppContainer(context: Context) {
     private val appContext = context.applicationContext
     private val database = LocalWorkspaceDatabase.create(appContext)
 
+    val appPreferences = LocalAppPreferences(appContext)
+
     val projectionStore = WidgetProjectionStore(appContext, database.widgetProjectionDao())
     val workspaceRepository = LocalWorkspaceRepository(
         database = database,

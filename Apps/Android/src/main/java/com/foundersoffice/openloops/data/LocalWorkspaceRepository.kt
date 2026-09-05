@@ -39,7 +39,8 @@ data class Move(
     val dueOn: LocalDate?,
     val priority: MovePriority,
     val status: MoveStatus,
-    val completedAt: Instant?
+    val completedAt: Instant?,
+    val deletedAt: Instant? = null
 )
 
 data class MoveDraft(
@@ -58,6 +59,7 @@ internal data class MovePayload(
     val priority: String,
     val dueOn: String?,
     val completedAt: String?,
+    val deletedAt: String?,
     val source: String,
     val createdAt: String
 )
@@ -74,11 +76,11 @@ internal class MoveOutboxOperationFactory(
             operationId = nextOperationId(),
             entityType = "move",
             entityId = move.id,
-            action = "upsert",
+            action = if (move.deletedAt == null) "upsert" else "delete",
             baseRevision = move.serverRevision,
             changedFieldsJson = json.encodeToString(changedFields.sorted()),
             fieldClocksJson = json.encodeToString(changedFields.associateWith { occurredAt }),
-            payloadJson = json.encodeToString(move.asPayload()),
+            payloadJson = move.takeIf { it.deletedAt == null }?.let { json.encodeToString(it.asPayload()) },
             occurredAt = occurredAt
         )
     }
@@ -101,6 +103,10 @@ class LocalWorkspaceRepository(
     private val operationFactory = MoveOutboxOperationFactory(json)
 
     val visibleMoves: Flow<List<Move>> = moveDao.observeVisible().map { entities ->
+        entities.map(::toMove)
+    }
+
+    val deletedMoves: Flow<List<Move>> = moveDao.observeDeleted().map { entities ->
         entities.map(::toMove)
     }
 
@@ -164,6 +170,31 @@ class LocalWorkspaceRepository(
         writeMove(updated, setOf("status", "previousStatus", "completedAt"))
     }
 
+    suspend fun reopen(id: String) {
+        val current = requireNotNull(moveDao.find(id)) { "The Move is no longer available." }
+        if (current.status != MoveStatus.DONE.wireValue || current.deletedAt != null) return
+        val updated = current.copy(
+            status = current.previousStatus?.takeIf { it != MoveStatus.DONE.wireValue } ?: MoveStatus.NEXT.wireValue,
+            previousStatus = null,
+            completedAt = null,
+            updatedAt = now().toString()
+        )
+        writeMove(updated, setOf("status", "previousStatus", "completedAt"))
+    }
+
+    suspend fun delete(id: String) {
+        val current = requireNotNull(moveDao.find(id)) { "The Move is no longer available." }
+        if (current.deletedAt != null) return
+        val timestamp = now().toString()
+        writeMove(current.copy(deletedAt = timestamp, updatedAt = timestamp), setOf("deletedAt"))
+    }
+
+    suspend fun restore(id: String) {
+        val current = requireNotNull(moveDao.find(id)) { "The Move is no longer available." }
+        if (current.deletedAt == null) return
+        writeMove(current.copy(deletedAt = null, updatedAt = now().toString()), setOf("deletedAt"))
+    }
+
     suspend fun pendingOperationCount(): Int = database.outboxDao().pending(512).size
 
     private suspend fun writeMove(move: MoveEntity, changedFields: Set<String>) {
@@ -182,7 +213,8 @@ class LocalWorkspaceRepository(
         dueOn = entity.dueOn?.let(LocalDate::parse),
         priority = MovePriority.fromWire(entity.priority),
         status = MoveStatus.fromWire(entity.status),
-        completedAt = entity.completedAt?.let(Instant::parse)
+        completedAt = entity.completedAt?.let(Instant::parse),
+        deletedAt = entity.deletedAt?.let(Instant::parse)
     )
 
     companion object {
@@ -200,6 +232,7 @@ internal fun MoveEntity.asPayload() = MovePayload(
     priority = priority,
     dueOn = dueOn,
     completedAt = completedAt,
+    deletedAt = deletedAt,
     source = "founders-office",
     createdAt = createdAt
 )

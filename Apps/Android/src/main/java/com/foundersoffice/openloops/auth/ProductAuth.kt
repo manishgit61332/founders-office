@@ -1,17 +1,24 @@
 package com.foundersoffice.openloops.auth
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.net.Uri
 import android.util.Base64
 import androidx.browser.customtabs.CustomTabsIntent
-import androidx.security.crypto.EncryptedSharedPreferences
-import androidx.security.crypto.MasterKey
+import androidx.core.net.toUri
 import com.foundersoffice.openloops.BuildConfig
-import java.security.MessageDigest
-import java.security.SecureRandom
 import java.net.HttpURLConnection
 import java.net.URL
+import java.security.KeyStore
+import java.security.MessageDigest
+import java.security.SecureRandom
 import java.util.UUID
+import javax.crypto.Cipher
+import javax.crypto.KeyGenerator
+import javax.crypto.SecretKey
+import javax.crypto.spec.GCMParameterSpec
+import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyProperties
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
@@ -62,57 +69,103 @@ data class ProductSession(
 @Serializable
 internal data class PendingPkceRequest(val state: String, val verifier: String)
 
+@Serializable
+private data class EncryptedValue(val iv: String, val ciphertext: String)
+
 /**
  * Session and PKCE material stay encrypted with an Android Keystore-backed
  * key. Connector credentials are intentionally not represented here.
  */
+@SuppressLint("ApplySharedPref", "UseKtx")
 class SecureProductSessionStore(context: Context) {
     private val appContext = context.applicationContext
     private val json = Json { ignoreUnknownKeys = true }
+    private val preferences = appContext.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
 
     suspend fun readSession(): ProductSession? = withContext(Dispatchers.IO) {
-        securePreferences()?.getString(SESSION_KEY, null)?.let { encoded ->
-            runCatching { json.decodeFromString<ProductSession>(encoded) }.getOrNull()
+        preferences.getString(SESSION_KEY, null)?.let { encrypted ->
+            decrypt(encrypted)?.let { encoded ->
+                runCatching { json.decodeFromString<ProductSession>(encoded) }.getOrNull()
+            }
         }
     }
 
     suspend fun saveSession(session: ProductSession): Boolean = withContext(Dispatchers.IO) {
-        securePreferences()?.edit()?.putString(SESSION_KEY, json.encodeToString(session))?.commit() == true
+        val encrypted = encrypt(json.encodeToString(session)) ?: return@withContext false
+        preferences.edit().putString(SESSION_KEY, encrypted).commit()
     }
 
     /** Logout clears the product session and outstanding OAuth state, not local Moves. */
     suspend fun clearForLogout(): Boolean = withContext(Dispatchers.IO) {
-        securePreferences()?.edit()?.remove(SESSION_KEY)?.remove(PKCE_KEY)?.commit() == true
+        val currentCleared = preferences.edit().clear().commit()
+        val legacyCleared = appContext.getSharedPreferences(LEGACY_PREFERENCES_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .clear()
+            .commit()
+        currentCleared && legacyCleared
     }
 
     internal suspend fun savePendingPkce(request: PendingPkceRequest): Boolean = withContext(Dispatchers.IO) {
-        securePreferences()?.edit()?.putString(PKCE_KEY, json.encodeToString(request))?.commit() == true
+        val encrypted = encrypt(json.encodeToString(request)) ?: return@withContext false
+        preferences.edit().putString(PKCE_KEY, encrypted).commit()
     }
 
     internal suspend fun takePendingPkce(): PendingPkceRequest? = withContext(Dispatchers.IO) {
-        val preferences = securePreferences() ?: return@withContext null
-        val encoded = preferences.getString(PKCE_KEY, null)
-        preferences.edit().remove(PKCE_KEY).commit()
-        encoded?.let { runCatching { json.decodeFromString<PendingPkceRequest>(it) }.getOrNull() }
+        val encrypted = preferences.getString(PKCE_KEY, null) ?: return@withContext null
+        if (!preferences.edit().remove(PKCE_KEY).commit()) return@withContext null
+        decrypt(encrypted)?.let { encoded ->
+            runCatching { json.decodeFromString<PendingPkceRequest>(encoded) }.getOrNull()
+        }
     }
 
-    private fun securePreferences() = runCatching {
-        val key = MasterKey.Builder(appContext)
-            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-            .build()
-        @Suppress("DEPRECATION")
-        EncryptedSharedPreferences.create(
-            appContext,
-            "product-session",
-            key,
-            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-        )
+    private fun encrypt(value: String): String? = runCatching {
+        val cipher = Cipher.getInstance(TRANSFORMATION)
+        cipher.init(Cipher.ENCRYPT_MODE, secretKey())
+        val encrypted = cipher.doFinal(value.toByteArray(Charsets.UTF_8))
+        json.encodeToString(EncryptedValue(
+            iv = Base64.encodeToString(cipher.iv, Base64.NO_WRAP),
+            ciphertext = Base64.encodeToString(encrypted, Base64.NO_WRAP)
+        ))
     }.getOrNull()
 
+    private fun decrypt(value: String): String? = runCatching {
+        val encrypted = json.decodeFromString<EncryptedValue>(value)
+        val cipher = Cipher.getInstance(TRANSFORMATION)
+        cipher.init(
+            Cipher.DECRYPT_MODE,
+            secretKey(),
+            GCMParameterSpec(128, Base64.decode(encrypted.iv, Base64.NO_WRAP))
+        )
+        cipher.doFinal(Base64.decode(encrypted.ciphertext, Base64.NO_WRAP)).toString(Charsets.UTF_8)
+    }.getOrNull()
+
+    @Synchronized
+    private fun secretKey(): SecretKey {
+        val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
+        (keyStore.getKey(KEY_ALIAS, null) as? SecretKey)?.let { return it }
+        return KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE).run {
+            init(
+                KeyGenParameterSpec.Builder(
+                    KEY_ALIAS,
+                    KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
+                )
+                    .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                    .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                    .setKeySize(256)
+                    .build()
+            )
+            generateKey()
+        }
+    }
+
     private companion object {
+        const val ANDROID_KEYSTORE = "AndroidKeyStore"
+        const val KEY_ALIAS = "founders-office-product-session-v2"
+        const val PREFERENCES_NAME = "product-session-v2"
+        const val LEGACY_PREFERENCES_NAME = "product-session"
         const val SESSION_KEY = "session"
         const val PKCE_KEY = "pending-pkce"
+        const val TRANSFORMATION = "AES/GCM/NoPadding"
     }
 }
 
@@ -175,7 +228,7 @@ class GoogleProductAuthGateway(
         if (!sessionStore.savePendingPkce(request)) return GoogleAuthStartResult.ProtectedStorageUnavailable
 
         val challenge = sha256UrlSafe(request.verifier)
-        val url = Uri.parse(configuration.supabaseUrl.trimEnd('/') + "/auth/v1/authorize")
+        val url = (configuration.supabaseUrl.trimEnd('/') + "/auth/v1/authorize").toUri()
             .buildUpon()
             .appendQueryParameter("provider", "google")
             .appendQueryParameter("redirect_to", configuration.callbackUrl)

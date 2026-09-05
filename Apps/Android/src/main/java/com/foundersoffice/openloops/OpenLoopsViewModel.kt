@@ -17,8 +17,25 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
+sealed interface NoticeAction {
+    data class RestoreMove(val moveId: String) : NoticeAction
+}
+
+data class UiNotice(
+    val id: Long,
+    val message: String,
+    val actionLabel: String? = null,
+    val action: NoticeAction? = null
+)
+
 class OpenLoopsViewModel(private val container: AppContainer) : ViewModel() {
     val moves: StateFlow<List<Move>> = container.workspaceRepository.visibleMoves.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5_000),
+        emptyList()
+    )
+
+    val deletedMoves: StateFlow<List<Move>> = container.workspaceRepository.deletedMoves.stateIn(
         viewModelScope,
         SharingStarted.WhileSubscribed(5_000),
         emptyList()
@@ -27,8 +44,11 @@ class OpenLoopsViewModel(private val container: AppContainer) : ViewModel() {
     private val _calendarEvents = MutableStateFlow<List<LocalCalendarEvent>>(emptyList())
     val calendarEvents = _calendarEvents.asStateFlow()
 
-    private val _notice = MutableStateFlow<String?>(null)
+    private val _notice = MutableStateFlow<UiNotice?>(null)
     val notice = _notice.asStateFlow()
+
+    private val _onboardingComplete = MutableStateFlow(container.appPreferences.hasCompletedOnboarding)
+    val onboardingComplete = _onboardingComplete.asStateFlow()
 
     private val _signedIn = MutableStateFlow(false)
     val signedIn = _signedIn.asStateFlow()
@@ -56,25 +76,55 @@ class OpenLoopsViewModel(private val container: AppContainer) : ViewModel() {
         container.workspaceRepository.markDone(id)
     }
 
+    fun reopen(id: String) = launchMessage("Move reopened.") {
+        container.workspaceRepository.reopen(id)
+    }
+
+    fun delete(id: String) = viewModelScope.launch {
+        try {
+            container.workspaceRepository.delete(id)
+            showNotice(
+                message = "Move moved to Recently Deleted.",
+                actionLabel = "Undo",
+                action = NoticeAction.RestoreMove(id)
+            )
+        } catch (_: Exception) {
+            showNotice("That local change could not be saved.")
+        }
+    }
+
+    fun restore(id: String) = launchMessage("Move restored.") {
+        container.workspaceRepository.restore(id)
+    }
+
     fun refreshCalendar() = viewModelScope.launch {
-        _calendarEvents.value = container.calendarRepository.refresh()
-        _notice.value = if (_calendarEvents.value.isEmpty()) "No upcoming commitments found." else null
+        try {
+            _calendarEvents.value = container.calendarRepository.refresh()
+            if (_calendarEvents.value.isEmpty()) showNotice("No upcoming commitments found.")
+        } catch (_: Exception) {
+            _calendarEvents.value = emptyList()
+            showNotice("Calendar could not be refreshed on this device.")
+        }
+    }
+
+    fun onCalendarPermissionResult(granted: Boolean) {
+        if (granted) refreshCalendar() else showNotice("Calendar access was not enabled.")
     }
 
     fun hasCalendarPermission(): Boolean = container.calendarRepository.hasPermission()
 
     fun startGoogleSignIn() = viewModelScope.launch {
-        _notice.value = when (container.productAuthGateway.start()) {
+        showNotice(when (container.productAuthGateway.start()) {
             GoogleAuthStartResult.Unconfigured -> "Google sign-in is not configured in this development build."
             GoogleAuthStartResult.ProtectedStorageUnavailable -> "Secure session storage is unavailable."
             GoogleAuthStartResult.LaunchedSystemBrowser -> "Continue sign-in in your system browser."
-        }
+        })
     }
 
     fun handleCallback(uri: Uri?) = viewModelScope.launch {
         val callback = container.productAuthGateway.validateCallback(uri)
         if (callback !is GoogleAuthCallbackResult.ReadyToExchange) return@launch
-        _notice.value = when (container.productAuthGateway.exchange(callback)) {
+        showNotice(when (container.productAuthGateway.exchange(callback)) {
             GoogleAuthExchangeResult.SignedIn -> {
                 _signedIn.value = true
                 "Signed in. Choose claim or attach explicitly before syncing."
@@ -83,16 +133,16 @@ class OpenLoopsViewModel(private val container: AppContainer) : ViewModel() {
             GoogleAuthExchangeResult.Rejected -> "Sign-in could not be verified."
             GoogleAuthExchangeResult.StorageUnavailable -> "Secure session storage is unavailable."
             GoogleAuthExchangeResult.NetworkFailure -> "Sign-in needs a reachable reviewed service."
-        }
+        })
     }
 
     fun signOut() = viewModelScope.launch {
         container.syncScheduler.clearForLogout()
         if (container.sessionStore.clearForLogout()) {
             _signedIn.value = false
-            _notice.value = "Signed out. Local Moves remain on this device."
+            showNotice("Signed out. Local Moves remain on this device.")
         } else {
-            _notice.value = "Secure session storage could not be cleared."
+            showNotice("Secure session storage could not be cleared.")
         }
     }
 
@@ -101,17 +151,40 @@ class OpenLoopsViewModel(private val container: AppContainer) : ViewModel() {
         _widgetRedacted.value = redacted
     }
 
-    fun consumeNotice() {
-        _notice.value = null
+    fun completeOnboarding() {
+        if (container.appPreferences.completeOnboarding()) {
+            _onboardingComplete.value = true
+        } else {
+            showNotice("Setup could not be saved on this device.")
+        }
+    }
+
+    fun performNoticeAction(action: NoticeAction) {
+        when (action) {
+            is NoticeAction.RestoreMove -> restore(action.moveId)
+        }
+    }
+
+    fun consumeNotice(id: Long) {
+        if (_notice.value?.id == id) _notice.value = null
     }
 
     private fun launchMessage(successMessage: String, work: suspend () -> Unit) = viewModelScope.launch {
         try {
             work()
-            _notice.value = successMessage
+            showNotice(successMessage)
         } catch (_: Exception) {
-            _notice.value = "That local change could not be saved."
+            showNotice("That local change could not be saved.")
         }
+    }
+
+    private fun showNotice(message: String, actionLabel: String? = null, action: NoticeAction? = null) {
+        _notice.value = UiNotice(
+            id = System.nanoTime(),
+            message = message,
+            actionLabel = actionLabel,
+            action = action
+        )
     }
 }
 

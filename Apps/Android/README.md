@@ -1,11 +1,16 @@
-# Founder's Office for Android — Development
+# Founder's Office for Android
 
-This directory contains the native Android development app. It is not a Beta
-or a release artifact.
+This directory contains the native Android application and its fail-closed
+release path. Local verification does not by itself create a distributable
+Beta.
 
 ## What is implemented locally
 
 - Kotlin + Jetpack Compose app with Home, Moves, Calendar, and Settings.
+- A private-by-default first run, dark mode, edge-to-edge system UI, and the
+  shared Founder’s Office launcher artwork.
+- Local Move creation, editing, completion, reopening, soft deletion,
+  Recently Deleted, and Undo.
 - Room-backed local Moves, immutable per-entity outbox entries, conflict state,
   a device-local sync binding, and a small widget-only projection.
 - A configuration-gated Google product-auth / Supabase RPC seam. Its default
@@ -23,20 +28,39 @@ not duplicate, modify, or freeze the shared v1 schemas.
 ## Build prerequisites
 
 - JDK 17
-- Android SDK Platform 35 and build tools
-- Gradle 8.9 (or a standard checked-in Gradle wrapper when introduced by the
-  Android build environment)
+- Android SDK Platform 36 and build tools
+- The checked-in Gradle wrapper
 
 From the repository root:
 
 ```bash
-gradle :androidApp:testDebugUnitTest :androidApp:assembleDebug
+Scripts/verify-android-development.sh
 ```
 
 The development APK, when built, is at
 `Apps/Android/build/outputs/apk/debug/androidApp-debug.apk`. Android's standard
 debug signing key stays in the developer's home directory. Do not distribute
 that APK, add a signing key to source control, or represent it as a Beta.
+
+## Signed release bundle
+
+`Scripts/build-android-release.sh` builds a minified, resource-shrunk Android
+App Bundle only when all reviewed public configuration and upload-signing
+environment values are present. Passwords are never passed as command-line
+arguments. The release task fails closed when configuration is absent,
+partial, non-HTTPS, or points to a missing keystore.
+
+Required environment names:
+
+- `FO_PUBLIC_SUPABASE_URL`
+- `FO_PUBLIC_SUPABASE_KEY`
+- `FO_PUBLIC_GOOGLE_CLIENT_ID`
+- `FO_ANDROID_UPLOAD_KEYSTORE_PATH`
+- `FO_ANDROID_UPLOAD_KEY_ALIAS`
+- `FO_ANDROID_UPLOAD_STORE_PASSWORD`
+- `FO_ANDROID_UPLOAD_KEY_PASSWORD`
+
+The upload keystore and every credential remain outside the repository.
 
 ## Live configuration and beta gates
 
@@ -51,4 +75,4 @@ secure session persistence, logout and account-switch isolation, RLS/RPC proof,
 offline convergence, conflict review, revocation behavior, Calendar permission,
 widget rendering on a physical device, accessibility, and signed release
 provenance. A local fixture result or a development APK does not prove any of
-those gates.
+those gates. See `docs/product/ANDROID_RELEASE.md` for the handoff checklist.

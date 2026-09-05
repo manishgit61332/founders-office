@@ -93,6 +93,9 @@ interface MoveDao {
     @Query("SELECT * FROM moves WHERE deletedAt IS NULL ORDER BY status, dueOn IS NULL, dueOn, priority, title")
     fun observeVisible(): Flow<List<MoveEntity>>
 
+    @Query("SELECT * FROM moves WHERE deletedAt IS NOT NULL ORDER BY deletedAt DESC, title")
+    fun observeDeleted(): Flow<List<MoveEntity>>
+
     @Query("SELECT * FROM moves WHERE id = :id LIMIT 1")
     suspend fun find(id: String): MoveEntity?
 
