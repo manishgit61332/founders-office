@@ -95,6 +95,7 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 - Windows development bundles now include .NET, support the default Windows PowerShell installer, select only compatible dependencies, and verify that the actual MSIX version matches build provenance.
 - Windows development installation now checks for explicit administrator-approved trust of its exact public certificate. It no longer attempts ineffective Current User trust or changes certificate stores automatically.
+- Corrected the Windows installer's file-list syntax so PowerShell can parse its integrity checks before installation.
 - The native Windows shell now uses the supported WinUI Mica backdrop API and explicitly disposes its tray and repository resources, preventing code-behind failures from cascading into opaque XAML compiler errors.
 - Priority drag release now completes from the persistent scroll surface when its lazy source row moves off-screen; the final pointer position selects the saved lane, and edge scrolling stops cleanly at the document boundary.
 - Priority dragging now tracks the pointer in stable native viewport coordinates, so edge auto-scroll continues when the cursor is held still and lazy rows move beneath it.

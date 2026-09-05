@@ -48,7 +48,7 @@ foreach ($line in Get-Content -LiteralPath $checksumPath) {
     $expectedHashes[$relativeName] = $Matches[1].ToUpperInvariant()
 }
 
-$filesToVerify = @($packages[0], Get-Item -LiteralPath $certificatePath)
+$filesToVerify = @($packages[0], (Get-Item -LiteralPath $certificatePath))
 $dependencyRoot = Join-Path $bundleRoot "Dependencies"
 if (Test-Path -LiteralPath $dependencyRoot -PathType Container) {
     $filesToVerify += @(Get-ChildItem -LiteralPath $dependencyRoot -Recurse -File)
