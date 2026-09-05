@@ -6,6 +6,7 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Added
 
+- Windows development protocol links now forward to one workspace-owning app instance. A synthetic laptop checklist covers activation without Google login. Product account, Move sync, and Windows Calendar states remain separate, and live sign-in stays unavailable.
 - A first native Windows 11 development shell using C# and WinUI 3, with a Windows-native top-edge surface, notification-area entry point, transactional offline SQLite repository, v1 sync-contract adapter, and a dedicated Windows build/test gate. This is a developer milestone, not a signed friend-beta installer.
 - The Windows development build now supports creating and editing Moves with priority and deadline, completion history with reopen, confirmed deletion, a native notification-area menu, and a downloadable x64 development-signed MSIX bundle with archive privacy checks.
 - The Windows development build now opens as a compact top-center Move view that can expand into the workspace or switch to a normal resizable window.

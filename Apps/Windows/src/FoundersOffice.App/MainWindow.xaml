@@ -152,6 +152,12 @@
                         Text="Opening your private workspace…" />
                 </StackPanel>
 
+                <InfoBar
+                    x:Name="ActivationInfoBar"
+                    IsOpen="False"
+                    IsClosable="True"
+                    Severity="Informational" />
+
                 <Border
                     Margin="0,8,0,0"
                     Padding="20"
@@ -309,7 +315,19 @@
                     HorizontalAlignment="Center"
                     FontSize="12"
                     Opacity="0.56"
-                    Text="Development build · Sync is not connected yet, so changes stay on this device."
+                    Text="Move sync: Local-only in this Windows build. Changes stay on this device."
+                    TextAlignment="Center"
+                    TextWrapping="Wrap" />
+                <TextBlock
+                    FontSize="12"
+                    Opacity="0.66"
+                    Text="Product account: Sign-in is not available in this Windows build."
+                    TextAlignment="Center"
+                    TextWrapping="Wrap" />
+                <TextBlock
+                    FontSize="12"
+                    Opacity="0.66"
+                    Text="Windows Calendar: No source is connected here. Mac calendars are unchanged."
                     TextAlignment="Center"
                     TextWrapping="Wrap" />
             </StackPanel>

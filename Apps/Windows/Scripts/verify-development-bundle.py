@@ -10,6 +10,7 @@ import io
 import pathlib
 import re
 import sys
+import xml.etree.ElementTree as ET
 import zipfile
 
 
@@ -153,6 +154,13 @@ def inspect_nested_package(name: str, data: bytes, *, application: bool) -> None
                 fail("application MSIX does not use the development identity")
             if b'Publisher="CN=FounderOfficeDevelopment"' not in manifest:
                 fail("application MSIX publisher does not match the development certificate")
+            try:
+                root = ET.fromstring(manifest)
+            except ET.ParseError:
+                fail("application MSIX manifest is malformed")
+            protocols = root.findall(".//{http://schemas.microsoft.com/appx/manifest/uap/windows10}Protocol")
+            if len(protocols) != 1 or protocols[0].attrib.get("Name") != "founders-office-dev":
+                fail("application MSIX must register only the exact development protocol")
 
 
 def verify_hash_manifest(files: dict[str, bytes]) -> None:

@@ -38,6 +38,7 @@ required_files = [
     WINDOWS / "src" / "FoundersOffice.Core" / "Auth" / "ProductSessionBroker.cs",
     WINDOWS / "src" / "FoundersOffice.Core" / "Auth" / "SupabaseProductAuthClient.cs",
     WINDOWS / "src" / "FoundersOffice.Core" / "Auth" / "WindowsProductConfiguration.cs",
+    WINDOWS / "src" / "FoundersOffice.Core" / "Auth" / "ProductCallbackRouter.cs",
     WINDOWS / "src" / "FoundersOffice.Core" / "Sync" / "SupabaseV1SyncTransport.cs",
     WINDOWS / "src" / "FoundersOffice.Core" / "Sync" / "WorkspaceSyncCoordinator.cs",
     WINDOWS / "src" / "FoundersOffice.Core" / "packages.lock.json",
@@ -99,6 +100,7 @@ manifest = ET.parse(manifest_path).getroot()
 namespaces = {
     "foundation": "http://schemas.microsoft.com/appx/manifest/foundation/windows10",
     "desktop": "http://schemas.microsoft.com/appx/manifest/desktop/windows10",
+    "uap": "http://schemas.microsoft.com/appx/manifest/uap/windows10",
 }
 family = manifest.find(".//foundation:TargetDeviceFamily", namespaces)
 if family is None or family.attrib.get("MinVersion") != "10.0.22621.0":
@@ -109,6 +111,9 @@ if startup is None or startup.attrib.get("Enabled") != "false":
 startup_extension = manifest.find(".//desktop:Extension[@Category='windows.startupTask']", namespaces)
 if startup_extension is None or startup_extension.attrib.get("Executable") != "FoundersOffice.App.exe":
     fail("startup extension must name the packaged executable explicitly")
+protocols = manifest.findall(".//uap:Protocol", namespaces)
+if len(protocols) != 1 or protocols[0].attrib.get("Name") != "founders-office-dev":
+    fail("the development package must register only its exact development protocol")
 
 for lock_path in WINDOWS.rglob("packages.lock.json"):
     lock = json.loads(lock_path.read_text(encoding="utf-8"))
@@ -194,6 +199,17 @@ if "App : Application, IDisposable" not in app_source:
     fail("App must close the disposable MainWindow through an explicit lifetime")
 if "_window.Closed += MainWindow_Closed;" not in app_source:
     fail("App must bind its cleanup to the WinUI window lifetime")
+for activation_boundary in ("FindOrRegisterForKey", "RedirectActivationToAsync", "WaitAsync(TimeSpan.FromSeconds(10))", "TryEnqueue"):
+    if activation_boundary not in app_source:
+        fail("App must keep its bounded, UI-dispatched single-instance activation boundary")
+if app_source.index("FindOrRegisterForKey") > app_source.index("new MainWindow()"):
+    fail("App must choose the workspace-owning instance before constructing its window")
+for forbidden_live_client in ("SupabaseProductAuthClient.Create", "new ProductSessionBroker", "WindowsProductConfiguration.LoadAsync"):
+    if forbidden_live_client in app_source:
+        fail("protocol forwarding must not bypass the unpassed live OAuth gate")
+for separate_state in ("Product account:", "Move sync:", "Windows Calendar:", "Mac calendars are unchanged"):
+    if separate_state not in main_window_xaml:
+        fail("Windows product, Move sync, and Calendar states must remain separate")
 
 if not (ROOT / "contracts" / "v1" / "openapi.json").is_file():
     fail("shared v1 contract is missing")

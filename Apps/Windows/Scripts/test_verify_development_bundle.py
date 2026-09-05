@@ -16,13 +16,17 @@ ROOT_NAME = "FoundersOffice-Windows-x64-DEVELOPMENT"
 SCRIPT = pathlib.Path(__file__).with_name("verify-development-bundle.py")
 
 
-def application_package(extra_files: dict[str, bytes] | None = None) -> bytes:
+def application_package(
+    extra_files: dict[str, bytes] | None = None, *, protocol: str = "founders-office-dev"
+) -> bytes:
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as package:
         package.writestr(
             "AppxManifest.xml",
-            '<Package><Identity Name="FounderOffice.Windows.Development" '
-            'Publisher="CN=FounderOfficeDevelopment" /></Package>',
+            '<Package xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10">'
+            '<Identity Name="FounderOffice.Windows.Development" '
+            'Publisher="CN=FounderOfficeDevelopment" />'
+            f'<uap:Protocol Name="{protocol}" /></Package>',
         )
         package.writestr("AppxSignature.p7x", b"synthetic-signature-marker")
         for name, data in (extra_files or {}).items():
@@ -107,6 +111,16 @@ class DevelopmentBundleVerifierTests(unittest.TestCase):
 
             self.assertNotEqual(0, result.returncode)
             self.assertIn("forbidden", result.stderr)
+
+    def test_rejects_production_protocol_in_development_package(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            archive = pathlib.Path(directory) / "bundle.zip"
+            write_bundle(archive, package=application_package(protocol="founders-office"))
+
+            result = self.run_verifier(archive)
+
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("exact development protocol", result.stderr)
 
     def test_rejects_local_auth_configuration_in_outer_or_nested_package(self) -> None:
         for nested in (False, True):

@@ -3,7 +3,10 @@
 ## Current boundary
 
 The Windows app remains local-only. Configuration validation does not enable sign-in or sync.
-The MSIX has no OAuth protocol activation handler. Native browser forwarding remains an implementation gate.
+The MSIX registers only `founders-office-dev` and forwards activations to one workspace-owning instance.
+Forwarding times out after ten seconds. Failure never opens a second workspace writer.
+The native callback router has no live session broker. All protocol links leave product sign-in unavailable.
+Native forwarding still requires physical Windows acceptance. Synthetic routing tests do not prove operating-system activation.
 Main integration owns beta-project callback registration and approval.
 Mac callback registration does not prove Windows registration.
 
@@ -73,7 +76,7 @@ Require durable read-back before showing a signed-in state.
 
 ## Synthetic acceptance sequence
 
-Run these checks only after callback approval and native activation wiring exist.
+Run these live checks only after callback approval and physical native-activation acceptance.
 Use disposable test identities and a dedicated synthetic workspace. Do not upload a personal local workspace.
 Keep any raw acceptance evidence outside tracked files and release bundles. Do not log credentials or callback URLs.
 
@@ -102,3 +105,16 @@ Windows currently supports Move sync only. Other workspace entities and conflict
 Google product login does not grant Calendar access.
 Mac uses EventKit to aggregate calendars configured through macOS Internet Accounts, including separate Google accounts.
 Windows needs its own calendar source and consent flow. Product login must not imply a calendar connection.
+
+## Native forwarding checks
+
+Use the one-time checklist in the bundled `README-DEVELOPMENT.md` on each Windows laptop.
+It needs no Supabase registration, Google account, cloud VM, or live configuration.
+The development protocol is registered locally by MSIX installation, not by the offline configuration preflight.
+One process owns the workspace. Secondary processes redirect activation, wait at most ten seconds, and exit.
+Redirected requests reach the UI dispatcher. The app retains at most one pending redirected request during launch storms.
+The callback router never reconstructs a verifier or restores a flow from another process.
+
+This uses Microsoft's documented
+[OnLaunched single-instance pattern](https://learn.microsoft.com/en-us/windows/apps/windows-app-sdk/migrate-to-windows-app-sdk/guides/applifecycle#single-instancing-in-applicationonlaunched).
+App construction initializes theme resources only. The app selects an owner before creating the window, repository, or tray icon.

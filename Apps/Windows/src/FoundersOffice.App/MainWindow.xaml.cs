@@ -1,5 +1,6 @@
 using System.Globalization;
 using FoundersOffice.App.Platform;
+using FoundersOffice.Core.Auth;
 using FoundersOffice.Core.Domain;
 using FoundersOffice.Core.Repository;
 using Microsoft.UI.Xaml;
@@ -21,6 +22,7 @@ public sealed partial class MainWindow : Window, IDisposable
     private bool _exitRequested;
     private bool _isConfirmingDelete;
     private bool _isBusy;
+    private bool _workspaceReady;
 
     public MainWindow()
     {
@@ -55,7 +57,8 @@ public sealed partial class MainWindow : Window, IDisposable
             await _repository.InitializeAsync();
             _trayIcon.Start();
             await RefreshAsync();
-            _surfaceController.ShowCompact();
+            _workspaceReady = true;
+            ShowForActivation();
         }
         catch (Exception)
         {
@@ -187,6 +190,49 @@ public sealed partial class MainWindow : Window, IDisposable
     }
 
     private void HideButton_Click(object sender, RoutedEventArgs e) => _surfaceController.Hide();
+
+    public void ShowForActivation()
+    {
+        if (!_workspaceReady || _disposed)
+        {
+            return;
+        }
+
+        if (ActivationInfoBar.IsOpen)
+        {
+            _surfaceController.ShowNormal();
+        }
+        else
+        {
+            _surfaceController.ShowCompact();
+        }
+    }
+
+    public void ShowProductCallbackOutcome(ProductCallbackOutcome outcome)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        ActivationInfoBar.Title = outcome == ProductCallbackOutcome.ProductSignedIn
+            ? "Product sign-in completed"
+            : "Sign-in link not used";
+        ActivationInfoBar.Message = outcome switch
+        {
+            ProductCallbackOutcome.SignInUnavailable =>
+                "Product sign-in is not available in this Windows build. Local Moves and Calendar settings are unchanged.",
+            ProductCallbackOutcome.NoPendingFlow =>
+                "No product sign-in is waiting in this app. Local Moves and Calendar settings are unchanged.",
+            ProductCallbackOutcome.ProductSignedIn =>
+                "Your product account is signed in. Workspace sync and Calendar connections need separate setup.",
+            ProductCallbackOutcome.Cancelled =>
+                "Product sign-in was cancelled. Calendar settings are unchanged.",
+            _ => "This sign-in link was not accepted. Calendar settings are unchanged.",
+        };
+        ActivationInfoBar.IsOpen = true;
+        ShowForActivation();
+    }
 
     private void CompactExpandButton_Click(object sender, RoutedEventArgs e) => _surfaceController.Expand();
 

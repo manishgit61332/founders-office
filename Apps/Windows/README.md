@@ -29,7 +29,9 @@ the integration branch freezes production identity and sync.
 
 It does **not** yet enable live Google/Apple product sign-in or remote sync.
 Developers can validate reviewed public beta configuration in an ignored local file.
-That file does not register the Windows callback or enable native browser activation.
+That file does not approve the callback or enable live product sign-in.
+The package registers only its development protocol and forwards activations to one workspace-owning instance.
+The native callback router has no live session broker. Protocol links cannot start sign-in or sync.
 Development bundles exclude it. A data-bearing workspace cannot attach until the reviewed
 export-and-replace flow exists. The build also does not provide Calendar connectors,
 production-trusted signing, automatic updates, recovery for deleted Moves, or a
@@ -104,6 +106,8 @@ Before calling this a Windows alpha:
   taskbar edge changes, compact/expanded/normal transitions, sleep/wake, and
   high-contrast mode;
 - prove tray show/hide and explicit Exit across repeated launches;
+- prove repeated Start-menu and protocol launches reuse one workspace writer;
+- complete the bundled synthetic callback checklist, including cold start, replay, and malformed links;
 - prove startup remains off until the user opts in;
 - install the development-signed MSIX on both test laptops, then create, edit,
   relaunch, complete, reopen, and delete Moves without data loss;
