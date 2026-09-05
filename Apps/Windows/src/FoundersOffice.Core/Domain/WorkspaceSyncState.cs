@@ -7,7 +7,8 @@ public sealed record WorkspaceSyncState(
     Guid? RemoteWorkspaceId,
     string? IdentityProvider,
     long Cursor,
-    bool HasLocalData)
+    bool HasLocalData,
+    bool HasQuarantinedOperations = false)
 {
     public bool IsBound => AccountId is not null && RemoteWorkspaceId is not null;
 

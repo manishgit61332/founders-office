@@ -34,8 +34,34 @@ public sealed class ProductSessionBroker : IDisposable
     public Uri BeginGoogleSignIn()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        _pendingFlow = _authClient.BeginGoogleSignIn();
-        return _pendingFlow.AuthorizationUri;
+        if (!_gate.Wait(0))
+        {
+            throw new ProductAuthenticationException("auth_operation_in_progress");
+        }
+
+        try
+        {
+            _pendingFlow = _authClient.BeginGoogleSignIn();
+            return _pendingFlow.AuthorizationUri;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task CancelPendingSignInAsync(CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            _pendingFlow = null;
+        }
+        finally
+        {
+            _gate.Release();
+        }
     }
 
     public async Task<ProductIdentity> CompleteSignInAsync(

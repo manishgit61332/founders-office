@@ -15,8 +15,13 @@
     <Platforms>x64;ARM64</Platforms>
     <PlatformTarget Condition="'$(Platform)' == ''">x64</PlatformTarget>
     <RuntimeIdentifiers>win-x64;win-arm64</RuntimeIdentifiers>
+    <RuntimeIdentifier Condition="'$(Platform)' == 'ARM64'">win-arm64</RuntimeIdentifier>
+    <RuntimeIdentifier Condition="'$(Platform)' != 'ARM64'">win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
   </PropertyGroup>
   <ItemGroup>
+    <AppxManifest Include="Package.appxmanifest" Condition="'$(DevelopmentPackageManifest)' == ''" />
+    <AppxManifest Include="$(DevelopmentPackageManifest)" Condition="'$(DevelopmentPackageManifest)' != ''" />
     <ProjectReference Include="../FoundersOffice.Core/FoundersOffice.Core.csproj" />
   </ItemGroup>
   <ItemGroup>

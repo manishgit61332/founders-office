@@ -11,9 +11,6 @@ public partial class App : Application, IDisposable
     private MainWindow? _window;
     private AppInstance? _currentInstance;
     private DispatcherQueue? _dispatcher;
-    // No live broker is constructed until the separate OAuth gates pass.
-    private readonly ProductCallbackRouter _callbackRouter = new(
-        new SupabaseAuthConfiguration(new Uri(WindowsProductConfiguration.DevelopmentCallback)));
     private int _activationScheduled;
     private bool _disposed;
 
@@ -100,8 +97,11 @@ public partial class App : Application, IDisposable
         if (activation.Kind == ExtendedActivationKind.Protocol)
         {
             var callback = (activation.Data as IProtocolActivatedEventArgs)?.Uri;
-            var outcome = await _callbackRouter.RouteAsync(callback);
-            _window?.ShowProductCallbackOutcome(outcome);
+            if (_window is not null)
+            {
+                var outcome = await _window.HandleProductCallbackAsync(callback);
+                _window.ShowProductCallbackOutcome(outcome);
+            }
         }
         else if (activation.Kind is ExtendedActivationKind.Launch or ExtendedActivationKind.StartupTask)
         {

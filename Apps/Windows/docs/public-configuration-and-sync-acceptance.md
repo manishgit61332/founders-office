@@ -5,7 +5,9 @@
 The Windows app remains local-only. Configuration validation does not enable sign-in or sync.
 The MSIX registers only `founders-office-dev` and forwards activations to one workspace-owning instance.
 Forwarding times out after ten seconds. Failure never opens a second workspace writer.
-The native callback router has no live session broker. All protocol links leave product sign-in unavailable.
+The native account controller contains browser, session, callback, and workspace-selection code.
+Its compiled registration approval remains absent. It cannot construct a live broker, restore a session, or sync.
+All protocol links therefore leave product sign-in unavailable in this build.
 Native forwarding still requires physical Windows acceptance. Synthetic routing tests do not prove operating-system activation.
 Main integration owns beta-project callback registration and approval.
 Mac callback registration does not prove Windows registration.
@@ -16,6 +18,18 @@ Use `Apps/Windows/Configuration/ProductAuth.local.json` for reviewed, public bet
 This exact basename is ignored and forbidden in tracked files and development bundles.
 Copy only the approved project endpoint and publishable key from the reviewed source.
 Do not copy OAuth provider credentials, service-role keys, session tokens, or Mac callback settings.
+
+For an installed MSIX, select **Open setup folder** in the expanded workspace.
+Copy the same Windows file into that package-private folder, then select **Reload setup**.
+The app uses `ApplicationData.Current.LocalFolder`, not a guessed or hard-coded Windows user path.
+Public configuration never enters the installer. A setup file alone cannot enable Google login.
+
+Native service construction also requires a separately reviewed, compiled configuration fingerprint.
+It binds the exact HTTPS project origin, publishable key, and development callback.
+Main integration must confirm the exact Supabase allowlist entry before supplying that approval.
+The fingerprint records that review. It does not probe or independently prove the backend allowlist.
+Runtime files, environment variables, and interface toggles cannot supply approval.
+Changing the project or public key requires another review and a fresh, configuration-scoped session.
 
 The strict schema has exactly four fields:
 
@@ -73,6 +87,10 @@ PKCE does not prove exclusive custom-scheme ownership. Test interception and act
 Keep access tokens and PKCE verifiers in memory.
 Persist only the refresh session, opaque account ID, and provider in Windows Credential Locker.
 Require durable read-back before showing a signed-in state.
+Credential Locker entries use the development identity and reviewed configuration fingerprint as their resource scope.
+Unscoped legacy entries are not migrated automatically.
+Browser refusal, cancellation, shutdown, or the ten-minute deadline clears the pending attempt without deleting local Moves.
+Restoring a session never starts a workspace claim, attachment, or Calendar connection.
 
 ## Synthetic acceptance sequence
 
@@ -99,6 +117,9 @@ Keep any raw acceptance evidence outside tracked files and release bundles. Do n
 Synthetic adapter tests are not live proof. A browser sign-in alone is not convergence proof.
 Do not claim live sync until both native clients converge on the exact same synthetic workspace.
 Windows currently supports Move sync only. Other workspace entities and conflict review remain separate implementation gates.
+The native interface shows the remote workspace ID for this private comparison.
+If unsupported records stop a run, stop the test and report the step. Do not call that run converged.
+Quarantined conflicts block subsequent runs and direct same-Move pull replacement, including after repository relaunch.
 
 ## Calendar boundary
 

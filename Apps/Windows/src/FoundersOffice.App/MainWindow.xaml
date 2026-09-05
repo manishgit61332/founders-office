@@ -311,6 +311,7 @@
                 <ItemsControl x:Name="CompletedMovesItems" ItemTemplate="{StaticResource MoveCardTemplate}" />
 
                 <TextBlock
+                    x:Name="ProductSyncStatusText"
                     Margin="0,6,0,0"
                     HorizontalAlignment="Center"
                     FontSize="12"
@@ -319,9 +320,38 @@
                     TextAlignment="Center"
                     TextWrapping="Wrap" />
                 <TextBlock
+                    x:Name="ProductAccountStatusText"
                     FontSize="12"
                     Opacity="0.66"
-                    Text="Product account: Sign-in is not available in this Windows build."
+                    Text="Product account: Checking this device's setup."
+                    TextAlignment="Center"
+                    TextWrapping="Wrap" />
+                <StackPanel Orientation="Horizontal" Spacing="6" HorizontalAlignment="Center">
+                    <Button x:Name="ProductSignInButton" Content="Sign in with Google" IsEnabled="False" Click="ProductSignInButton_Click" />
+                    <Button x:Name="ProductCancelSignInButton" Content="Cancel sign-in" IsEnabled="False" Click="ProductCancelSignInButton_Click" />
+                    <Button x:Name="ProductSignOutButton" Content="Sign out" IsEnabled="False" Click="ProductSignOutButton_Click" />
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" Spacing="6" HorizontalAlignment="Center">
+                    <Button Content="Open setup folder" Click="ProductSetupFolderButton_Click" />
+                    <Button x:Name="ProductReloadSetupButton" Content="Reload setup" Click="ProductReloadSetupButton_Click" />
+                </StackPanel>
+                <TextBox
+                    x:Name="ProductReviewedNameInput"
+                    MaxWidth="400"
+                    MaxLength="80"
+                    Header="Reviewed name for claiming this workspace"
+                    PlaceholderText="Enter your name; provider names are not used automatically" />
+                <StackPanel Orientation="Horizontal" Spacing="6" HorizontalAlignment="Center">
+                    <Button x:Name="ProductClaimButton" Content="Claim this workspace" IsEnabled="False" Click="ProductClaimButton_Click" />
+                    <Button x:Name="ProductAttachButton" Content="Attach existing workspace" IsEnabled="False" Click="ProductAttachButton_Click" />
+                </StackPanel>
+                <Button x:Name="ProductSyncButton" Content="Sync Moves" HorizontalAlignment="Center" IsEnabled="False" Click="ProductSyncButton_Click" />
+                <TextBlock
+                    x:Name="ProductWorkspaceStatusText"
+                    FontSize="12"
+                    Opacity="0.66"
+                    IsTextSelectionEnabled="True"
+                    Text="Remote workspace: Not attached."
                     TextAlignment="Center"
                     TextWrapping="Wrap" />
                 <TextBlock

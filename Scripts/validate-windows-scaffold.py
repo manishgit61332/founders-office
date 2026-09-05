@@ -39,12 +39,16 @@ required_files = [
     WINDOWS / "src" / "FoundersOffice.Core" / "Auth" / "SupabaseProductAuthClient.cs",
     WINDOWS / "src" / "FoundersOffice.Core" / "Auth" / "WindowsProductConfiguration.cs",
     WINDOWS / "src" / "FoundersOffice.Core" / "Auth" / "ProductCallbackRouter.cs",
+    WINDOWS / "src" / "FoundersOffice.Core" / "Auth" / "ProductBrowserSignIn.cs",
+    WINDOWS / "src" / "FoundersOffice.Core" / "Auth" / "ReviewedProductAuthRegistration.cs",
     WINDOWS / "src" / "FoundersOffice.Core" / "Sync" / "SupabaseV1SyncTransport.cs",
     WINDOWS / "src" / "FoundersOffice.Core" / "Sync" / "WorkspaceSyncCoordinator.cs",
     WINDOWS / "src" / "FoundersOffice.Core" / "packages.lock.json",
     WINDOWS / "src" / "FoundersOffice.App" / "FoundersOffice.App.csproj",
     WINDOWS / "src" / "FoundersOffice.App" / "Package.appxmanifest",
     WINDOWS / "src" / "FoundersOffice.App" / "Platform" / "WindowsCredentialSessionStore.cs",
+    WINDOWS / "src" / "FoundersOffice.App" / "Platform" / "WindowsProductAccountController.cs",
+    WINDOWS / "src" / "FoundersOffice.App" / "Platform" / "WindowsProductAuthApproval.cs",
     WINDOWS / "src" / "FoundersOffice.App" / "packages.lock.json",
     WINDOWS / "tests" / "FoundersOffice.Core.Tests" / "FoundersOffice.Core.Tests.csproj",
     WINDOWS / "tests" / "FoundersOffice.Core.Tests" / "packages.lock.json",
@@ -84,6 +88,7 @@ expected_properties = {
     "UseWinUI": "true",
     "WindowsPackageType": "MSIX",
     "AppxPackageSigningEnabled": "false",
+    "SelfContained": "true",
 }
 for name, expected in expected_properties.items():
     if properties.get(name) != expected:
@@ -168,6 +173,19 @@ if "sb_secret_" not in transport_source or "service_role" not in transport_sourc
     fail("public Supabase configuration must reject secret and service-role keys")
 if "PasswordVault" not in credential_store_source:
     fail("durable Windows product sessions must use Credential Locker")
+if "FoundersOffice.Windows.Development.ProductSession.v2." not in credential_store_source:
+    fail("Windows sessions must be scoped to development identity and reviewed public configuration")
+account_source = (WINDOWS / "src" / "FoundersOffice.App" / "Platform" / "WindowsProductAccountController.cs").read_text(encoding="utf-8")
+approval_source = (WINDOWS / "src" / "FoundersOffice.App" / "Platform" / "WindowsProductAuthApproval.cs").read_text(encoding="utf-8")
+if "CreateBrokerIfApproved" not in account_source or "WindowsProductAuthApproval.Current" not in account_source:
+    fail("native product services require the separate registration approval gate")
+if account_source.index("CreateBrokerIfApproved") > account_source.index("SupabaseProductAuthClient.Create"):
+    fail("registration approval must precede native product-client construction")
+if any(marker in approval_source for marker in ("File.", "Environment.", "LoadAsync", "Parse(")):
+    fail("runtime configuration must not supply its own registration approval")
+for explicit_control in ("ProductSignInButton", "ProductCancelSignInButton", "ProductClaimButton", "ProductAttachButton", "ProductWorkspaceStatusText"):
+    if explicit_control not in main_window_xaml:
+        fail("native account setup and explicit workspace choices must remain visible")
 
 bundle_readme = " ".join(
     (WINDOWS / "Distribution" / "README-DEVELOPMENT.md").read_text(encoding="utf-8").split()
@@ -189,6 +207,17 @@ if '"2.5.29.19={text}"' not in bundle_script:
     fail("development signing certificate must be an end-entity certificate")
 if '"-p:DebugType=None"' not in bundle_script or '"-p:DebugSymbols=false"' not in bundle_script:
     fail("development package must omit debug paths and symbols")
+if 'SetAttribute("Version", $PackageVersion)' not in bundle_script or "DevelopmentPackageManifest=" not in bundle_script:
+    fail("development bundle must set the actual MSIX manifest version before packaging")
+installer_source = (WINDOWS / "Distribution" / "Install-Development.ps1").read_text(encoding="utf-8")
+if "GetRelativePath" in installer_source or "Get-DevelopmentBundleRelativePath" not in installer_source:
+    fail("installer paths must work in Windows PowerShell 5.1")
+if 'foreach ($dependencyArchitecture in @("x64", "neutral"))' not in installer_source:
+    fail("installer must select only compatible dependency architectures")
+if "Import-Certificate" in installer_source or "Start-Process" in installer_source:
+    fail("development installer must not silently change certificate trust or request elevation")
+if "Cert:\\LocalMachine\\TrustedPeople\\" not in installer_source:
+    fail("development installer must require exact administrator-approved machine certificate trust")
 if r'Remove-Item -LiteralPath "Cert:\CurrentUser\My\$($certificate.Thumbprint)"' not in bundle_script:
     fail("development signing certificate must be removed from the build runner")
 

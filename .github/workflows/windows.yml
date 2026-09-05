@@ -64,6 +64,23 @@ jobs:
       - name: Restore locked dependencies
         run: dotnet restore .\FoundersOffice.Windows.slnx --locked-mode
 
+      - name: Check default Windows PowerShell installer compatibility
+        shell: powershell
+        run: |
+          if ($PSVersionTable.PSVersion.Major -ne 5) { throw "This check requires Windows PowerShell 5.1." }
+          $tokens = $null
+          $parseErrors = $null
+          $ast = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD "Distribution\Install-Development.ps1"), [ref]$tokens, [ref]$parseErrors)
+          if ($parseErrors.Count -ne 0) { throw "The installer must parse in Windows PowerShell 5.1." }
+          $functions = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq "Get-DevelopmentBundleRelativePath" }, $true))
+          if ($functions.Count -ne 1) { throw "The installer path boundary is missing or ambiguous." }
+          $pathHelper = $functions[0].Body.GetScriptBlock()
+          $relative = & $pathHelper -BundleRoot "C:\synthetic-bundle" -FilePath "C:\synthetic-bundle\package.msix"
+          if ($relative -ne "package.msix") { throw "The installer relative-path boundary failed." }
+          $rejected = $false
+          try { & $pathHelper -BundleRoot "C:\synthetic-bundle" -FilePath "C:\synthetic-bundle-other\package.msix" } catch { $rejected = $true }
+          if (-not $rejected) { throw "The installer accepted a path outside the bundle." }
+
       - name: Test platform-neutral Windows core
         run: >-
           dotnet test

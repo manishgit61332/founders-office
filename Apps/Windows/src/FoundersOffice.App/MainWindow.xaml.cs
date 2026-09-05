@@ -3,6 +3,7 @@ using FoundersOffice.App.Platform;
 using FoundersOffice.Core.Auth;
 using FoundersOffice.Core.Domain;
 using FoundersOffice.Core.Repository;
+using FoundersOffice.Core.Sync;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
@@ -16,6 +17,7 @@ public sealed partial class MainWindow : Window, IDisposable
     private readonly SqliteWorkspaceRepository _repository;
     private readonly TopEdgeSurfaceController _surfaceController;
     private readonly TrayIconService _trayIcon;
+    private readonly WindowsProductAccountController _productAccount;
     private Dictionary<Guid, Move> _movesById = new();
     private Guid? _editingMoveId;
     private bool _disposed;
@@ -36,6 +38,8 @@ public sealed partial class MainWindow : Window, IDisposable
             "FounderOffice",
             "founders-office.sqlite3");
         _repository = new SqliteWorkspaceRepository(databasePath);
+        _productAccount = new WindowsProductAccountController(_repository);
+        _productAccount.StateChanged += ProductAccount_StateChanged;
         _surfaceController = new TopEdgeSurfaceController(
             this,
             () => RootGrid.XamlRoot?.RasterizationScale ?? 1.0);
@@ -59,6 +63,7 @@ public sealed partial class MainWindow : Window, IDisposable
             await RefreshAsync();
             _workspaceReady = true;
             ShowForActivation();
+            await _productAccount.InitializeAsync();
         }
         catch (Exception)
         {
@@ -191,6 +196,106 @@ public sealed partial class MainWindow : Window, IDisposable
 
     private void HideButton_Click(object sender, RoutedEventArgs e) => _surfaceController.Hide();
 
+    public Task<ProductCallbackOutcome> HandleProductCallbackAsync(Uri? callback) => _productAccount.HandleCallbackAsync(callback);
+
+    private async void ProductSignInButton_Click(object sender, RoutedEventArgs e) => await _productAccount.SignInAsync();
+
+    private void ProductCancelSignInButton_Click(object sender, RoutedEventArgs e) => _productAccount.CancelSignIn();
+
+    private async void ProductSignOutButton_Click(object sender, RoutedEventArgs e) => await _productAccount.SignOutAsync();
+
+    private async void ProductSetupFolderButton_Click(object sender, RoutedEventArgs e) => await _productAccount.OpenSetupFolderAsync();
+
+    private async void ProductReloadSetupButton_Click(object sender, RoutedEventArgs e) => await _productAccount.InitializeAsync();
+
+    private async void ProductSyncButton_Click(object sender, RoutedEventArgs e)
+    {
+        await _productAccount.SyncAsync(choice: null, reviewedName: null);
+        await RefreshAfterProductSyncAsync();
+    }
+
+    private async void ProductClaimButton_Click(object sender, RoutedEventArgs e) =>
+        await ConfirmProvisioningAsync(WorkspaceProvisioningChoice.ClaimLocalWorkspace);
+
+    private async void ProductAttachButton_Click(object sender, RoutedEventArgs e) =>
+        await ConfirmProvisioningAsync(WorkspaceProvisioningChoice.AttachExistingWorkspace);
+
+    private async Task ConfirmProvisioningAsync(WorkspaceProvisioningChoice choice)
+    {
+        if (!_productAccount.CanSync || _isConfirmingDelete)
+        {
+            return;
+        }
+
+        var claim = choice == WorkspaceProvisioningChoice.ClaimLocalWorkspace;
+        if (claim && string.IsNullOrWhiteSpace(ProductReviewedNameInput.Text))
+        {
+            ProductReviewedNameInput.Focus(FocusState.Programmatic);
+            return;
+        }
+
+        var dialog = new ContentDialog
+        {
+            XamlRoot = RootGrid.XamlRoot,
+            Title = claim ? "Claim this local workspace?" : "Attach your existing workspace?",
+            Content = claim
+                ? "This uploads this device's Moves to the beta project under your product account. Use synthetic test data only. Calendar stays separate."
+                : "This attaches the workspace owned by your product account. Existing local data stops for export-and-replace review. Calendar stays separate.",
+            PrimaryButtonText = claim ? "Claim and sync" : "Attach and sync",
+            CloseButtonText = "Cancel",
+            DefaultButton = ContentDialogButton.Close,
+        };
+        _isConfirmingDelete = true;
+        try
+        {
+            if (await dialog.ShowAsync() == ContentDialogResult.Primary)
+            {
+                await _productAccount.SyncAsync(choice, claim ? ProductReviewedNameInput.Text : null);
+                await RefreshAfterProductSyncAsync();
+            }
+        }
+        finally
+        {
+            _isConfirmingDelete = false;
+        }
+    }
+
+    private async Task RefreshAfterProductSyncAsync()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        try
+        {
+            await RefreshAsync();
+        }
+        catch (Exception)
+        {
+            ShowOperationError("Could not refresh the local Move view");
+        }
+    }
+
+    private void ProductAccount_StateChanged(object? sender, EventArgs e)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        ProductAccountStatusText.Text = _productAccount.ProductStatus;
+        ProductSyncStatusText.Text = _productAccount.SyncStatus;
+        ProductWorkspaceStatusText.Text = _productAccount.WorkspaceStatus;
+        ProductSignInButton.IsEnabled = _productAccount.CanSignIn;
+        ProductSignOutButton.IsEnabled = _productAccount.CanSignOut;
+        ProductCancelSignInButton.IsEnabled = _productAccount.CanCancelSignIn;
+        ProductClaimButton.IsEnabled = _productAccount.CanSync;
+        ProductAttachButton.IsEnabled = _productAccount.CanSync;
+        ProductSyncButton.IsEnabled = _productAccount.CanSync;
+        ProductReloadSetupButton.IsEnabled = !_productAccount.IsBusy;
+    }
+
     public void ShowForActivation()
     {
         if (!_workspaceReady || _disposed)
@@ -287,8 +392,25 @@ public sealed partial class MainWindow : Window, IDisposable
         _surfaceController.Closing -= SurfaceController_Closing;
         _surfaceController.ModeChanged -= SurfaceController_ModeChanged;
         _trayIcon.Dispose();
-        _repository.Dispose();
+        _productAccount.StateChanged -= ProductAccount_StateChanged;
+        _ = DisposeProductAccountAndRepositoryAsync();
         GC.SuppressFinalize(this);
+    }
+
+    private async Task DisposeProductAccountAndRepositoryAsync()
+    {
+        try
+        {
+            await _productAccount.DisposeAsync();
+        }
+        catch (Exception)
+        {
+            // Shutdown diagnostics must not expose session or path information.
+        }
+        finally
+        {
+            _repository.Dispose();
+        }
     }
 
     private async Task<bool> TryMutationAsync(Func<Task> mutation, string errorTitle)

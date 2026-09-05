@@ -34,6 +34,15 @@ if (Test-Path -LiteralPath $outputRoot) {
 New-Item -ItemType Directory -Path $stagingRoot -Force | Out-Null
 New-Item -ItemType Directory -Path $packageOutput -Force | Out-Null
 
+$versionedManifestPath = Join-Path $outputRoot "Package.generated.appxmanifest"
+[xml]$manifestDocument = Get-Content -LiteralPath (Join-Path $windowsRoot "src\FoundersOffice.App\Package.appxmanifest") -Raw
+$manifestIdentity = $manifestDocument.DocumentElement.SelectSingleNode("*[local-name()='Identity']")
+if ($null -eq $manifestIdentity -or $manifestIdentity.GetAttribute("Name") -ne "FounderOffice.Windows.Development") {
+    throw "The source manifest does not contain the reviewed development identity."
+}
+$manifestIdentity.SetAttribute("Version", $PackageVersion)
+$manifestDocument.Save($versionedManifestPath)
+
 $certificate = $null
 try {
     $certificate = New-SelfSignedCertificate `
@@ -63,7 +72,7 @@ try {
         "-p:GenerateAppxPackageOnBuild=true",
         "-p:AppxPackageSigningEnabled=true",
         "-p:PackageCertificateThumbprint=$($certificate.Thumbprint)",
-        "-p:AppxPackageVersion=$PackageVersion",
+        "-p:DevelopmentPackageManifest=$versionedManifestPath",
         "-p:DebugType=None",
         "-p:DebugSymbols=false",
         "-p:AppxPackageDir=$packageOutput\"
@@ -101,10 +110,14 @@ try {
         throw "The development package produced ambiguous dependency directories."
     }
     if ($dependencyDirectories.Count -eq 1) {
-        Copy-Item `
-            -LiteralPath $dependencyDirectories[0].FullName `
-            -Destination (Join-Path $stagingRoot "Dependencies") `
-            -Recurse
+        $selectedDependencies = Join-Path $stagingRoot "Dependencies"
+        New-Item -ItemType Directory -Path $selectedDependencies -Force | Out-Null
+        foreach ($dependencyArchitecture in @("x64", "neutral")) {
+            $sourceDependencies = Join-Path $dependencyDirectories[0].FullName $dependencyArchitecture
+            if (Test-Path -LiteralPath $sourceDependencies -PathType Container) {
+                Copy-Item -LiteralPath $sourceDependencies -Destination $selectedDependencies -Recurse
+            }
+        }
     }
 
     Copy-Item `

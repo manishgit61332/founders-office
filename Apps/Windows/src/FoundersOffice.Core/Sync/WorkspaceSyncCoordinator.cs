@@ -104,6 +104,11 @@ public sealed class WorkspaceSyncCoordinator : IDisposable
                 return new SyncRunResult(SyncRunOutcome.AccountMismatch, 0, 0, state.Cursor);
             }
 
+            if (state.HasQuarantinedOperations)
+            {
+                return new SyncRunResult(SyncRunOutcome.ConflictNeedsReview, 0, 0, state.Cursor);
+            }
+
             if (!state.IsBound && provisioningChoice is null)
             {
                 return new SyncRunResult(SyncRunOutcome.ProvisioningChoiceRequired, 0, 0, state.Cursor);

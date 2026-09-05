@@ -6,6 +6,7 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Added
 
+- Windows now has native public-setup, Google sign-in, cancellation, sign-out, and explicit workspace-selection controls behind a closed registration-approval gate. Setup alone cannot enable live login or sync, and product identity remains separate from Calendar.
 - Windows development protocol links now forward to one workspace-owning app instance. A synthetic laptop checklist covers activation without Google login. Product account, Move sync, and Windows Calendar states remain separate, and live sign-in stays unavailable.
 - A first native Windows 11 development shell using C# and WinUI 3, with a Windows-native top-edge surface, notification-area entry point, transactional offline SQLite repository, v1 sync-contract adapter, and a dedicated Windows build/test gate. This is a developer milestone, not a signed friend-beta installer.
 - The Windows development build now supports creating and editing Moves with priority and deadline, completion history with reopen, confirmed deletion, a native notification-area menu, and a downloadable x64 development-signed MSIX bundle with archive privacy checks.
@@ -92,6 +93,8 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Fixed
 
+- Windows development bundles now include .NET, support the default Windows PowerShell installer, select only compatible dependencies, and verify that the actual MSIX version matches build provenance.
+- Windows development installation now checks for explicit administrator-approved trust of its exact public certificate. It no longer attempts ineffective Current User trust or changes certificate stores automatically.
 - The native Windows shell now uses the supported WinUI Mica backdrop API and explicitly disposes its tray and repository resources, preventing code-behind failures from cascading into opaque XAML compiler errors.
 - Priority drag release now completes from the persistent scroll surface when its lazy source row moves off-screen; the final pointer position selects the saved lane, and edge scrolling stops cleanly at the document boundary.
 - Priority dragging now tracks the pointer in stable native viewport coordinates, so edge auto-scroll continues when the cursor is held still and lazy rows move beneath it.
@@ -150,6 +153,7 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Security
 
+- Windows product services now require an exact reviewed public-configuration fingerprint before session restore or networking. Refresh sessions are configuration-scoped, and quarantined conflicts survive relaunch without allowing later pull replacement.
 - Windows now validates public beta configuration through a strict, offline preflight. Local configuration cannot enter development bundles, and callback path aliases or expired sign-in attempts fail before network access. Live sign-in and sync remain disabled.
 - Windows access tokens remain in memory, refresh sessions are isolated from the SQLite workspace in Credential Locker, unreviewed callback origins and secret/service-role keys fail closed, and signing in cannot silently attach a data-bearing local workspace.
 - Signing in cannot silently attach or replace a workspace: data-bearing replacement requires an immutable local export, failures leave the original canonical state untouched, and private image assets remain blocked.

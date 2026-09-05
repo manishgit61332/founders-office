@@ -4,6 +4,20 @@ param()
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+function Get-DevelopmentBundleRelativePath {
+    param([string]$BundleRoot, [string]$FilePath)
+    $prefix = [System.IO.Path]::GetFullPath($BundleRoot).TrimEnd([char[]]"\/") + [System.IO.Path]::DirectorySeparatorChar
+    $fullPath = [System.IO.Path]::GetFullPath($FilePath)
+    if (-not $fullPath.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "An installable file is outside the extracted bundle."
+    }
+    return $fullPath.Substring($prefix.Length)
+}
+
+if ([Environment]::GetEnvironmentVariable("PROCESSOR_ARCHITECTURE", "Machine") -ne "AMD64") {
+    throw "This development bundle requires a Windows 11 x64 laptop."
+}
+
 $bundleRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $certificatePath = Join-Path $bundleRoot "FounderOfficeDevelopment.cer"
 $checksumPath = Join-Path $bundleRoot "SHA256SUMS.txt"
@@ -27,7 +41,11 @@ foreach ($line in Get-Content -LiteralPath $checksumPath) {
         throw "The checksum manifest is malformed."
     }
 
-    $expectedHashes[$Matches[2].Replace("/", "\")] = $Matches[1].ToUpperInvariant()
+    $relativeName = $Matches[2].Replace("/", "\")
+    if ($expectedHashes.ContainsKey($relativeName)) {
+        throw "The checksum manifest contains a duplicate entry."
+    }
+    $expectedHashes[$relativeName] = $Matches[1].ToUpperInvariant()
 }
 
 $filesToVerify = @($packages[0], Get-Item -LiteralPath $certificatePath)
@@ -37,7 +55,7 @@ if (Test-Path -LiteralPath $dependencyRoot -PathType Container) {
 }
 
 foreach ($file in $filesToVerify) {
-    $relativePath = [System.IO.Path]::GetRelativePath($bundleRoot, $file.FullName)
+    $relativePath = Get-DevelopmentBundleRelativePath -BundleRoot $bundleRoot -FilePath $file.FullName
     if (-not $expectedHashes.ContainsKey($relativePath)) {
         throw "The checksum manifest does not cover every installable file."
     }
@@ -58,16 +76,23 @@ if ($null -eq $signature.SignerCertificate -or $signature.SignerCertificate.Thum
     throw "The MSIX signature does not match the bundled development certificate."
 }
 
-Write-Warning "This trusts a self-signed Founder's Office DEVELOPMENT certificate for the current user. It is not a production release certificate."
-Import-Certificate -FilePath $certificatePath -CertStoreLocation "Cert:\CurrentUser\TrustedPeople" | Out-Null
+$trustedCertificatePath = "Cert:\LocalMachine\TrustedPeople\$($certificate.Thumbprint)"
+if (-not (Test-Path -LiteralPath $trustedCertificatePath)) {
+    throw "The exact development certificate needs administrator-approved Local Computer > Trusted People trust first. Follow README-DEVELOPMENT.md, then rerun as your normal Windows user. This installer does not change certificate trust."
+}
 
 $dependencies = @()
 if (Test-Path -LiteralPath $dependencyRoot -PathType Container) {
-    $dependencies = @(
-        Get-ChildItem -LiteralPath $dependencyRoot -Recurse -File |
-            Where-Object { $_.Extension -in ".appx", ".msix" } |
-            ForEach-Object { $_.FullName }
-    )
+    foreach ($dependencyArchitecture in @("x64", "neutral")) {
+        $architectureRoot = Join-Path $dependencyRoot $dependencyArchitecture
+        if (Test-Path -LiteralPath $architectureRoot -PathType Container) {
+            $dependencies += @(
+                Get-ChildItem -LiteralPath $architectureRoot -Recurse -File |
+                    Where-Object { $_.Extension -in ".appx", ".msix" } |
+                    ForEach-Object { $_.FullName }
+            )
+        }
+    }
 }
 
 if ($dependencies.Count -gt 0) {

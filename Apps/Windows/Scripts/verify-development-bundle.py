@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import io
+import json
 import pathlib
 import re
 import sys
@@ -120,7 +121,7 @@ def scan_bytes(data: bytes, *, context: str, scan_paths: bool = True) -> None:
             fail(f"archive contains possible credential material in {context}")
 
 
-def inspect_nested_package(name: str, data: bytes, *, application: bool) -> None:
+def inspect_nested_package(name: str, data: bytes, *, application: bool, expected_version: str | None = None) -> None:
     try:
         package = zipfile.ZipFile(io.BytesIO(data))
     except zipfile.BadZipFile:
@@ -161,6 +162,22 @@ def inspect_nested_package(name: str, data: bytes, *, application: bool) -> None
             protocols = root.findall(".//{http://schemas.microsoft.com/appx/manifest/uap/windows10}Protocol")
             if len(protocols) != 1 or protocols[0].attrib.get("Name") != "founders-office-dev":
                 fail("application MSIX must register only the exact development protocol")
+            identities = [element for element in root if element.tag.rsplit("}", 1)[-1] == "Identity"]
+            if len(identities) != 1 or identities[0].attrib.get("Version") != expected_version:
+                fail("application MSIX version does not match the exact build provenance")
+            if identities[0].attrib.get("ProcessorArchitecture") != "x64":
+                fail("application MSIX must target x64")
+            required_runtime = {"coreclr.dll", "hostfxr.dll", "hostpolicy.dll", "system.private.corelib.dll", "foundersoffice.app.runtimeconfig.json"}
+            if not required_runtime.issubset(package_names):
+                fail("application MSIX must include its self-contained .NET runtime")
+            try:
+                options = json.loads(package.read("FoundersOffice.App.runtimeconfig.json"))["runtimeOptions"]
+                frameworks = options["includedFrameworks"]
+                has_runtime = any(item.get("name") == "Microsoft.NETCore.App" and str(item.get("version", "")).startswith("10.") for item in frameworks)
+                if options.get("tfm") != "net10.0" or "framework" in options or "frameworks" in options or not has_runtime:
+                    fail("application MSIX must not require an external .NET runtime")
+            except (KeyError, TypeError, AttributeError, ValueError):
+                fail("application MSIX runtime configuration is malformed")
 
 
 def verify_hash_manifest(files: dict[str, bytes]) -> None:
@@ -227,10 +244,19 @@ def main() -> None:
         fail("outer archive is missing required development-bundle files")
 
     verify_hash_manifest(files)
+    try:
+        build_info = files[f"{ROOT_NAME}/BUILD-INFO.txt"].decode("utf-8")
+    except UnicodeDecodeError:
+        fail("build provenance is malformed")
+    versions = re.findall(r"^Package version: (0\.1\.[0-9]{1,5}\.0)\r?$", build_info, re.MULTILINE)
+    if len(versions) != 1 or int(versions[0].split(".")[2]) > 65535:
+        fail("build provenance must contain one exact package version")
     application_name = f"{ROOT_NAME}/FoundersOffice-Windows-x64-DEVELOPMENT.msix"
-    inspect_nested_package(application_name, files[application_name], application=True)
+    inspect_nested_package(application_name, files[application_name], application=True, expected_version=versions[0])
     for name, data in files.items():
         if name.startswith(f"{ROOT_NAME}/Dependencies/") and name.lower().endswith((".appx", ".msix")):
+            if pathlib.PurePosixPath(name).parts[2] not in ("x64", "neutral"):
+                fail("x64 bundle contains an unrelated dependency architecture")
             inspect_nested_package(name, data, application=False)
 
     print("Windows development bundle archive passed content, signature, privacy, and path checks.")

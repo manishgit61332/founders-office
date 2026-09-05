@@ -197,6 +197,23 @@ public sealed class WorkspaceSyncCoordinatorTests
         Assert.Empty(transport.PullRequests);
         Assert.Empty(await fixture.Repository.PendingOperationsAsync());
         Assert.Equal("Conflicting local Move", Assert.Single((await fixture.Repository.SnapshotAsync()).Moves).Title);
+        Assert.True((await fixture.Repository.SyncStateAsync()).HasQuarantinedOperations);
+        await fixture.Repository.DisposeAsync();
+        await using var reopened = new SqliteWorkspaceRepository(fixture.Path);
+        await reopened.InitializeAsync();
+        using var restarted = new WorkspaceSyncCoordinator(reopened, transport);
+        Assert.Equal(SyncRunOutcome.ConflictNeedsReview,
+            (await restarted.RunAsync(new ProductIdentity(accountId, "google"))).Outcome);
+        Assert.Single(transport.BootstrapRequests);
+        Assert.Single(transport.PushRequests);
+        Assert.Empty(transport.PullRequests);
+        var error = await Assert.ThrowsAsync<WorkspaceRepositoryException>(() => reopened.ApplyPullPageAsync(
+            state.LocalWorkspaceId, 0, 1,
+            [new RemoteWorkspaceChange(1, Guid.NewGuid(), "move", local.Id,
+                local with { Title = "Must not replace quarantined data", Revision = 2 })]));
+        Assert.Equal("pull_change_has_pending_local_edit", error.Code);
+        Assert.Equal("Conflicting local Move", Assert.Single((await reopened.SnapshotAsync()).Moves).Title);
+        Assert.Equal(0, (await reopened.SyncStateAsync()).Cursor);
     }
 
     private static BootstrapResponseDto Bootstrap(Guid accountId, Guid workspaceId, Guid deviceId)
@@ -338,7 +355,7 @@ public sealed class WorkspaceSyncCoordinatorTests
             Repository = repository;
         }
 
-        private string Path { get; }
+        public string Path { get; }
 
         public SqliteWorkspaceRepository Repository { get; }
 

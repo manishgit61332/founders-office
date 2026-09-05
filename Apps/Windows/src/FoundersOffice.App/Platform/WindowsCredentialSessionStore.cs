@@ -11,8 +11,19 @@ namespace FoundersOffice.App.Platform;
 /// </summary>
 public sealed class WindowsCredentialSessionStore : IProductSessionStore
 {
-    private const string ResourceName = "FoundersOffice.ProductSession.v1";
-    private readonly PasswordVault _vault = new();
+    private readonly string _resourceName;
+    private readonly PasswordVault _vault;
+
+    public WindowsCredentialSessionStore(string configurationFingerprint)
+    {
+        if (configurationFingerprint.Length != 64 || !configurationFingerprint.All(Uri.IsHexDigit))
+        {
+            throw new ArgumentException("A reviewed public configuration fingerprint is required.", nameof(configurationFingerprint));
+        }
+
+        _resourceName = "FoundersOffice.Windows.Development.ProductSession.v2." + configurationFingerprint;
+        _vault = new PasswordVault();
+    }
 
     public Task<StoredProductSession?> LoadAsync(CancellationToken cancellationToken = default)
     {
@@ -43,7 +54,7 @@ public sealed class WindowsCredentialSessionStore : IProductSessionStore
         var userName = string.Create(
             CultureInfo.InvariantCulture,
             $"{session.IdentityProvider}:{session.AccountId:D}");
-        _vault.Add(new PasswordCredential(ResourceName, userName, session.RefreshToken));
+        _vault.Add(new PasswordCredential(_resourceName, userName, session.RefreshToken));
         return Task.CompletedTask;
     }
 
@@ -58,7 +69,7 @@ public sealed class WindowsCredentialSessionStore : IProductSessionStore
     {
         try
         {
-            return _vault.FindAllByResource(ResourceName);
+            return _vault.FindAllByResource(_resourceName);
         }
         catch (COMException exception) when ((uint)exception.HResult == 0x80070490)
         {

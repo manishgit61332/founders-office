@@ -31,7 +31,9 @@ It does **not** yet enable live Google/Apple product sign-in or remote sync.
 Developers can validate reviewed public beta configuration in an ignored local file.
 That file does not approve the callback or enable live product sign-in.
 The package registers only its development protocol and forwards activations to one workspace-owning instance.
-The native callback router has no live session broker. Protocol links cannot start sign-in or sync.
+The native account controls now connect configuration, Credential Locker, browser PKCE, callbacks, and explicit workspace choices.
+The separate registration-approval gate remains closed. This build cannot perform Google login or live sync.
+Neither public configuration nor a synthetic callback can open that gate.
 Development bundles exclude it. A data-bearing workspace cannot attach until the reviewed
 export-and-replace flow exists. The build also does not provide Calendar connectors,
 production-trusted signing, automatic updates, recovery for deleted Moves, or a
@@ -83,6 +85,9 @@ real workspace databases inside the repository.
 
 For offline configuration checks and the separate live acceptance gates, see
 [Windows public configuration and sync acceptance](docs/public-configuration-and-sync-acceptance.md).
+For installed builds, use **Open setup folder** to locate the package's private configuration directory.
+Copy the reviewed Windows `ProductAuth.local.json` there and select **Reload setup**.
+This is setup preparation only. A build with an explicitly approved registration fingerprint is still required for Google login.
 
 ## Downloadable development bundle
 
@@ -90,12 +95,17 @@ Every successful run of `.github/workflows/windows.yml` publishes
 `FoundersOffice-Windows-x64-DEVELOPMENT` for 30 days. The artifact contains a
 hash-verified ZIP with the MSIX, its public development certificate, dependency
 packages when required, install script, build provenance, and test instructions.
+The MSIX includes the .NET runtime. The installer supports Windows PowerShell 5.1 and selects only x64 or neutral dependencies.
+Packaging uses a generated, versioned manifest. The archive verifier compares its actual MSIX version with build provenance.
+The checked-in source manifest remains unchanged by packaging.
 
 The workflow creates a non-exportable signing key only inside the Windows runner,
 removes it after packaging, verifies the archive allow-list and nested MSIX, and
 rejects credentials, runtime data, caches, debug symbols, or development-machine
 paths. The certificate is self-signed and short-lived. This is development
 transport integrity, not production release signing.
+Installation requires explicit administrator-approved trust of the bundled public certificate in Local Computer → Trusted People.
+The installer only checks that exact trust; it does not import certificates or request elevation. Install the app as the intended normal Windows user afterward.
 
 ## Windows-only verification still required
 

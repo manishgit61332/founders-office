@@ -661,7 +661,7 @@ public sealed class SqliteWorkspaceRepository : IWorkspaceRepository, IDisposabl
                 pending.Transaction = (SqliteTransaction)transaction;
                 pending.CommandText = """
                     SELECT COUNT(*) FROM sync_outbox
-                    WHERE entity_type = $entity_type AND entity_id = $entity_id AND delivery_state = 'pending';
+                    WHERE entity_type = $entity_type AND entity_id = $entity_id;
                     """;
                 pending.Parameters.AddWithValue("$entity_type", change.EntityType);
                 pending.Parameters.AddWithValue("$entity_id", change.EntityId.ToString("D"));
@@ -944,7 +944,8 @@ public sealed class SqliteWorkspaceRepository : IWorkspaceRepository, IDisposabl
         command.CommandText = """
             SELECT local_workspace_id, device_id, account_id, remote_workspace_id,
                    identity_provider, cursor,
-                   EXISTS(SELECT 1 FROM moves) OR EXISTS(SELECT 1 FROM sync_outbox)
+                   EXISTS(SELECT 1 FROM moves) OR EXISTS(SELECT 1 FROM sync_outbox),
+                   EXISTS(SELECT 1 FROM sync_outbox WHERE delivery_state = 'quarantined')
             FROM workspace_sync_state
             WHERE singleton_id = 1;
             """;
@@ -961,7 +962,8 @@ public sealed class SqliteWorkspaceRepository : IWorkspaceRepository, IDisposabl
             reader.IsDBNull(3) ? null : Guid.Parse(reader.GetString(3)),
             reader.IsDBNull(4) ? null : reader.GetString(4),
             reader.GetInt64(5),
-            reader.GetBoolean(6));
+            reader.GetBoolean(6),
+            reader.GetBoolean(7));
     }
 
     private async Task<SqliteConnection> OpenConnectionAsync(CancellationToken cancellationToken)

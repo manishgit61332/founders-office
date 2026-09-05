@@ -8,6 +8,8 @@ public enum ProductCallbackOutcome
     ProductSignedIn,
     Cancelled,
     Failed,
+    TimedOut,
+    AlreadyInProgress,
 }
 
 /// <summary>

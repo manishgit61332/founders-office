@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import pathlib
 import subprocess
 import sys
@@ -17,7 +18,8 @@ SCRIPT = pathlib.Path(__file__).with_name("verify-development-bundle.py")
 
 
 def application_package(
-    extra_files: dict[str, bytes] | None = None, *, protocol: str = "founders-office-dev"
+    extra_files: dict[str, bytes] | None = None, *, protocol: str = "founders-office-dev",
+    version: str = "0.1.1.0", self_contained: bool = True
 ) -> bytes:
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as package:
@@ -25,18 +27,26 @@ def application_package(
             "AppxManifest.xml",
             '<Package xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10">'
             '<Identity Name="FounderOffice.Windows.Development" '
-            'Publisher="CN=FounderOfficeDevelopment" />'
+            f'Publisher="CN=FounderOfficeDevelopment" ProcessorArchitecture="x64" Version="{version}" />'
             f'<uap:Protocol Name="{protocol}" /></Package>',
         )
-        package.writestr("AppxSignature.p7x", b"synthetic-signature-marker")
-        for name, data in (extra_files or {}).items():
+        files = {"AppxSignature.p7x": b"synthetic-signature-marker"}
+        if self_contained:
+            files.update({name: b"synthetic-runtime-marker" for name in (
+                "coreclr.dll", "hostfxr.dll", "hostpolicy.dll", "System.Private.CoreLib.dll"
+            )})
+            files["FoundersOffice.App.runtimeconfig.json"] = json.dumps({
+                "runtimeOptions": {"tfm": "net10.0", "includedFrameworks": [{"name": "Microsoft.NETCore.App", "version": "10.0.11"}]}
+            }).encode("utf-8")
+        files.update(extra_files or {})
+        for name, data in files.items():
             package.writestr(name, data)
     return output.getvalue()
 
 
 def write_bundle(path: pathlib.Path, *, package: bytes, extra_files: dict[str, bytes] | None = None) -> None:
     files = {
-        "BUILD-INFO.txt": b"Founder's Office for Windows - DEVELOPMENT\n",
+        "BUILD-INFO.txt": b"Founder's Office for Windows - DEVELOPMENT\nPackage version: 0.1.1.0\n",
         "FounderOfficeDevelopment.cer": b"synthetic-public-certificate",
         "FoundersOffice-Windows-x64-DEVELOPMENT.msix": package,
         "Install-Development.ps1": b"Write-Host 'development fixture'\n",
@@ -121,6 +131,45 @@ class DevelopmentBundleVerifierTests(unittest.TestCase):
 
             self.assertNotEqual(0, result.returncode)
             self.assertIn("exact development protocol", result.stderr)
+
+    def test_rejects_msix_version_that_differs_from_build_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            archive = pathlib.Path(directory) / "bundle.zip"
+            write_bundle(archive, package=application_package(version="0.1.0.0"))
+            result = self.run_verifier(archive)
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("version does not match", result.stderr)
+
+    def test_rejects_missing_self_contained_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            archive = pathlib.Path(directory) / "bundle.zip"
+            write_bundle(archive, package=application_package(self_contained=False))
+            result = self.run_verifier(archive)
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("self-contained .NET runtime", result.stderr)
+
+    def test_rejects_external_framework_requirement_even_with_runtime_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            archive = pathlib.Path(directory) / "bundle.zip"
+            runtime = json.dumps({"runtimeOptions": {
+                "tfm": "net10.0",
+                "framework": {"name": "Microsoft.NETCore.App", "version": "10.0.0"},
+                "includedFrameworks": [{"name": "Microsoft.NETCore.App", "version": "10.0.11"}]
+            }}).encode("utf-8")
+            write_bundle(archive, package=application_package({"FoundersOffice.App.runtimeconfig.json": runtime}))
+            result = self.run_verifier(archive)
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("external .NET runtime", result.stderr)
+
+    def test_rejects_unrelated_dependency_architecture(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            archive = pathlib.Path(directory) / "bundle.zip"
+            write_bundle(archive, package=application_package(), extra_files={
+                "Dependencies/arm64/framework.msix": application_package()
+            })
+            result = self.run_verifier(archive)
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("unrelated dependency architecture", result.stderr)
 
     def test_rejects_local_auth_configuration_in_outer_or_nested_package(self) -> None:
         for nested in (False, True):
