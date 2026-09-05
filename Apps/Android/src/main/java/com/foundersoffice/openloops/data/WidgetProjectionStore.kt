@@ -1,9 +1,7 @@
 package com.foundersoffice.openloops.data
 
 import android.content.Context
-import androidx.glance.appwidget.updateAll
-import com.foundersoffice.openloops.widget.OpenLoopsMediumWidget
-import com.foundersoffice.openloops.widget.OpenLoopsSmallWidget
+import com.foundersoffice.openloops.widget.refreshWidgetProjection
 import java.time.Instant
 
 /**
@@ -17,37 +15,35 @@ class WidgetProjectionStore(
 ) {
     suspend fun setNextMove(move: Move?) {
         val current = dao.current() ?: emptyProjection()
-        dao.save(current.copy(
+        val updated = current.copy(
             nextMoveId = move?.id,
             nextMoveTitle = move?.title,
             updatedAt = Instant.now().toString()
-        ))
-        refreshWidgets()
+        )
+        dao.save(updated)
+        refreshWidgetProjection(context, updated)
     }
 
     suspend fun setNextEvent(event: LocalCalendarEvent?) {
         val current = dao.current() ?: emptyProjection()
-        dao.save(current.copy(
+        val updated = current.copy(
             nextEventId = event?.id,
             nextEventTitle = event?.title,
             nextEventTime = event?.startTimeLabel,
             updatedAt = Instant.now().toString()
-        ))
-        refreshWidgets()
+        )
+        dao.save(updated)
+        refreshWidgetProjection(context, updated)
     }
 
     suspend fun setRedacted(redacted: Boolean) {
         val current = dao.current() ?: emptyProjection()
-        dao.save(current.copy(redacted = redacted, updatedAt = Instant.now().toString()))
-        refreshWidgets()
+        val updated = current.copy(redacted = redacted, updatedAt = Instant.now().toString())
+        dao.save(updated)
+        refreshWidgetProjection(context, updated)
     }
 
     suspend fun current(): WidgetProjectionEntity = dao.current() ?: emptyProjection()
 
-    private fun emptyProjection() = WidgetProjectionEntity(updatedAt = Instant.EPOCH.toString())
-
-    private suspend fun refreshWidgets() {
-        OpenLoopsSmallWidget().updateAll(context)
-        OpenLoopsMediumWidget().updateAll(context)
-    }
+    private fun emptyProjection() = WidgetProjectionEntity(redacted = true, updatedAt = Instant.EPOCH.toString())
 }

@@ -80,7 +80,7 @@ data class WidgetProjectionEntity(
     val nextEventId: String? = null,
     val nextEventTitle: String? = null,
     val nextEventTime: String? = null,
-    val redacted: Boolean = false,
+    val redacted: Boolean = true,
     val updatedAt: String
 ) {
     companion object {

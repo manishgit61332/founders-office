@@ -80,6 +80,11 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Changed
 
+- Android Home and its small and medium widgets now use the established compact
+  Founder’s Office visual system: Instrument Serif display lines, neutral
+  Apple-like grouped surfaces, restrained blue accents, one dominant next Move,
+  compact commitment and deadline signals, and privacy-redacted widget copy by
+  default.
 - Android now targets API 36, uses the established Founder’s Office app artwork,
   and presents a focused local-only account state until reviewed sync gates pass.
 - The Founder’s Office website now centers an interactive MacBook demo. Scroll

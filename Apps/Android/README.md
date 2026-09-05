@@ -22,6 +22,11 @@ Beta.
   Move or Calendar deep links. The widget has no edit, account, agent, message,
   or destructive action.
 
+The display typeface is the checked-in Instrument Serif Regular font from the
+Instrument Serif Project. It is distributed under the SIL Open Font License
+1.1 in `Resources/Fonts/OFL.txt`; Android reuses that licensed font byte-for-byte.
+Functional UI text uses the Android system's Roboto family.
+
 The module reads test fixtures from `Contracts/v1/fixtures` directly. It does
 not duplicate, modify, or freeze the shared v1 schemas.
 

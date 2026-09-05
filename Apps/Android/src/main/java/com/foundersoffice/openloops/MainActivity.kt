@@ -11,28 +11,39 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.ArrowForward
 import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Lock
+import androidx.compose.material.icons.outlined.RadioButtonUnchecked
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Restore
 import androidx.compose.material.icons.outlined.Settings
@@ -48,12 +59,15 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Shapes
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
@@ -61,7 +75,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
@@ -78,9 +92,13 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.Font
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -92,6 +110,8 @@ import com.foundersoffice.openloops.data.MoveDraft
 import com.foundersoffice.openloops.data.MovePriority
 import com.foundersoffice.openloops.data.MoveStatus
 import java.time.LocalDate
+import java.time.format.DateTimeFormatter
+import java.time.temporal.ChronoUnit
 
 class MainActivity : ComponentActivity() {
     private var incomingData by mutableStateOf<Uri?>(null)
@@ -133,31 +153,77 @@ private enum class Destination(val title: String) {
     Home("Home"), Moves("Moves"), Calendar("Calendar"), Settings("Settings")
 }
 
+private val InstrumentSerif = FontFamily(
+    Font(R.font.instrument_serif_regular, weight = FontWeight.Normal)
+)
+
+private val FounderShapes = Shapes(
+    small = RoundedCornerShape(10.dp),
+    medium = RoundedCornerShape(14.dp),
+    large = RoundedCornerShape(14.dp)
+)
+
+private val FounderTypography = Typography(
+    headlineMedium = TextStyle(fontSize = 28.sp, lineHeight = 32.sp, fontWeight = FontWeight.Normal),
+    titleLarge = TextStyle(fontSize = 20.sp, lineHeight = 25.sp, fontWeight = FontWeight.SemiBold),
+    titleMedium = TextStyle(fontSize = 17.sp, lineHeight = 22.sp, fontWeight = FontWeight.Medium),
+    bodyLarge = TextStyle(fontSize = 17.sp, lineHeight = 24.sp),
+    bodyMedium = TextStyle(fontSize = 15.sp, lineHeight = 21.sp),
+    bodySmall = TextStyle(fontSize = 13.sp, lineHeight = 18.sp),
+    labelLarge = TextStyle(fontSize = 13.sp, lineHeight = 17.sp, fontWeight = FontWeight.SemiBold),
+    labelMedium = TextStyle(fontSize = 12.sp, lineHeight = 16.sp, fontWeight = FontWeight.Medium)
+)
+
 @Composable
 private fun FoundersOfficeTheme(content: @Composable () -> Unit) {
     val lightColors: ColorScheme = lightColorScheme(
-        primary = Color(0xFF176B4A),
+        primary = Color(0xFF007AFF),
         onPrimary = Color.White,
-        primaryContainer = Color(0xFFC3F2D8),
-        onPrimaryContainer = Color(0xFF002114),
-        secondary = Color(0xFF59665C),
-        background = Color(0xFFF7FBF7),
-        surface = Color(0xFFF7FBF7),
-        surfaceVariant = Color(0xFFE1E9E2),
-        onSurface = Color(0xFF171D19)
+        primaryContainer = Color(0xFFE3F0FF),
+        onPrimaryContainer = Color(0xFF00315F),
+        secondary = Color(0xFF636366),
+        secondaryContainer = Color(0xFFE3F0FF),
+        onSecondaryContainer = Color(0xFF00315F),
+        background = Color(0xFFF5F5F7),
+        surface = Color(0xFFF5F5F7),
+        surfaceVariant = Color(0xFFFFFFFF),
+        surfaceContainerLowest = Color(0xFFFFFFFF),
+        surfaceContainerLow = Color(0xFFFFFFFF),
+        surfaceContainer = Color(0xFFF5F5F7),
+        surfaceContainerHigh = Color(0xFFF0F0F3),
+        surfaceContainerHighest = Color(0xFFE9E9ED),
+        onSurface = Color(0xFF111114),
+        onSurfaceVariant = Color(0xFF5F5F66),
+        outline = Color(0xFFC7C7CC),
+        outlineVariant = Color(0xFFE0E0E4)
     )
     val darkColors: ColorScheme = darkColorScheme(
-        primary = Color(0xFF87D6AE),
-        onPrimary = Color(0xFF003824),
-        primaryContainer = Color(0xFF005235),
-        onPrimaryContainer = Color(0xFFA4F3C9),
-        secondary = Color(0xFFB8CCBD),
-        background = Color(0xFF0F1511),
-        surface = Color(0xFF0F1511),
-        surfaceVariant = Color(0xFF3F4942),
-        onSurface = Color(0xFFDFE4DF)
+        primary = Color(0xFF0A84FF),
+        onPrimary = Color.White,
+        primaryContainer = Color(0xFF12375D),
+        onPrimaryContainer = Color(0xFFDCEEFF),
+        secondary = Color(0xFF98989D),
+        secondaryContainer = Color(0xFF12375D),
+        onSecondaryContainer = Color(0xFFDCEEFF),
+        background = Color(0xFF0E0F12),
+        surface = Color(0xFF0E0F12),
+        surfaceVariant = Color(0xFF1D1E21),
+        surfaceContainerLowest = Color(0xFF0A0B0D),
+        surfaceContainerLow = Color(0xFF151619),
+        surfaceContainer = Color(0xFF1A1B1E),
+        surfaceContainerHigh = Color(0xFF202125),
+        surfaceContainerHighest = Color(0xFF26272B),
+        onSurface = Color(0xFFF7F7F7),
+        onSurfaceVariant = Color(0xFFA9A9AF),
+        outline = Color(0xFF48494F),
+        outlineVariant = Color(0xFF2A2B2F)
     )
-    MaterialTheme(colorScheme = if (isSystemInDarkTheme()) darkColors else lightColors, content = content)
+    MaterialTheme(
+        colorScheme = if (isSystemInDarkTheme()) darkColors else lightColors,
+        typography = FounderTypography,
+        shapes = FounderShapes,
+        content = content
+    )
 }
 
 @Composable
@@ -177,8 +243,7 @@ private fun OnboardingScreen(onContinue: () -> Unit) {
             )
             Text(
                 "Make the next move clear.",
-                style = MaterialTheme.typography.displaySmall,
-                fontWeight = FontWeight.Bold,
+                style = MaterialTheme.typography.headlineMedium.copy(fontFamily = InstrumentSerif),
                 modifier = Modifier.semantics { heading() }
             )
             Text(
@@ -215,7 +280,6 @@ private fun OnboardingPoint(title: String, detail: String) {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun FoundersOfficeApp(viewModel: OpenLoopsViewModel, incomingData: Uri?) {
     var destination by rememberSaveable { mutableStateOf(Destination.Home) }
@@ -248,10 +312,14 @@ private fun FoundersOfficeApp(viewModel: OpenLoopsViewModel, incomingData: Uri?)
     }
 
     Scaffold(
-        topBar = { TopAppBar(title = { Text("Founder’s Office", fontWeight = FontWeight.Bold) }) },
+        containerColor = MaterialTheme.colorScheme.background,
+        contentWindowInsets = WindowInsets.safeDrawing.only(WindowInsetsSides.Top),
         snackbarHost = { SnackbarHost(snackbar) },
         bottomBar = {
-            NavigationBar {
+            NavigationBar(
+                containerColor = MaterialTheme.colorScheme.background,
+                tonalElevation = 0.dp
+            ) {
                 Destination.entries.forEach { item ->
                     val icon = when (item) {
                         Destination.Home -> Icons.Outlined.Home
@@ -264,6 +332,13 @@ private fun FoundersOfficeApp(viewModel: OpenLoopsViewModel, incomingData: Uri?)
                         onClick = { destination = item },
                         icon = { Icon(icon, contentDescription = null) },
                         label = { Text(item.title) },
+                        colors = NavigationBarItemDefaults.colors(
+                            selectedIconColor = MaterialTheme.colorScheme.primary,
+                            selectedTextColor = MaterialTheme.colorScheme.onSurface,
+                            indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+                            unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
+                        ),
                         modifier = Modifier.testTag("nav-${item.title.lowercase()}")
                     )
                 }
@@ -275,6 +350,11 @@ private fun FoundersOfficeApp(viewModel: OpenLoopsViewModel, incomingData: Uri?)
                 moves = moves,
                 events = events,
                 onAddMove = { destination = Destination.Moves; addMoveRequested = true },
+                onOpenMove = { moveId ->
+                    destination = Destination.Moves
+                    requestedMoveId = moveId
+                },
+                onCompleteMove = viewModel::markDone,
                 onOpenCalendar = { destination = Destination.Calendar },
                 modifier = Modifier.padding(padding)
             )
@@ -298,27 +378,40 @@ private fun HomeScreen(
     moves: List<Move>,
     events: List<LocalCalendarEvent>,
     onAddMove: () -> Unit,
+    onOpenMove: (String) -> Unit,
+    onCompleteMove: (String) -> Unit,
     onOpenCalendar: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val activeMoves = moves.filter { it.status != MoveStatus.DONE }.sortedWith(moveOrdering)
+    val nextMove = activeMoves.firstOrNull()
     val upNext = CalendarPresentation.upNext(events, java.time.Instant.now())
     LazyColumn(
         modifier = modifier.fillMaxSize(),
-        contentPadding = PaddingValues(20.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+        contentPadding = PaddingValues(start = 20.dp, top = 24.dp, end = 20.dp, bottom = 28.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         item {
-            Text("TODAY", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+            Text(
+                "FOUNDER’S OFFICE  ·  TODAY",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.primary,
+                letterSpacing = 0.8.sp
+            )
             Text(
                 "One clear next step",
-                style = MaterialTheme.typography.headlineMedium,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.padding(top = 4.dp).semantics { heading() }
+                style = MaterialTheme.typography.headlineMedium.copy(fontFamily = InstrumentSerif),
+                modifier = Modifier.padding(top = 6.dp).semantics { heading() }
+            )
+            Text(
+                "Keep the office moving without the noise.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 4.dp)
             )
         }
         item {
-            if (activeMoves.isEmpty()) {
+            if (nextMove == null) {
                 EmptyStateCard(
                     title = "Your desk is clear",
                     detail = "Add one Move you can advance next.",
@@ -326,32 +419,212 @@ private fun HomeScreen(
                     onAction = onAddMove
                 )
             } else {
-                SummaryCard("Next Move", activeMoves.first().title)
+                NextMoveCard(
+                    move = nextMove,
+                    onOpen = { onOpenMove(nextMove.id) },
+                    onComplete = { onCompleteMove(nextMove.id) }
+                )
             }
         }
         item {
-            SummaryCard(
-                label = "Up next",
-                value = upNext?.let { listOfNotNull(it.startTimeLabel, it.title).joinToString(" · ") }
-                    ?: "No upcoming commitments loaded.",
-                onClick = onOpenCalendar
-            )
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                CompactSignalCard(
+                    label = "UP NEXT",
+                    value = upNext?.title ?: "Time is clear",
+                    detail = upNext?.startTimeLabel ?: "No commitment soon",
+                    onClick = onOpenCalendar,
+                    modifier = Modifier.weight(1f)
+                )
+                CompactSignalCard(
+                    label = "COUNTDOWN",
+                    value = countdownValue(nextMove?.dueOn),
+                    detail = countdownDetail(nextMove?.dueOn),
+                    onClick = nextMove?.let { { onOpenMove(it.id) } },
+                    modifier = Modifier.weight(1f)
+                )
+            }
         }
         item {
-            Text(
-                "Calendar and Move details stay on this device unless you explicitly configure and enable sync.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Outlined.Lock,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(16.dp)
+                )
+                Text(
+                    "Private on this device until you explicitly enable sync.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(start = 8.dp)
+                )
+            }
         }
     }
 }
 
 @Composable
+private fun PageHeader(title: String, subtitle: String, modifier: Modifier = Modifier) {
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(3.dp)) {
+        Text(
+            "FOUNDER’S OFFICE",
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.primary,
+            letterSpacing = 0.8.sp
+        )
+        Text(
+            title,
+            style = MaterialTheme.typography.headlineMedium.copy(fontFamily = InstrumentSerif),
+            modifier = Modifier.semantics { heading() }
+        )
+        Text(
+            subtitle,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+@Composable
+private fun NextMoveCard(move: Move, onOpen: () -> Unit, onComplete: () -> Unit) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("next-move-card")
+            .clickable(onClick = onOpen),
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+    ) {
+        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    Modifier
+                        .size(width = 28.dp, height = 3.dp)
+                        .background(MaterialTheme.colorScheme.primary, RoundedCornerShape(2.dp))
+                )
+                Text(
+                    "NEXT MOVE",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
+                    letterSpacing = 0.8.sp,
+                    modifier = Modifier.padding(start = 10.dp)
+                )
+                Spacer(Modifier.weight(1f))
+                Icon(Icons.AutoMirrored.Outlined.ArrowForward, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Text(
+                move.title,
+                style = MaterialTheme.typography.titleLarge,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Surface(
+                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.11f),
+                    shape = RoundedCornerShape(99.dp)
+                ) {
+                    Text(
+                        move.priority.label,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                    )
+                }
+                move.dueOn?.let {
+                    Text(
+                        homeDueLabel(it),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(start = 10.dp)
+                    )
+                }
+                Spacer(Modifier.weight(1f))
+                IconButton(
+                    onClick = onComplete,
+                    modifier = Modifier.semantics { contentDescription = "Complete ${move.title}" }
+                ) {
+                    Icon(
+                        Icons.Outlined.RadioButtonUnchecked,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CompactSignalCard(
+    label: String,
+    value: String,
+    detail: String,
+    onClick: (() -> Unit)?,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        modifier = modifier
+            .height(132.dp)
+            .let { base -> if (onClick == null) base else base.clickable(onClick = onClick) },
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+    ) {
+        Column(
+            Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(7.dp)
+        ) {
+            Text(
+                label,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+                letterSpacing = 0.7.sp
+            )
+            Text(
+                value,
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                detail,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+private fun countdownValue(dueOn: LocalDate?): String {
+    if (dueOn == null) return "No deadline"
+    val days = ChronoUnit.DAYS.between(LocalDate.now(), dueOn)
+    return when {
+        days < 0 -> "${-days}d overdue"
+        days == 0L -> "Today"
+        days == 1L -> "Tomorrow"
+        else -> "$days days"
+    }
+}
+
+private fun countdownDetail(dueOn: LocalDate?): String = dueOn?.let {
+    "Due ${it.format(DateTimeFormatter.ofPattern("MMM d"))}"
+} ?: "Set one in Moves"
+
+private fun homeDueLabel(dueOn: LocalDate): String = countdownDetail(dueOn)
+
+@Composable
 private fun SummaryCard(label: String, value: String, onClick: (() -> Unit)? = null) {
     Card(
         modifier = Modifier.fillMaxWidth().let { base -> if (onClick == null) base else base.clickable(onClick = onClick) },
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     ) {
         Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(label, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
@@ -364,11 +637,14 @@ private fun SummaryCard(label: String, value: String, onClick: (() -> Unit)? = n
 private fun EmptyStateCard(title: String, detail: String, actionLabel: String, onAction: () -> Unit) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     ) {
         Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-            Text(detail, color = MaterialTheme.colorScheme.onPrimaryContainer)
+            Text(detail, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Button(onClick = onAction) { Text(actionLabel) }
         }
     }
@@ -405,10 +681,7 @@ private fun MovesScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Column {
-                Text("Moves", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-                Text("Choose what advances next", color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
+            PageHeader("Moves", "Choose what advances next", Modifier.weight(1f))
             Button(onClick = { adding = true }, modifier = Modifier.testTag("add-move")) { Text("Add") }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(bottom = 10.dp)) {
@@ -500,7 +773,12 @@ private fun MovesScreen(
 
 @Composable
 private fun MoveRow(move: Move, onEdit: () -> Unit, onToggleDone: () -> Unit) {
-    Card(modifier = Modifier.fillMaxWidth().clickable(onClick = onEdit)) {
+    Card(
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onEdit),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+    ) {
         Row(
             Modifier.padding(horizontal = 12.dp, vertical = 14.dp),
             horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -539,7 +817,12 @@ private fun MoveRow(move: Move, onEdit: () -> Unit, onToggleDone: () -> Unit) {
 
 @Composable
 private fun DeletedMoveRow(move: Move, onRestore: () -> Unit) {
-    Card(modifier = Modifier.fillMaxWidth()) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+    ) {
         Row(
             modifier = Modifier.fillMaxWidth().padding(14.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -663,8 +946,7 @@ private fun CalendarScreen(events: List<LocalCalendarEvent>, viewModel: OpenLoop
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         item {
-            Text("Calendar", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-            Text("Upcoming commitments from calendars already connected to this device.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            PageHeader("Calendar", "Upcoming commitments from calendars already connected to this device.")
         }
         item {
             Button(onClick = {
@@ -687,7 +969,12 @@ private fun CalendarScreen(events: List<LocalCalendarEvent>, viewModel: OpenLoop
             }
         }
         items(events, key = { it.id }) { event ->
-            Card(Modifier.fillMaxWidth()) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+            ) {
                 Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                     Text(event.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                     Text(event.startTimeLabel, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -709,8 +996,7 @@ private fun SettingsScreen(viewModel: OpenLoopsViewModel, modifier: Modifier = M
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         item {
-            Text("Settings", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-            Text("Privacy, account, and device controls", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            PageHeader("Settings", "Privacy, account, and device controls")
         }
         item {
             Text("Account & Sync", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
@@ -732,7 +1018,11 @@ private fun SettingsScreen(viewModel: OpenLoopsViewModel, modifier: Modifier = M
             }
         }
         item {
-            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+            ) {
                 Row(Modifier.padding(16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     Icon(Icons.Outlined.SyncDisabled, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
