@@ -2,6 +2,64 @@ import FounderOfficeCore
 import SwiftUI
 import UIKit
 
+enum FounderIOSPalette {
+    static let background = Color(
+        uiColor: UIColor { traits in
+            traits.userInterfaceStyle == .dark
+                ? UIColor(red: 14 / 255, green: 15 / 255, blue: 18 / 255, alpha: 1)
+                : UIColor(red: 245 / 255, green: 245 / 255, blue: 247 / 255, alpha: 1)
+        }
+    )
+
+    static let card = Color(
+        uiColor: UIColor { traits in
+            traits.userInterfaceStyle == .dark
+                ? UIColor(white: 1, alpha: 0.07)
+                : UIColor.white
+        }
+    )
+
+    static let border = Color(
+        uiColor: UIColor { traits in
+            traits.userInterfaceStyle == .dark
+                ? UIColor(white: 1, alpha: 0.10)
+                : UIColor(red: 17 / 255, green: 17 / 255, blue: 20 / 255, alpha: 0.08)
+        }
+    )
+
+    static let primaryText = Color(
+        uiColor: UIColor { traits in
+            traits.userInterfaceStyle == .dark
+                ? UIColor(red: 247 / 255, green: 247 / 255, blue: 247 / 255, alpha: 1)
+                : UIColor(red: 17 / 255, green: 17 / 255, blue: 20 / 255, alpha: 1)
+        }
+    )
+
+    static let secondaryText = Color(
+        uiColor: UIColor { traits in
+            traits.userInterfaceStyle == .dark
+                ? UIColor(white: 1, alpha: 0.62)
+                : UIColor(red: 17 / 255, green: 17 / 255, blue: 20 / 255, alpha: 0.58)
+        }
+    )
+
+    static let accent = Color(
+        uiColor: UIColor { traits in
+            traits.userInterfaceStyle == .dark
+                ? UIColor(red: 10 / 255, green: 132 / 255, blue: 1, alpha: 1)
+                : UIColor(red: 0, green: 122 / 255, blue: 1, alpha: 1)
+        }
+    )
+
+    static let accentWash = Color(
+        uiColor: UIColor { traits in
+            traits.userInterfaceStyle == .dark
+                ? UIColor(red: 10 / 255, green: 132 / 255, blue: 1, alpha: 0.14)
+                : UIColor(red: 0, green: 122 / 255, blue: 1, alpha: 0.10)
+        }
+    )
+}
+
 extension AccentPalette {
     var swiftUIColor: Color {
         switch self {
@@ -115,8 +173,8 @@ extension AppearancePreferences {
     var nodeBackgroundColor: Color {
         switch nodeStyleID {
         case .minimal: return primaryAccentColor.opacity(0.09)
-        case .pixel: return Color(uiColor: .secondarySystemGroupedBackground)
-        default: return Color(uiColor: .secondarySystemGroupedBackground)
+        case .pixel: return FounderIOSPalette.card
+        default: return FounderIOSPalette.card
         }
     }
 
@@ -124,7 +182,7 @@ extension AppearancePreferences {
         switch nodeStyleID {
         case .pixel: return primaryAccentColor.opacity(0.58)
         case .minimal: return primaryAccentColor.opacity(0.18)
-        default: return Color.primary.opacity(0.08)
+        default: return FounderIOSPalette.border
         }
     }
 
@@ -165,25 +223,17 @@ private struct FounderSurfaceBackground: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     var body: some View {
-        ZStack {
-            if reduceTransparency {
-                appearance.surfaceStyleID == .solidBlack
-                    ? Color.black
-                    : Color(uiColor: .systemGroupedBackground)
-            } else {
-                switch appearance.surfaceStyleID {
-                case .solidBlack:
-                    Color.black
-                case .glass:
-                    Color(uiColor: .systemGroupedBackground)
-                    appearance.accentGradient.opacity(0.20)
-                    Rectangle().fill(.ultraThinMaterial).opacity(0.62)
-                default:
-                    Color(uiColor: .systemGroupedBackground)
-                    Rectangle().fill(.thinMaterial).opacity(0.44)
+        FounderIOSPalette.background
+            .overlay(alignment: .topTrailing) {
+                if !reduceTransparency, appearance.surfaceStyleID == .glass {
+                    Circle()
+                        .fill(FounderIOSPalette.accentWash)
+                        .frame(width: 260, height: 260)
+                        .blur(radius: 90)
+                        .offset(x: 120, y: -130)
+                        .accessibilityHidden(true)
                 }
             }
-        }
     }
 }
 

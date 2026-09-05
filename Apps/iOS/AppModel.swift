@@ -1,5 +1,6 @@
 import Combine
 import FounderOfficeCore
+import FounderOfficeIdentity
 import Foundation
 import UIKit
 import WidgetKit
@@ -355,6 +356,10 @@ final class AppModel: ObservableObject {
     }
 
     func consumeRoute() { route = nil }
+
+    func navigate(to destination: IOSAppRoute) {
+        route = destination
+    }
 
     func refreshWorkspace() {
         guard let workspaceSession else { return }

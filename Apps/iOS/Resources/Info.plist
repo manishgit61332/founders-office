@@ -18,6 +18,14 @@
                 <string>$(FOUNDER_OFFICE_AUTH_CALLBACK_SCHEME)</string>
             </array>
         </dict>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>FounderOfficeWidgetDeepLinks</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>founders-office</string>
+            </array>
+        </dict>
     </array>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>

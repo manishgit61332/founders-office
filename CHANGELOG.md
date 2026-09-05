@@ -80,6 +80,13 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Changed
 
+- The iPhone Home now mirrors the focused Mac notch hierarchy with one dominant
+  Next Move, compact upcoming-commitment and goal countdown cards, an optional
+  contained vision image, adaptive light/dark surfaces, and accessible fixed
+  navigation. Its home-screen widget now leads with that Move and uses the
+  medium size for read-only commitment and goal context; lock-screen families
+  remain outside this prototype. The iPhone app and widget gallery also use the
+  canonical Founder’s Office artwork instead of a generic development icon.
 - The iPhone app now uses Supabase as its only active cloud authority. The
   legacy CloudKit writer, push capability, and background remote-notification
   mode are removed; legacy local files remain migration input and remote-only
