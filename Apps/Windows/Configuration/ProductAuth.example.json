@@ -1,0 +1,6 @@
+{
+  "schemaVersion": 1,
+  "supabaseURL": "https://project.supabase.co",
+  "publishableKey": "sb_publishable_fixture",
+  "callbackURL": "founders-office-dev://auth/callback"
+}

@@ -17,6 +17,34 @@ public sealed record SupabaseAuthConfiguration(Uri CallbackUri)
 
         return this;
     }
+
+    public bool AcceptsCallbackResponse(Uri response) =>
+        response.IsAbsoluteUri &&
+        string.Equals(CallbackUri.Scheme, response.Scheme, StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(CallbackUri.Host, response.Host, StringComparison.OrdinalIgnoreCase) &&
+        CallbackUri.Port == response.Port &&
+        string.Equals(
+            CallbackUri.GetComponents(UriComponents.Path, UriFormat.UriEscaped),
+            response.GetComponents(UriComponents.Path, UriFormat.UriEscaped),
+            StringComparison.Ordinal) &&
+        HasExactOriginalPath(response) &&
+        string.IsNullOrEmpty(response.Fragment) && string.IsNullOrEmpty(response.UserInfo);
+
+    private bool HasExactOriginalPath(Uri response)
+    {
+        // Uri normalizes dot segments and escaped unreserved characters. Do not
+        // let that normalization widen the registered callback path.
+        var endpoint = response.OriginalString.AsSpan();
+        var queryOrFragment = endpoint.IndexOfAny('?', '#');
+        if (queryOrFragment >= 0)
+        {
+            endpoint = endpoint[..queryOrFragment];
+        }
+
+        var authority = endpoint[(response.Scheme.Length + 3)..];
+        var pathStart = authority.IndexOf('/');
+        return pathStart >= 0 && authority[pathStart..].Equals(CallbackUri.AbsolutePath, StringComparison.Ordinal);
+    }
 }
 
 public sealed record PendingPkceFlow(

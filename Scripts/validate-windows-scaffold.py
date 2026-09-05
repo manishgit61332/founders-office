@@ -24,6 +24,10 @@ required_files = [
     WINDOWS / "Directory.Packages.props",
     WINDOWS / "FoundersOffice.Windows.slnx",
     WINDOWS / "README.md",
+    WINDOWS / "Configuration" / "ProductAuth.example.json",
+    WINDOWS / "docs" / "public-configuration-and-sync-acceptance.md",
+    WINDOWS / "tools" / "FoundersOffice.Acceptance" / "FoundersOffice.Acceptance.csproj",
+    WINDOWS / "tools" / "FoundersOffice.Acceptance" / "packages.lock.json",
     WINDOWS / "Distribution" / "Install-Development.ps1",
     WINDOWS / "Distribution" / "README-DEVELOPMENT.md",
     WINDOWS / "Scripts" / "New-DevelopmentBundle.ps1",
@@ -33,6 +37,7 @@ required_files = [
     WINDOWS / "src" / "FoundersOffice.Core" / "Auth" / "ProductAuthentication.cs",
     WINDOWS / "src" / "FoundersOffice.Core" / "Auth" / "ProductSessionBroker.cs",
     WINDOWS / "src" / "FoundersOffice.Core" / "Auth" / "SupabaseProductAuthClient.cs",
+    WINDOWS / "src" / "FoundersOffice.Core" / "Auth" / "WindowsProductConfiguration.cs",
     WINDOWS / "src" / "FoundersOffice.Core" / "Sync" / "SupabaseV1SyncTransport.cs",
     WINDOWS / "src" / "FoundersOffice.Core" / "Sync" / "WorkspaceSyncCoordinator.cs",
     WINDOWS / "src" / "FoundersOffice.Core" / "packages.lock.json",
@@ -47,6 +52,9 @@ required_files = [
 missing = [str(path.relative_to(ROOT)) for path in required_files if not path.is_file()]
 if missing:
     fail("missing required files: " + ", ".join(missing))
+
+if "ProductAuth.local.json" not in (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines():
+    fail("local product-auth configuration must remain ignored")
 
 for xml_path in WINDOWS.rglob("*.xml"):
     ET.parse(xml_path)

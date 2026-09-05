@@ -6,4 +6,7 @@
   <Folder Name="/tests/">
     <Project Path="tests/FoundersOffice.Core.Tests/FoundersOffice.Core.Tests.csproj" />
   </Folder>
+  <Folder Name="/tools/">
+    <Project Path="tools/FoundersOffice.Acceptance/FoundersOffice.Acceptance.csproj" />
+  </Folder>
 </Solution>

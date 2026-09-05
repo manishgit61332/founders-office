@@ -95,7 +95,10 @@ public sealed class SupabaseProductAuthClient : IProductAuthClient, IDisposable
         CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        if (_utcNow() > flow.ExpiresAt || !CallbackMatches(flow.CallbackUri, callbackUri))
+        if (_utcNow() >= flow.ExpiresAt ||
+            !_authConfiguration.AcceptsCallbackResponse(flow.CallbackUri) ||
+            !string.IsNullOrEmpty(flow.CallbackUri.Query) ||
+            !_authConfiguration.AcceptsCallbackResponse(callbackUri))
         {
             throw new ProductAuthenticationException("auth_callback_invalid");
         }
@@ -252,14 +255,6 @@ public sealed class SupabaseProductAuthClient : IProductAuthClient, IDisposable
 
         return Encoding.UTF8.GetString(output.GetBuffer(), 0, checked((int)output.Length));
     }
-
-    private static bool CallbackMatches(Uri expected, Uri actual) =>
-        string.Equals(
-            expected.GetLeftPart(UriPartial.Path).TrimEnd('/'),
-            actual.GetLeftPart(UriPartial.Path).TrimEnd('/'),
-            StringComparison.OrdinalIgnoreCase) &&
-        string.IsNullOrEmpty(actual.Fragment) &&
-        string.IsNullOrEmpty(actual.UserInfo);
 
     private static Dictionary<string, string> ParseQuery(string query)
     {

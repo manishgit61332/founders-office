@@ -10,6 +10,7 @@ public sealed record SupabasePublicConfiguration(Uri ProjectUrl, string Publisha
     public SupabasePublicConfiguration Validate()
     {
         if (!ProjectUrl.IsAbsoluteUri || ProjectUrl.Scheme != Uri.UriSchemeHttps ||
+            string.IsNullOrEmpty(ProjectUrl.Host) || !string.IsNullOrEmpty(ProjectUrl.UserInfo) ||
             !string.Equals(ProjectUrl.AbsolutePath, "/", StringComparison.Ordinal) ||
             !string.IsNullOrEmpty(ProjectUrl.Query) || !string.IsNullOrEmpty(ProjectUrl.Fragment))
         {
@@ -51,7 +52,8 @@ public sealed record SupabasePublicConfiguration(Uri ProjectUrl, string Publisha
             var payload = segments[1].Replace('-', '+').Replace('_', '/');
             payload = payload.PadRight(payload.Length + ((4 - (payload.Length % 4)) % 4), '=');
             using var document = JsonDocument.Parse(Convert.FromBase64String(payload));
-            return document.RootElement.TryGetProperty("role", out var role) &&
+            return document.RootElement.ValueKind == JsonValueKind.Object &&
+                document.RootElement.TryGetProperty("role", out var role) && role.ValueKind == JsonValueKind.String &&
                 string.Equals(role.GetString(), "anon", StringComparison.Ordinal);
         }
         catch (FormatException)

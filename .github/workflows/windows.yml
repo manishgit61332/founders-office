@@ -81,6 +81,14 @@ jobs:
           -p:Platform=x64
           -p:AppxPackageSigningEnabled=false
 
+      - name: Verify offline public-configuration preflight
+        run: >-
+          dotnet run
+          --project .\tools\FoundersOffice.Acceptance\FoundersOffice.Acceptance.csproj
+          --configuration Release
+          --no-restore
+          -- --configuration .\Configuration\ProductAuth.example.json
+
       - name: Report vulnerable dependencies
         run: dotnet list .\FoundersOffice.Windows.slnx package --vulnerable --include-transitive
 

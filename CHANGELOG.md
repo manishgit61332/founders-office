@@ -149,6 +149,7 @@ All notable customer-visible changes are recorded here. This project follows [Ke
 
 ### Security
 
+- Windows now validates public beta configuration through a strict, offline preflight. Local configuration cannot enter development bundles, and callback path aliases or expired sign-in attempts fail before network access. Live sign-in and sync remain disabled.
 - Windows access tokens remain in memory, refresh sessions are isolated from the SQLite workspace in Credential Locker, unreviewed callback origins and secret/service-role keys fail closed, and signing in cannot silently attach a data-bearing local workspace.
 - Signing in cannot silently attach or replace a workspace: data-bearing replacement requires an immutable local export, failures leave the original canonical state untouched, and private image assets remain blocked.
 - Remote sync remains disabled in the customer runtime. Unsupported ordinary profile operations and asset transfers fail closed; tokens and response content never enter workspace storage or diagnostics.

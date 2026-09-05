@@ -89,8 +89,19 @@ public sealed class SupabaseProductAuthClientTests
         Assert.DoesNotContain("product-refresh-token", handler.Body, StringComparison.Ordinal);
     }
 
-    [Fact]
-    public async Task CallbackFromAnotherOriginIsRejectedBeforeNetworkAccess()
+    [Theory]
+    [InlineData("other-app://auth/callback?code=synthetic")]
+    [InlineData("founders-office-dev://auth/callback?code=synthetic")]
+    [InlineData("founders-office://auth/Callback?code=synthetic")]
+    [InlineData("founders-office://auth/callback/?code=synthetic")]
+    [InlineData("founders-office://auth/callback%2f?code=synthetic")]
+    [InlineData("founders-office://auth/%63allback?code=synthetic")]
+    [InlineData("founders-office://auth/other/../callback?code=synthetic")]
+    [InlineData("founders-office://auth:1234/callback?code=synthetic")]
+    [InlineData("founders-office://user@auth/callback?code=synthetic")]
+    [InlineData("founders-office://auth/callback?code=synthetic#fragment")]
+    [InlineData("founders-office://auth/callback?code=synthetic&code=duplicate")]
+    public async Task InvalidCallbackIsRejectedBeforeNetworkAccess(string callback)
     {
         var handler = new CapturingHandler(_ => throw new InvalidOperationException("Network must not be used."));
         using var client = new HttpClient(handler);
@@ -102,7 +113,31 @@ public sealed class SupabaseProductAuthClientTests
         var flow = authClient.BeginGoogleSignIn();
 
         var error = await Assert.ThrowsAsync<ProductAuthenticationException>(() =>
-            authClient.ExchangeCodeAsync(flow, new Uri("other-app://auth/callback?code=stolen")));
+            authClient.ExchangeCodeAsync(flow, new Uri(callback)));
+
+        Assert.Equal("auth_callback_invalid", error.Code);
+        Assert.Equal(0, handler.CallCount);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ExpiredOrRetargetedPendingFlowIsRejectedBeforeNetworkAccess(bool expired)
+    {
+        var handler = new CapturingHandler(_ => throw new InvalidOperationException("Network must not be used."));
+        using var client = new HttpClient(handler);
+        using var authClient = new SupabaseProductAuthClient(
+            client,
+            new SupabasePublicConfiguration(new Uri("https://project.supabase.co/"), "sb_publishable_fixture"),
+            new SupabaseAuthConfiguration(new Uri("founders-office://auth/callback")),
+            () => Now);
+        var flow = authClient.BeginGoogleSignIn();
+        flow = expired
+            ? flow with { ExpiresAt = Now }
+            : flow with { CallbackUri = new Uri("other-app://auth/callback") };
+
+        var error = await Assert.ThrowsAsync<ProductAuthenticationException>(() =>
+            authClient.ExchangeCodeAsync(flow, new Uri("founders-office://auth/callback?code=synthetic")));
 
         Assert.Equal("auth_callback_invalid", error.Code);
         Assert.Equal(0, handler.CallCount);

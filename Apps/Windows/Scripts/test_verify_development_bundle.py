@@ -108,6 +108,22 @@ class DevelopmentBundleVerifierTests(unittest.TestCase):
             self.assertNotEqual(0, result.returncode)
             self.assertIn("forbidden", result.stderr)
 
+    def test_rejects_local_auth_configuration_in_outer_or_nested_package(self) -> None:
+        for nested in (False, True):
+            with self.subTest(nested=nested), tempfile.TemporaryDirectory() as directory:
+                archive = pathlib.Path(directory) / "bundle.zip"
+                local_config = {"Configuration/ProductAuth.local.json": b"{}"}
+                write_bundle(
+                    archive,
+                    package=application_package(local_config if nested else None),
+                    extra_files=None if nested else local_config,
+                )
+
+                result = self.run_verifier(archive)
+
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn("forbidden", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

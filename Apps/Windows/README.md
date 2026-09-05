@@ -27,10 +27,11 @@ the integration branch freezes production identity and sync.
 - platform-neutral tests for repository, outbox, identity, transport, contract,
   cross-device fixtures, and placement rules.
 
-It does **not** yet enable live Google/Apple product sign-in or remote sync. The
-public Supabase project values and a registered Windows callback are intentionally
-absent, and a data-bearing workspace cannot attach until the reviewed export-and-
-replace flow exists. It also does not provide Calendar connectors,
+It does **not** yet enable live Google/Apple product sign-in or remote sync.
+Developers can validate reviewed public beta configuration in an ignored local file.
+That file does not register the Windows callback or enable native browser activation.
+Development bundles exclude it. A data-bearing workspace cannot attach until the reviewed
+export-and-replace flow exists. The build also does not provide Calendar connectors,
 production-trusted signing, automatic updates, recovery for deleted Moves, or a
 public package identity. The interface and downloadable bundle label this state
 honestly.
@@ -77,6 +78,9 @@ Use a Windows 11 machine, build 22621 or later.
 NuGet is restricted to `nuget.org`, versions are centrally pinned, and lock
 files are committed. Do not place OAuth files, signing certificates, tokens, or
 real workspace databases inside the repository.
+
+For offline configuration checks and the separate live acceptance gates, see
+[Windows public configuration and sync acceptance](docs/public-configuration-and-sync-acceptance.md).
 
 ## Downloadable development bundle
 

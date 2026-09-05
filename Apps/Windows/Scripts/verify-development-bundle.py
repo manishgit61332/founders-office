@@ -48,6 +48,7 @@ FORBIDDEN_SUFFIXES = {
     ".trace",
 }
 PRIVATE_NAMES = {
+    "productauth.local.json",
     "openloops.json",
     "personalization.json",
     "open_loops_context.md",
